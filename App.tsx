@@ -34,9 +34,9 @@ function App(): React.JSX.Element {
     },
   ];
 
-  const MODEL_FILENAME = "Phi-3-mini-4k-instruct-Q4_K_M.gguf";
+  const MODEL_FILENAME = "qwen2-1_5b-instruct-q4_k_m.gguf";
 
-  const MODEL_URL = "https://huggingface.co/bartowski/Phi-3-mini-4k-instruct-GGUF/resolve/main/Phi-3-mini-4k-instruct-Q4_K_M.gguf";
+  const MODEL_URL = "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf";
 
   const [conversation, setConversation] =
     useState<Message[]>(INITIAL_CONVERSATION);
@@ -119,7 +119,7 @@ function App(): React.JSX.Element {
         {
           messages: newConversation,
           n_predict: 300,
-          stop: ['<|end|>']
+          stop: ['<|im_end|>']
         },
         () => {},
       );
@@ -154,7 +154,7 @@ function App(): React.JSX.Element {
           </View>
         ) : (
           <View style={styles.chatContainer}>
-            <Text style={styles.greetingText}>🦙 Model Ready. Chat below.</Text>
+            <Text style={styles.greetingText}>Model Ready.</Text>
 
             {conversation.slice(1).map((msg, index) => (
               <View key={index} style={styles.messageWrapper}>
