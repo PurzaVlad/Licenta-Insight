@@ -235,7 +235,6 @@ function App(): React.JSX.Element {
 
         const llamaContext = await initLlama({
           model: filePath,
-          useAssets: false,
           use_mlock: false,
         });
 
@@ -520,8 +519,10 @@ function App(): React.JSX.Element {
               </Text>
 
               <View style={styles.statItem}>
-                <Text style={styles.summaryLabel}>Screen On</Text>
-                <Text style={styles.summaryValue}>
+                <Text style={[styles.summaryLabel, styles.highlightText]}>
+                  Screen On
+                </Text>
+                <Text style={[styles.summaryValue, styles.highlightText]}>
                   {formatTimeTotal(selectedHour.totalTime)}
                 </Text>
               </View>
@@ -724,6 +725,7 @@ const styles = StyleSheet.create({
   statTime: {fontSize: 15, fontWeight: '500', color: '#FFFFFF'},
   summaryLabel: {fontSize: 15, fontWeight: 'bold', color: '#FFFFFF'},
   summaryValue: {fontSize: 15, fontWeight: 'bold', color: '#FFFFFF'},
+  highlightText: {color: '#E3B23C'},
 
   // Chat styles
   chatContainer: {
