@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import Foundation
 import Vision
 import VisionKit
 import UniformTypeIdentifiers
@@ -148,27 +150,34 @@ struct DocumentsView: View {
                         }
                         
                         if isOpeningPreview {
-                            Color.black.opacity(0.15)
-                                .ignoresSafeArea()
-                            VStack(spacing: 12) {
-                                ProgressView()
-                                    .scaleEffect(1.2)
-                                Text("Opening preview...")
-                                    .foregroundColor(.secondary)
+                            ZStack {
+                                Rectangle()
+                                    .fill(.ultraThinMaterial)
+                                    .ignoresSafeArea()
+                                VStack(spacing: 12) {
+                                    ProgressView()
+                                        .scaleEffect(1.2)
+                                    Text("Opening preview...")
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
                     }
                 }
                 
                 if isProcessing {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                            .scaleEffect(1.2)
-                        Text("Processing document...")
-                            .foregroundColor(.secondary)
+                    ZStack {
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+                            .ignoresSafeArea()
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .scaleEffect(1.2)
+                            Text("Processing document...")
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(.systemBackground))
                 }
             }
             .navigationTitle("Documents")
@@ -361,9 +370,38 @@ struct DocumentsView: View {
     }
     
     private func generateAIDocumentName(from text: String) {
+        func sanitizeTitle(_ s: String) -> String {
+            var name = s
+                .replacingOccurrences(of: "\"", with: "")
+                .replacingOccurrences(of: "'", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Replace any non-letter/digit with space to keep readable words
+            name = name.replacingOccurrences(of: "[^A-Za-z0-9]+", with: " ", options: .regularExpression)
+            // Collapse whitespace and trim
+            name = name.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            return name.isEmpty ? "Scanned Document" : name
+        }
+        func titleCase(_ s: String) -> String {
+            return s.split(separator: " ").map { w in
+                let lw = w.lowercased()
+                return lw.prefix(1).uppercased() + lw.dropFirst()
+            }.joined(separator: " ")
+        }
+        func heuristicName(from text: String) -> String {
+            // Extract first few meaningful words
+            let stop: Set<String> = ["the","a","an","and","or","of","to","for","in","on","by","with","from","at","as","is","are","was","were","be","been","being"]
+            let tokens = text
+                .replacingOccurrences(of: "[^A-Za-z0-9 ]+", with: " ", options: .regularExpression)
+                .lowercased()
+                .split(separator: " ")
+                .filter { !$0.isEmpty && $0.count > 2 && !stop.contains(String($0)) }
+            let words = Array(tokens.prefix(3))
+            if words.isEmpty { return "Scanned Document" }
+            return titleCase(words.joined(separator: " "))
+        }
         // Enhanced prompt for better document name generation
         let prompt = """
-        You are analyzing OCR-extracted text from a scanned document. Create a short, descriptive name following these rules:
+        <<<SUMMARY_REQUEST>>>You are analyzing OCR-extracted text from a scanned document. Create a short, descriptive name following these rules:
         
         STRICT REQUIREMENTS:
         - Exactly 2-3 words maximum
@@ -384,33 +422,32 @@ struct DocumentsView: View {
         Response format: Just the 2-3 word name, nothing else.
         """
         
+        print("🏷️ DocumentsView: Generating AI document name from OCR text")
         EdgeAI.shared?.generate(prompt, resolver: { result in
+            print("🏷️ DocumentsView: Got name suggestion result: \(String(describing: result))")
             DispatchQueue.main.async {
-                if let result = result as? String {
-                    // Clean up the AI response and ensure it's 2-3 words
+                if let result = result as? String, !result.isEmpty {
+                    // Clean up the AI response, keep up to 3 words, then sanitize for filesystem
                     let cleanResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .replacingOccurrences(of: "\"|", with: "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    
-                    // Split into words and take only first 2-3
-                    let words = cleanResult.components(separatedBy: .whitespaces)
+                    let words = cleanResult.components(separatedBy: .whitespacesAndNewlines)
                         .filter { !$0.isEmpty }
                         .prefix(3)
-                    
-                    let finalName = words.joined(separator: " ")
-                    
-                    self.suggestedName = finalName.isEmpty ? "Scanned Document" : finalName
+                    let joined = words.joined(separator: " ")
+                    let friendly = titleCase(sanitizeTitle(joined))
+                    self.suggestedName = friendly.isEmpty ? heuristicName(from: text) : friendly
                 } else {
-                    self.suggestedName = "Scanned Document"
+                    print("❌ DocumentsView: Empty or nil name suggestion result")
+                    self.suggestedName = heuristicName(from: text)
                 }
                 self.customName = self.suggestedName
                 self.isProcessing = false
                 self.showingNamingDialog = true
             }
         }, rejecter: { code, message, error in
+            print("❌ DocumentsView: Name generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
-                self.suggestedName = "Scanned Document"
-                self.customName = "Scanned Document"
+                self.suggestedName = heuristicName(from: text)
+                self.customName = self.suggestedName
                 self.isProcessing = false
                 self.showingNamingDialog = true
             }
@@ -666,6 +703,7 @@ struct DocumentsView: View {
 
 struct DocumentRowView: View {
     let document: Document
+    @State private var isGeneratingSummary = false
     
     var body: some View {
         HStack(spacing: 12) {
@@ -737,6 +775,58 @@ struct DocumentRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .frame(minHeight: 96) // Minimum height, but allows expansion
+    }
+    
+    private func generateAISummary() {
+        print("🧠 DocumentRowView: Generating AI summary for '\(document.title)'")
+        isGeneratingSummary = true
+        
+        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
+        
+        print("🧠 DocumentRowView: Sending summary request, content length: \(document.content.count)")
+        EdgeAI.shared?.generate(prompt, resolver: { result in
+            print("🧠 DocumentRowView: Got summary result: \(String(describing: result))")
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                
+                if let result = result as? String, !result.isEmpty {
+                    // Show the summary in an alert
+                    let alert = UIAlertController(
+                        title: "AI Summary",
+                        message: result,
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    
+                    // Present from the current window
+                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                       let window = windowScene.windows.first,
+                       let rootViewController = window.rootViewController {
+                        rootViewController.present(alert, animated: true)
+                    }
+                } else {
+                    print("🧠 DocumentRowView: Invalid or empty summary result")
+                }
+            }
+        }, rejecter: { code, message, error in
+            print("🧠 DocumentRowView: Summary generation failed - Code: \(String(describing: code)), Message: \(String(describing: message)), Error: \(String(describing: error))")
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                
+                let alert = UIAlertController(
+                    title: "Summary Failed",
+                    message: "Failed to generate AI summary. Please try again.",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    rootViewController.present(alert, animated: true)
+                }
+            }
+        })
     }
 }
 
@@ -978,15 +1068,18 @@ struct DocumentDetailView: View {
     }
     
     private func generateAISummary() {
+        print("🧠 DocumentRowView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
-        let prompt = "Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
         
+        print("🧠 DocumentRowView: Sending summary request, content length: \(document.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
+            print("🧠 DocumentRowView: Got summary result: \(String(describing: result))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
-                if let result = result as? String {
+                if let result = result as? String, !result.isEmpty {
                     // Show the summary in an alert
                     let alert = UIAlertController(
                         title: "AI Summary",
@@ -1005,16 +1098,35 @@ struct DocumentDetailView: View {
                         }
                         presentingController.present(alert, animated: true)
                     }
+                } else {
+                    print("❌ DocumentRowView: Empty or nil result")
+                    let alert = UIAlertController(
+                        title: "Error",
+                        message: "Empty response from AI. Please try again.",
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    
+                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                       let window = windowScene.windows.first,
+                       let rootViewController = window.rootViewController {
+                        var presentingController = rootViewController
+                        while let presented = presentingController.presentedViewController {
+                            presentingController = presented
+                        }
+                        presentingController.present(alert, animated: true)
+                    }
                 }
             }
         }, rejecter: { code, message, error in
+            print("❌ DocumentRowView: Summary generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
                 // Handle error
                 let alert = UIAlertController(
                     title: "Error",
-                    message: "Failed to generate summary. Please try again.",
+                    message: "Failed to generate summary: \(message ?? "Unknown error")",
                     preferredStyle: .alert
                 )
                 alert.addAction(UIAlertAction(title: "OK", style: .default))
@@ -1288,29 +1400,18 @@ struct OldDocumentPreviewView: View {
     }
     
     private func generateAISummary() {
+        print("🧠 OldDocumentPreviewView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
-        let prompt = """
-        You are analyzing a document that was processed using OCR (Optical Character Recognition). The text below was extracted from scanned pages/images.
+        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
         
-        Please provide a comprehensive summary focusing on:
-        - Main topics and key themes
-        - Important facts, figures, or conclusions
-        - Action items or recommendations (if any)
-        - Overall purpose and context
-        - Note: Some text may have OCR extraction errors, use context to understand unclear parts
-        
-        Make the summary clear and well-structured for easy understanding.
-        
-        OCR-extracted content:
-        \(document.content)
-        """
-        
+        print("🧠 OldDocumentPreviewView: Sending summary request, content length: \(document.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
+            print("🧠 OldDocumentPreviewView: Got summary result: \(String(describing: result))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
-                if let result = result as? String {
+                if let result = result as? String, !result.isEmpty {
                     // Show the summary in an alert
                     let alert = UIAlertController(
                         title: "AI Summary",
@@ -1323,18 +1424,29 @@ struct OldDocumentPreviewView: View {
                     if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                        let window = windowScene.windows.first,
                        let rootViewController = window.rootViewController {
-                        
-                        var presentingController = rootViewController
-                        while let presented = presentingController.presentedViewController {
-                            presentingController = presented
-                        }
-                        presentingController.present(alert, animated: true)
+                        rootViewController.present(alert, animated: true)
                     }
+                } else {
+                    print("🧠 OldDocumentPreviewView: Invalid or empty summary result")
                 }
             }
         }, rejecter: { code, message, error in
+            print("🧠 OldDocumentPreviewView: Summary generation failed - Code: \(String(describing: code)), Message: \(String(describing: message)), Error: \(String(describing: error))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
+                
+                let alert = UIAlertController(
+                    title: "Summary Failed",
+                    message: "Failed to generate AI summary. Please try again.",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    rootViewController.present(alert, animated: true)
+                }
             }
         })
     }
@@ -1645,6 +1757,7 @@ struct NativeChatView: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        print("💬 NativeChatView: Sending message: '\(trimmed)'")
         let userMsg = ChatMessage(role: "user", text: trimmed, date: Date())
         messages.append(userMsg)
         input = ""
@@ -1654,6 +1767,7 @@ struct NativeChatView: View {
         var contextualPrompt = trimmed
         if !documentManager.documents.isEmpty {
             let documentContext = documentManager.getAllDocumentContent()
+            print("💬 NativeChatView: Adding document context, length: \(documentContext.count)")
             contextualPrompt = """
             You are an AI assistant with access to the user's document collection. These documents contain OCR-extracted text from scanned pages/images and manually added files.
             
@@ -1666,12 +1780,17 @@ struct NativeChatView: View {
             
             Remember: Only reference the documents when they're relevant to the user's question. Provide natural, conversational responses.
             """
+        } else {
+            print("💬 NativeChatView: No documents available for context")
         }
+
+        print("💬 NativeChatView: Final prompt length: \(contextualPrompt.count)")
 
         // Call into RN JS via EdgeAI native module
         Task {
             do {
                 guard let edgeAI = EdgeAI.shared else {
+                    print("❌ NativeChatView: EdgeAI.shared is nil")
                     DispatchQueue.main.async {
                         self.isGenerating = false
                         self.messages.append(ChatMessage(role: "assistant", text: "Error: EdgeAI not initialized", date: Date()))
@@ -1679,20 +1798,25 @@ struct NativeChatView: View {
                     return
                 }
                 
+                print("💬 NativeChatView: Calling EdgeAI.generate...")
                 let reply = try await withCheckedThrowingContinuation { continuation in
                     edgeAI.generate(contextualPrompt, resolver: { result in
+                        print("💬 NativeChatView: Got result from EdgeAI")
                         continuation.resume(returning: result as? String ?? "")
                     }, rejecter: { code, message, error in
+                        print("❌ NativeChatView: EdgeAI rejected with code: \(code ?? "nil"), message: \(message ?? "nil")")
                         continuation.resume(throwing: NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: message ?? "Unknown error"]))
                     })
                 }
                 
+                print("💬 NativeChatView: Reply received, length: \(reply.count)")
                 DispatchQueue.main.async {
                     self.isGenerating = false
                     let text = reply.isEmpty ? "(No response)" : reply
                     self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
                 }
             } catch {
+                print("❌ NativeChatView: Caught error: \(error)")
                 DispatchQueue.main.async {
                     self.isGenerating = false
                     self.messages.append(ChatMessage(role: "assistant", text: "Error: \(error.localizedDescription)", date: Date()))
@@ -1820,12 +1944,22 @@ struct DocumentPreviewView: UIViewControllerRepresentable {
     private func addFloatingButtons(to containerController: UIViewController, coordinator: Coordinator) {
         // AI Button (bottom right)
         let aiButton = UIButton(type: .system)
-        aiButton.setTitle("AI", for: .normal)
+        // Prefer SF Symbol if available; fallback to emoji title
+        if let img = UIImage(systemName: "brain.head.profile") {
+            aiButton.setImage(img, for: .normal)
+            aiButton.tintColor = .white
+            aiButton.imageView?.contentMode = .scaleAspectFit
+        } else {
+            aiButton.setTitle("🧠", for: .normal)
+            aiButton.setTitleColor(.white, for: .normal)
+            aiButton.titleLabel?.font = .boldSystemFont(ofSize: 20)
+        }
         aiButton.backgroundColor = .systemBlue
-        aiButton.setTitleColor(.white, for: .normal)
-        aiButton.titleLabel?.font = .boldSystemFont(ofSize: 16)
         aiButton.layer.cornerRadius = 25
         aiButton.frame = CGRect(x: 0, y: 0, width: 50, height: 50)
+        aiButton.contentHorizontalAlignment = .center
+        aiButton.contentVerticalAlignment = .center
+        aiButton.imageEdgeInsets = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         aiButton.addTarget(coordinator, action: #selector(Coordinator.aiButtonTapped), for: .touchUpInside)
         
         containerController.view.addSubview(aiButton)
@@ -1901,16 +2035,14 @@ struct DocumentSummaryView: View {
                     
                     // Summary section
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("AI Summary")
+                        HStack(spacing: 8) {
+                            Image(systemName: "brain.head.profile")
+                                .foregroundColor(.orange)
+                            Text("Summary")
                                 .font(.headline)
-                            
                             Spacer()
-                            
-                            Button("Generate") {
-                                generateAISummary()
-                            }
-                            .disabled(isGeneratingSummary)
+                            Button("Generate") { generateAISummary() }
+                                .disabled(isGeneratingSummary)
                         }
                         
                         if isGeneratingSummary {
@@ -1982,34 +2114,32 @@ struct DocumentSummaryView: View {
     }
     
     private func generateAISummary() {
+        print("🧠 DocumentSummaryView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
-        let preprompt = """
-        Task: Write a concise, faithful summary of the source text.
-        Requirements:
-        - Roughly 10x shorter than the input (±50%).
-        - Capture key points, entities, numbers, and conclusions.
-        - Prefer compact sentences; use short bullets if clearer.
-        - No extraneous commentary; return plain text only.
-        """
-        let prompt = "\(preprompt)\n\n---\nSource:\n\(currentDoc.content)"
+        // Send only a mode marker and the raw source; system preprompt is injected in JS
+        let prompt = "<<<SUMMARY_REQUEST>>>\n\(currentDoc.content)"
         
+        print("🧠 DocumentSummaryView: Sending summary request, content length: \(currentDoc.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
+            print("🧠 DocumentSummaryView: Got summary result: \(String(describing: result))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
-                if let result = result as? String {
+                if let result = result as? String, !result.isEmpty {
                     self.summary = result
                     // Persist to the associated document so it isn't regenerated unnecessarily
                     self.documentManager.updateSummary(for: document.id, to: result)
                 } else {
-                    self.summary = "Failed to generate summary. Please try again."
+                    print("❌ DocumentSummaryView: Empty or nil result")
+                    self.summary = "Failed to generate summary: Empty response. Please try again."
                 }
             }
-        }, rejecter: { _, _, _ in
+        }, rejecter: { code, message, error in
+            print("❌ DocumentSummaryView: Summary generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
-                self.summary = "Failed to generate summary. Please try again."
+                self.summary = "Failed to generate summary: \(message ?? "Unknown error"). Please try again."
             }
         })
     }

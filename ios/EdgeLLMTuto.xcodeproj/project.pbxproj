@@ -8,10 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		01C65DFAFE25FA3FFC721C89 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
-		0C80B921A6F3F58F76C31292 /* libPods-EdgeLLMTuto.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-EdgeLLMTuto.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		710247F0DC70CA0284C0A149 /* libPods-EdgeLLMTuto.a in Frameworks */ = {isa = PBXBuildFile; fileRef = F21B508A3D60849CA0F7F4DD /* libPods-EdgeLLMTuto.a */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */; };
 		AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD28532F0B119400C3390F /* DocumentManager.swift */; };
 		AEE10FE02F0B0A8800D8EFF7 /* NativeChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */; };
 		AEE10FE12F0B0A8800D8EFF7 /* NativeChatViewManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */; };
@@ -24,18 +25,19 @@
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = EdgeLLMTuto/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = EdgeLLMTuto/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = EdgeLLMTuto/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		3B4392A12AC88292D35C810B /* Pods-EdgeLLMTuto.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.debug.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.debug.xcconfig"; sourceTree = "<group>"; };
-		5709B34CF0A7D63546082F79 /* Pods-EdgeLLMTuto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.release.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.release.xcconfig"; sourceTree = "<group>"; };
-		5DCACB8F33CDC322A6C60F78 /* libPods-EdgeLLMTuto.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-EdgeLLMTuto.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.release.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.release.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = EdgeLLMTuto/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = EdgeLLMTuto/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDatabase.swift; sourceTree = "<group>"; };
 		AEBD28532F0B119400C3390F /* DocumentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentManager.swift; sourceTree = "<group>"; };
 		AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = EdgeAI.m; sourceTree = "<group>"; };
 		AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeAI.swift; sourceTree = "<group>"; };
 		AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatView.swift; sourceTree = "<group>"; };
 		AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatViewManager.swift; sourceTree = "<group>"; };
 		AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EdgeLLMTuto-Bridging-Header.h"; sourceTree = "<group>"; };
+		B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.debug.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.debug.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		F21B508A3D60849CA0F7F4DD /* libPods-EdgeLLMTuto.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-EdgeLLMTuto.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,7 +45,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0C80B921A6F3F58F76C31292 /* libPods-EdgeLLMTuto.a in Frameworks */,
+				710247F0DC70CA0284C0A149 /* libPods-EdgeLLMTuto.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -53,6 +55,7 @@
 		13B07FAE1A68108700A75B9A /* EdgeLLMTuto */ = {
 			isa = PBXGroup;
 			children = (
+				AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */,
 				AEBD28532F0B119400C3390F /* DocumentManager.swift */,
 				AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */,
 				AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */,
@@ -72,7 +75,7 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				5DCACB8F33CDC322A6C60F78 /* libPods-EdgeLLMTuto.a */,
+				F21B508A3D60849CA0F7F4DD /* libPods-EdgeLLMTuto.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -109,8 +112,8 @@
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				3B4392A12AC88292D35C810B /* Pods-EdgeLLMTuto.debug.xcconfig */,
-				5709B34CF0A7D63546082F79 /* Pods-EdgeLLMTuto.release.xcconfig */,
+				B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */,
+				537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -122,13 +125,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "EdgeLLMTuto" */;
 			buildPhases = (
-				C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */,
+				5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
-				00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */,
-				E235C05ADACE081382539298 /* [CP] Copy Pods Resources */,
+				D311E31CB2A18094574EDFBE /* [CP] Embed Pods Frameworks */,
+				2C1B12108D9BEC4F6BD3D32A /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -200,24 +203,24 @@
 			shellPath = /bin/sh;
 			shellScript = "set -e\n\nWITH_ENVIRONMENT=\"$REACT_NATIVE_PATH/scripts/xcode/with-environment.sh\"\nREACT_NATIVE_XCODE=\"$REACT_NATIVE_PATH/scripts/react-native-xcode.sh\"\n\n/bin/sh -c \"$WITH_ENVIRONMENT $REACT_NATIVE_XCODE\"\n";
 		};
-		00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */ = {
+		2C1B12108D9BEC4F6BD3D32A /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			name = "[CP] Embed Pods Frameworks";
+			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		C38B50BA6285516D6DCD4F65 /* [CP] Check Pods Manifest.lock */ = {
+		5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -239,21 +242,21 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		E235C05ADACE081382539298 /* [CP] Copy Pods Resources */ = {
+		D311E31CB2A18094574EDFBE /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			name = "[CP] Copy Pods Resources";
+			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -269,6 +272,7 @@
 				AEE10FE32F0B0A8800D8EFF7 /* EdgeAI.m in Sources */,
 				AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */,
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -277,7 +281,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 3B4392A12AC88292D35C810B /* Pods-EdgeLLMTuto.debug.xcconfig */;
+			baseConfigurationReference = B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -310,7 +314,7 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 5709B34CF0A7D63546082F79 /* Pods-EdgeLLMTuto.release.xcconfig */;
+			baseConfigurationReference = 537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;

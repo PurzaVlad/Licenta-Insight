@@ -104,15 +104,35 @@ class DocumentManager: ObservableObject {
     }
     
     func generateSummary(for document: Document) {
+        print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
-        let prompt = "Please provide a concise summary of this document:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a concise summary of this document:\n\n\(document.content)"
         
+        print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
         // Send to EdgeAI for processing
         NotificationCenter.default.post(
             name: NSNotification.Name("GenerateDocumentSummary"),
             object: nil,
             userInfo: ["documentId": document.id.uuidString, "prompt": prompt]
         )
+    }
+    
+    func getAllDocumentContent() -> String {
+        print("🤖 DocumentManager: Getting all document content, document count: \(documents.count)")
+        return documents.map { document in
+            """
+            Document: \(document.title)
+            Type: \(document.type.rawValue)
+            Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
+            Summary: \(document.summary)
+            
+            Content:
+            \(document.content)
+            
+            ---
+            
+            """
+        }.joined()
     }
     
     // MARK: - File Processing
@@ -520,11 +540,5 @@ class DocumentManager: ObservableObject {
             document.content.lowercased().contains(lowercaseQuery) ||
             document.summary.lowercased().contains(lowercaseQuery)
         }
-    }
-    
-    func getAllDocumentContent() -> String {
-        return documents.map { document in
-            "Document: \\(document.title)\\nType: \\(document.type.rawValue)\\nSummary: \\(document.summary)\\n\\nOCR Content:\\n\\(document.content)\\n\\n---\\n\\n"
-        }.joined()
     }
 }
