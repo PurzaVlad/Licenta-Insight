@@ -1,0 +1,1582 @@
+import SwiftUI
+import Vision
+import VisionKit
+import UniformTypeIdentifiers
+import PDFKit
+
+// No need for TempDocumentManager - using DocumentManager.swift
+
+struct Document: Identifiable, Codable, Hashable, Equatable {
+    let id: UUID
+    let title: String
+    let content: String
+    let summary: String
+    let dateCreated: Date
+    let type: DocumentType
+    let imageData: [Data]? // Store scanned images
+    let pdfData: Data? // Store generated PDF
+    
+    init(title: String, content: String, summary: String, dateCreated: Date, type: DocumentType, imageData: [Data]?, pdfData: Data?) {
+        self.id = UUID()
+        self.title = title
+        self.content = content
+        self.summary = summary
+        self.dateCreated = dateCreated
+        self.type = type
+        self.imageData = imageData
+        self.pdfData = pdfData
+    }
+    
+    enum DocumentType: String, CaseIterable, Codable {
+        case pdf = "PDF"
+        case docx = "Word Document"
+        case image = "Image"
+        case scanned = "Scanned Document"
+        case text = "Text Document"
+    }
+    
+    // Hashable conformance
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    // Equatable conformance
+    static func == (lhs: Document, rhs: Document) -> Bool {
+        return lhs.id == rhs.id
+    }
+}
+
+struct TabContainerView: View {
+    var body: some View {
+        TabView {
+            NativeChatView()
+                .tabItem {
+                    Image(systemName: "message")
+                    Text("Chat")
+                }
+            
+            DocumentsView()
+                .tabItem {
+                    Image(systemName: "doc.text")
+                    Text("Documents")
+                }
+        }
+    }
+}
+
+struct DocumentsView: View {
+    @StateObject private var documentManager = DocumentManager()
+    @State private var showingDocumentPicker = false
+    @State private var showingScanner = false
+    @State private var isProcessing = false
+    @State private var showingNamingDialog = false
+    @State private var suggestedName = ""
+    @State private var customName = ""
+    @State private var scannedImages: [UIImage] = []
+    @State private var extractedText = ""
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                // Debug: Print current document count whenever view refreshes
+                let _ = print("🖥️ DocumentsView: Current document count: \\(documentManager.documents.count)")
+                let _ = print("🖥️ DocumentsView: Documents: \\(documentManager.documents.map { $0.title })")
+                
+                if documentManager.documents.isEmpty && !isProcessing {
+                    VStack(spacing: 20) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 60))
+                            .foregroundColor(.secondary)
+                        
+                        Text("No Documents Yet")
+                            .font(.title2)
+                            .fontWeight(.medium)
+                        
+                        Text("Import documents or scan with OCR to get started")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        
+                        VStack(spacing: 12) {
+                            Button("Scan Document") {
+                                showingScanner = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            
+                            Button("Import Files") {
+                                showingDocumentPicker = true
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(documentManager.documents, id: \.id) { document in
+                            NavigationLink(destination: DocumentDetailView(document: document)) {
+                                DocumentRowView(document: document)
+                            }
+                        }
+                        .onDelete(perform: deleteDocuments)
+                    }
+                }
+                
+                if isProcessing {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                        Text("Processing document...")
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+                }
+            }
+            .navigationTitle("Documents")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button("Test Add Document") {
+                            print("🧪 Test: Creating test document")
+                            let testDocument = Document(
+                                title: "Test Document",
+                                content: "This is a test document to verify functionality.",
+                                summary: "Test summary",
+                                dateCreated: Date(),
+                                type: .text,
+                                imageData: nil,
+                                pdfData: nil
+                            )
+                            documentManager.addDocument(testDocument)
+                            print("🧪 Test: Test document added")
+                        }
+                        
+                        Button("Scan Document") {
+                            showingScanner = true
+                        }
+                        Button("Import Files") {
+                            showingDocumentPicker = true
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingDocumentPicker) {
+            DocumentPicker { urls in
+                processImportedFiles(urls)
+            }
+        }
+        .sheet(isPresented: $showingScanner) {
+            if VNDocumentCameraViewController.isSupported {
+                DocumentScannerView { scannedImages in
+                    self.scannedImages = scannedImages
+                    self.prepareNamingDialog(for: scannedImages)
+                }
+            } else {
+                SimpleCameraView { scannedText in
+                    processScannedText(scannedText)
+                }
+            }
+        }
+        .alert("Name Document", isPresented: $showingNamingDialog) {
+            TextField("Document name", text: $customName)
+            
+            Button("Use Suggested") {
+                finalizeDocument(with: suggestedName)
+            }
+            
+            Button("Use Custom") {
+                finalizeDocument(with: customName.isEmpty ? suggestedName : customName)
+            }
+            
+            Button("Cancel", role: .cancel) {
+                scannedImages.removeAll()
+                extractedText = ""
+            }
+        } message: {
+            Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
+        }
+    }
+    
+    private func deleteDocuments(offsets: IndexSet) {
+        for index in offsets {
+            let document = documentManager.documents[index]
+            documentManager.deleteDocument(document)
+        }
+    }
+    
+    private func processImportedFiles(_ urls: [URL]) {
+        print("📱 UI: Starting to process \\(urls.count) imported files")
+        isProcessing = true
+        
+        // Process each file synchronously to avoid async issues
+        var processedCount = 0
+        
+        for url in urls {
+            print("📱 UI: Processing file: \\(url.lastPathComponent)")
+            print("📱 UI: File URL: \\(url.absoluteString)")
+            print("📱 UI: File exists: \\(FileManager.default.fileExists(atPath: url.path))")
+            
+            // Ensure we can access the file
+            guard url.startAccessingSecurityScopedResource() else {
+                print("❌ UI: Cannot access security scoped resource for \\(url.lastPathComponent)")
+                continue
+            }
+            
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            if let document = documentManager.processFile(at: url) {
+                print("📱 UI: ✅ Successfully created document: \\(document.title)")
+                print("📱 UI: Document content preview: \\(String(document.content.prefix(100)))...")
+                
+                documentManager.addDocument(document)
+                processedCount += 1
+                print("📱 UI: Document added. Total documents now: \\(documentManager.documents.count)")
+            } else {
+                print("❌ UI: Failed to create document for: \\(url.lastPathComponent)")
+            }
+        }
+        
+        print("📱 UI: ✅ Processing complete. Processed \\(processedCount)/\\(urls.count) files")
+        print("📱 UI: Final document count: \\(documentManager.documents.count)")
+        
+        // Force UI refresh
+        DispatchQueue.main.async {
+            self.isProcessing = false
+            print("📱 UI: UI refresh triggered")
+        }
+    }
+    
+    private func processScannedText(_ text: String) {
+        isProcessing = true
+        
+        let document = Document(
+            title: "Scanned Document \(documentManager.documents.count + 1)",
+            content: text,
+            summary: "Processing summary...",
+            dateCreated: Date(),
+            type: .scanned,
+            imageData: nil,
+            pdfData: nil
+        )
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            documentManager.addDocument(document)
+            isProcessing = false
+        }
+    }
+    
+    private func prepareNamingDialog(for images: [UIImage]) {
+        guard let firstImage = images.first else { return }
+        
+        isProcessing = true
+        
+        // Extract text from first image to get content for AI naming
+        print("Starting OCR extraction for AI naming...")
+        let firstPageText = performOCR(on: firstImage)
+        print("First page OCR result: \(firstPageText.prefix(100))...") // Log first 100 chars
+        
+        // Process all images for full content
+        var allText = ""
+        for (index, image) in images.enumerated() {
+            print("Processing page \(index + 1) for OCR...")
+            let pageText = performOCR(on: image)
+            allText += "Page \(index + 1):\n\(pageText)\n\n"
+            print("Page \(index + 1) OCR completed: \(pageText.count) characters")
+        }
+        extractedText = allText.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        print("Total extracted text: \(extractedText.count) characters")
+        
+        // Use AI to suggest document name
+        if !firstPageText.isEmpty && firstPageText != "No text found in image" && !firstPageText.contains("OCR failed") {
+            print("Using AI to generate document name from OCR text")
+            generateAIDocumentName(from: firstPageText)
+        } else {
+            print("OCR extraction failed or returned no text, using default name")
+            // Fallback to default name
+            suggestedName = "Scanned Document"
+            customName = suggestedName
+            isProcessing = false
+            showingNamingDialog = true
+        }
+    }
+    
+    private func generateAIDocumentName(from text: String) {
+        // Enhanced prompt for better document name generation
+        let prompt = """
+        You are analyzing OCR-extracted text from a scanned document. Create a short, descriptive name following these rules:
+        
+        STRICT REQUIREMENTS:
+        - Exactly 2-3 words maximum
+        - Use Title Case (First Letter Of Each Word Capitalized)
+        - Be specific and descriptive
+        - No generic words like "Document", "Text", "File"
+        - No file extensions
+        
+        Examples of good names:
+        - "Meeting Notes"
+        - "Invoice Receipt"
+        - "Lab Report"
+        - "Contract Agreement"
+        
+        OCR Text from scanned document:
+        \(text.prefix(800))
+        
+        Response format: Just the 2-3 word name, nothing else.
+        """
+        
+        EdgeAI.shared?.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                if let result = result as? String {
+                    // Clean up the AI response and ensure it's 2-3 words
+                    let cleanResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: "\"|", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                    // Split into words and take only first 2-3
+                    let words = cleanResult.components(separatedBy: .whitespaces)
+                        .filter { !$0.isEmpty }
+                        .prefix(3)
+                    
+                    let finalName = words.joined(separator: " ")
+                    
+                    self.suggestedName = finalName.isEmpty ? "Scanned Document" : finalName
+                } else {
+                    self.suggestedName = "Scanned Document"
+                }
+                self.customName = self.suggestedName
+                self.isProcessing = false
+                self.showingNamingDialog = true
+            }
+        }, rejecter: { code, message, error in
+            DispatchQueue.main.async {
+                self.suggestedName = "Scanned Document"
+                self.customName = "Scanned Document"
+                self.isProcessing = false
+                self.showingNamingDialog = true
+            }
+        })
+    }
+    
+    private func finalizeDocument(with name: String) {
+        guard !scannedImages.isEmpty else { return }
+        
+        isProcessing = true
+        
+        var imageDataArray: [Data] = []
+        for image in scannedImages {
+            if let imageData = image.jpegData(compressionQuality: 0.95) {
+                imageDataArray.append(imageData)
+            }
+        }
+        
+        // Generate PDF from images
+        let pdfData = createPDF(from: scannedImages)
+        
+        let document = Document(
+            title: name,
+            content: extractedText,
+            summary: "Processing summary...",
+            dateCreated: Date(),
+            type: .scanned,
+            imageData: imageDataArray,
+            pdfData: pdfData
+        )
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            documentManager.addDocument(document)
+            isProcessing = false
+            
+            // Clear temporary data
+            scannedImages.removeAll()
+            extractedText = ""
+            suggestedName = ""
+            customName = ""
+        }
+    }
+    
+    private func processScannedImages(_ images: [UIImage]) {
+        isProcessing = true
+        
+        var allText = ""
+        var imageDataArray: [Data] = []
+        
+        for (index, image) in images.enumerated() {
+            let text = performOCR(on: image)
+            allText += "Page \(index + 1):\n\(text)\n\n"
+            
+            // Save image data with high quality
+            if let imageData = image.jpegData(compressionQuality: 0.95) {
+                imageDataArray.append(imageData)
+            }
+        }
+        
+        // Generate PDF from images
+        let pdfData = createPDF(from: images)
+        
+        let document = Document(
+            title: "Scanned Document \(documentManager.documents.count + 1)",
+            content: allText.trimmingCharacters(in: .whitespacesAndNewlines),
+            summary: "Processing summary...",
+            dateCreated: Date(),
+            type: .scanned,
+            imageData: imageDataArray,
+            pdfData: pdfData
+        )
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            documentManager.addDocument(document)
+            isProcessing = false
+        }
+    }
+    
+    private func createPDF(from images: [UIImage]) -> Data? {
+        let pdfData = NSMutableData()
+        
+        guard let dataConsumer = CGDataConsumer(data: pdfData) else { return nil }
+        
+        // Use standard US Letter page size (8.5 x 11 inches at 72 DPI)
+        let pageWidth: CGFloat = 612  // 8.5 * 72
+        let pageHeight: CGFloat = 792  // 11 * 72
+        let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        var mediaBox = pageRect
+        
+        guard let pdfContext = CGContext(consumer: dataConsumer, mediaBox: &mediaBox, nil) else { return nil }
+        
+        for image in images {
+            pdfContext.beginPDFPage(nil)
+            
+            if let cgImage = image.cgImage {
+                // Calculate scaling to fit image within page while maintaining aspect ratio
+                let imageSize = image.size
+                let imageAspectRatio = imageSize.width / imageSize.height
+                let pageAspectRatio = pageWidth / pageHeight
+                
+                var drawRect: CGRect
+                
+                if imageAspectRatio > pageAspectRatio {
+                    // Image is wider - fit to page width
+                    let scaledHeight = pageWidth / imageAspectRatio
+                    let yOffset = (pageHeight - scaledHeight) / 2
+                    drawRect = CGRect(x: 0, y: yOffset, width: pageWidth, height: scaledHeight)
+                } else {
+                    // Image is taller - fit to page height
+                    let scaledWidth = pageHeight * imageAspectRatio
+                    let xOffset = (pageWidth - scaledWidth) / 2
+                    drawRect = CGRect(x: xOffset, y: 0, width: scaledWidth, height: pageHeight)
+                }
+                
+                pdfContext.draw(cgImage, in: drawRect)
+            }
+            
+            pdfContext.endPDFPage()
+        }
+        
+        pdfContext.closePDF()
+        return pdfData as Data
+    }
+    
+    private func performOCR(on image: UIImage) -> String {
+        // Ensure image is properly oriented and processed
+        guard let processedImage = preprocessImageForOCR(image),
+              let cgImage = processedImage.cgImage else {
+            print("OCR: Failed to process image")
+            return "Could not process image"
+        }
+        
+        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        
+        // Set supported languages (add more if needed)
+        request.recognitionLanguages = ["en-US"]
+        
+        var recognizedText = ""
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        do {
+            try requestHandler.perform([request])
+            
+            if let results = request.results {
+                // Get all text observations and sort by position
+                let textObservations = results.compactMap { observation -> (String, CGRect)? in
+                    guard let topCandidate = observation.topCandidates(1).first else { return nil }
+                    return (topCandidate.string, observation.boundingBox)
+                }
+                
+                // Sort by Y position (top to bottom) then X position (left to right)
+                let sortedObservations = textObservations.sorted { first, second in
+                    let yDiff = abs(first.1.minY - second.1.minY)
+                    if yDiff < 0.02 { // Same line threshold
+                        return first.1.minX < second.1.minX
+                    }
+                    return first.1.minY > second.1.minY // Flip Y because Vision uses bottom-left origin
+                }
+                
+                recognizedText = sortedObservations.map { $0.0 }.joined(separator: " ")
+                
+                // Clean up the text
+                recognizedText = recognizedText
+                    .replacingOccurrences(of: "\n\n+", with: "\n", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    
+                print("OCR: Successfully extracted \(recognizedText.count) characters")
+            } else {
+                print("OCR: No results returned")
+            }
+        } catch {
+            print("OCR Error: \(error.localizedDescription)")
+            recognizedText = "OCR failed: \(error.localizedDescription)"
+        }
+        
+        return recognizedText.isEmpty ? "No text found in image" : recognizedText
+    }
+    
+    private func preprocessImageForOCR(_ image: UIImage) -> UIImage? {
+        // Ensure proper orientation and size for OCR
+        guard let cgImage = image.cgImage else { return nil }
+        
+        let targetSize: CGFloat = 2048 // Good balance between quality and performance
+        let imageSize = image.size
+        let maxDimension = max(imageSize.width, imageSize.height)
+        
+        // Only resize if image is too large
+        if maxDimension > targetSize {
+            let scale = targetSize / maxDimension
+            let newSize = CGSize(
+                width: imageSize.width * scale,
+                height: imageSize.height * scale
+            )
+            
+            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+            let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            
+            return resizedImage
+        }
+        
+        return image
+    }
+}
+
+struct DocumentRowView: View {
+    let document: Document
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // First page preview image
+            Group {
+                if let pdfData = document.pdfData {
+                    // PDF first page thumbnail
+                    PDFThumbnailView(data: pdfData)
+                        .frame(width: 60, height: 80)
+                        .cornerRadius(6)
+                        .shadow(radius: 2)
+                        
+                } else if let imageDataArray = document.imageData,
+                          !imageDataArray.isEmpty,
+                          let firstImageData = imageDataArray.first,
+                          let uiImage = UIImage(data: firstImageData) {
+                    // First scanned page thumbnail
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 60, height: 80)
+                        .clipped()
+                        .cornerRadius(6)
+                        .shadow(radius: 2)
+                        
+                } else {
+                    // Document type specific icon
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(.secondarySystemBackground))
+                        .frame(width: 60, height: 80)
+                        .overlay(
+                            VStack(spacing: 4) {
+                                Image(systemName: iconForDocumentType(document.type))
+                                    .font(.title2)
+                                    .foregroundColor(.blue)
+                                
+                                Text(document.type.rawValue.components(separatedBy: " ").first ?? "")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        )
+                        .shadow(radius: 2)
+                }
+            }
+            
+            // Document info
+            VStack(alignment: .leading, spacing: 8) {
+                Text(document.title)
+                    .font(.headline)
+                    .lineLimit(nil) // Allow unlimited lines
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true) // Allow vertical expansion
+                
+                Spacer()
+                
+                Text(document.dateCreated, style: .date)
+                    .font(.caption)
+                    .foregroundColor(Color(.tertiaryLabel))
+            }
+            
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .frame(minHeight: 96) // Minimum height, but allows expansion
+    }
+}
+
+struct DocumentDetailView: View {
+    let document: Document
+    @State private var currentPage = 0
+    @State private var showingTextView = false
+    @State private var isGeneratingSummary = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Show PDF if available, otherwise show images
+            if let pdfData = document.pdfData {
+                // PDF viewer
+                PDFViewRepresentable(data: pdfData)
+                    .background(Color(.systemBackground))
+                    
+            } else if let imageDataArray = document.imageData, !imageDataArray.isEmpty {
+                // Image viewer with proper scaling
+                TabView(selection: $currentPage) {
+                    ForEach(0..<imageDataArray.count, id: \.self) { index in
+                        if let uiImage = UIImage(data: imageDataArray[index]) {
+                            GeometryReader { geometry in
+                                ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                                    Image(uiImage: uiImage)
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxWidth: geometry.size.width, maxHeight: geometry.size.height)
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
+                            .background(Color(.systemBackground))
+                            .tag(index)
+                        }
+                    }
+                }
+                .tabViewStyle(PageTabViewStyle())
+                .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .always))
+                
+                // Page indicator and controls
+                HStack {
+                    Button("Text View") {
+                        showingTextView = true
+                    }
+                    .padding()
+                    
+                    Spacer()
+                    
+                    if imageDataArray.count > 1 {
+                        Text("Page \(currentPage + 1) of \(imageDataArray.count)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding()
+                    }
+                }
+                .background(Color(.systemBackground))
+                
+            } else {
+                // Enhanced text view based on document type
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Document type indicator
+                        HStack {
+                            Image(systemName: iconForDocumentType(document.type))
+                                .foregroundColor(.blue)
+                            Text(document.type.rawValue)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+                        .padding(.top)
+                        
+                        // Document content with better formatting
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Summary section (if available and not default)
+                            if !document.summary.isEmpty && document.summary != "Processing..." {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Image(systemName: "brain.head.profile")
+                                            .foregroundColor(.orange)
+                                        Text("AI Summary")
+                                            .font(.headline)
+                                    }
+                                    
+                                    Text(document.summary)
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .padding()
+                                        .background(Color(.secondarySystemBackground))
+                                        .cornerRadius(12)
+                                }
+                                
+                                Divider()
+                            }
+                            
+                            // Content section
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Image(systemName: "doc.text")
+                                        .foregroundColor(.green)
+                                    Text("Content")
+                                        .font(.headline)
+                                }
+                                
+                                if document.content.isEmpty {
+                                    Text("No text content available")
+                                        .font(.body)
+                                        .foregroundColor(.secondary)
+                                        .italic()
+                                        .padding()
+                                        .frame(maxWidth: .infinity, alignment: .center)
+                                        .background(Color(.tertiarySystemBackground))
+                                        .cornerRadius(12)
+                                } else {
+                                    Text(document.content)
+                                        .font(.body)
+                                        .lineSpacing(4)
+                                        .padding()
+                                        .background(Color(.tertiarySystemBackground))
+                                        .cornerRadius(12)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                        
+                        Spacer(minLength: 20)
+                    }
+                }
+                .background(Color(.systemGroupedBackground))
+            }
+        }
+        .navigationTitle(document.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingTextView) {
+            NavigationView {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Summary Section
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Summary")
+                                .font(.headline)
+                            
+                            Text(document.summary)
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                                .padding()
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(8)
+                        }
+                        
+                        Divider()
+                        
+                        // Extracted Text
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Extracted Text")
+                                .font(.headline)
+                            
+                            Text(document.content)
+                                .font(.body)
+                                .padding()
+                                .background(Color(.tertiarySystemBackground))
+                                .cornerRadius(8)
+                                .textSelection(.enabled)
+                        }
+                        
+                        Spacer()
+                    }
+                    .padding()
+                }
+                .navigationTitle("Text Content")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Done") {
+                            showingTextView = false
+                        }
+                    }
+                }
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            // AI Summary Button
+            Button(action: {
+                generateAISummary()
+            }) {
+                HStack {
+                    if isGeneratingSummary {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "brain.head.profile")
+                    }
+                    Text(isGeneratingSummary ? "Generating..." : "AI Summary")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.blue)
+                .clipShape(Capsule())
+            }
+            .padding()
+            .disabled(isGeneratingSummary)
+        }
+    }
+    
+    private func generateAISummary() {
+        isGeneratingSummary = true
+        
+        let prompt = "Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
+        
+        EdgeAI.shared?.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                
+                if let result = result as? String {
+                    // Show the summary in an alert
+                    let alert = UIAlertController(
+                        title: "AI Summary",
+                        message: result,
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    
+                    // Present from the current window
+                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                       let window = windowScene.windows.first,
+                       let rootViewController = window.rootViewController {
+                        var presentingController = rootViewController
+                        while let presented = presentingController.presentedViewController {
+                            presentingController = presented
+                        }
+                        presentingController.present(alert, animated: true)
+                    }
+                }
+            }
+        }, rejecter: { code, message, error in
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                
+                // Handle error
+                let alert = UIAlertController(
+                    title: "Error",
+                    message: "Failed to generate summary. Please try again.",
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    var presentingController = rootViewController
+                    while let presented = presentingController.presentedViewController {
+                        presentingController = presented
+                    }
+                    presentingController.present(alert, animated: true)
+                }
+            }
+        })
+    }
+}
+
+// MARK: - Helper Functions
+private func iconForDocumentType(_ type: Document.DocumentType) -> String {
+    switch type {
+    case .pdf:
+        return "doc.richtext"
+    case .docx:
+        return "doc.text"
+    case .image:
+        return "photo"
+    case .scanned:
+        return "doc.viewfinder"
+    case .text:
+        return "doc.plaintext"
+    }
+}
+
+struct PDFThumbnailView: UIViewRepresentable {
+    let data: Data
+    
+    func makeUIView(context: Context) -> UIImageView {
+        let imageView = UIImageView()
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        
+        // Generate thumbnail from PDF
+        if let document = PDFDocument(data: data),
+           let firstPage = document.page(at: 0) {
+            let pageRect = firstPage.bounds(for: .mediaBox)
+            let thumbnail = firstPage.thumbnail(of: CGSize(width: 120, height: 160), for: .mediaBox)
+            imageView.image = thumbnail
+        }
+        
+        return imageView
+    }
+    
+    func updateUIView(_ uiView: UIImageView, context: Context) {
+        // Update if needed
+    }
+}
+
+// MARK: - Document Preview View
+struct DocumentPreviewView: View {
+    let document: Document
+    @Binding var showingDocumentInfo: Bool
+    @State private var isGeneratingSummary = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Document Preview
+            Group {
+                if let pdfData = document.pdfData {
+                    // PDF first page preview
+                    PDFFirstPageView(data: pdfData)
+                        .background(Color(.systemBackground))
+                        
+                } else if let imageDataArray = document.imageData, 
+                          !imageDataArray.isEmpty,
+                          let firstImageData = imageDataArray.first,
+                          let uiImage = UIImage(data: firstImageData) {
+                    // First scanned page preview
+                    GeometryReader { geometry in
+                        ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: geometry.size.width, maxHeight: geometry.size.height)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .background(Color(.systemBackground))
+                    
+                } else {
+                    // Text document preview
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text(document.content.prefix(500) + (document.content.count > 500 ? "..." : ""))
+                                .font(.body)
+                                .padding()
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .background(Color(.systemBackground))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationTitle(document.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button("Document Info") {
+                        showingDocumentInfo = true
+                    }
+                    
+                    Button("Generate AI Summary") {
+                        generateAISummary()
+                    }
+                    
+                    if document.imageData != nil || document.pdfData != nil {
+                        Button("Full View") {
+                            // Navigate to full document view - would need NavigationLink here
+                        }
+                    }
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+            }
+        }
+        .sheet(isPresented: $showingDocumentInfo) {
+            NavigationView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Document Information
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Document Information")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        
+                        InfoRow(label: "Name", value: document.title)
+                        InfoRow(label: "Date Added", value: DateFormatter.shortDate.string(from: document.dateCreated))
+                        InfoRow(label: "Source", value: document.type == .scanned ? "Scanned" : "Manually Added")
+                        InfoRow(label: "Type", value: document.type.rawValue)
+                        
+                        if let imageData = document.imageData {
+                            InfoRow(label: "Pages", value: "\(imageData.count)")
+                        }
+                        
+                        if !document.content.isEmpty {
+                            InfoRow(label: "Content Length", value: "\(document.content.count) characters")
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    // Content Preview
+                    if !document.content.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Content Preview")
+                                .font(.headline)
+                            
+                            Text(document.content.prefix(200) + (document.content.count > 200 ? "..." : ""))
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                                .padding()
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(8)
+                        }
+                    }
+                    
+                    Spacer()
+                }
+                .padding()
+                .navigationTitle("Document Info")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Done") {
+                            showingDocumentInfo = false
+                        }
+                    }
+                }
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            // AI Summary Button
+            Button(action: {
+                generateAISummary()
+            }) {
+                HStack {
+                    if isGeneratingSummary {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "brain.head.profile")
+                    }
+                    Text(isGeneratingSummary ? "Generating..." : "AI Summary")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.blue)
+                .clipShape(Capsule())
+            }
+            .padding()
+            .disabled(isGeneratingSummary)
+        }
+    }
+    
+    private func generateAISummary() {
+        isGeneratingSummary = true
+        
+        let prompt = """
+        You are analyzing a document that was processed using OCR (Optical Character Recognition). The text below was extracted from scanned pages/images.
+        
+        Please provide a comprehensive summary focusing on:
+        - Main topics and key themes
+        - Important facts, figures, or conclusions
+        - Action items or recommendations (if any)
+        - Overall purpose and context
+        - Note: Some text may have OCR extraction errors, use context to understand unclear parts
+        
+        Make the summary clear and well-structured for easy understanding.
+        
+        OCR-extracted content:
+        \(document.content)
+        """
+        
+        EdgeAI.shared?.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                
+                if let result = result as? String {
+                    // Show the summary in an alert
+                    let alert = UIAlertController(
+                        title: "AI Summary",
+                        message: result,
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    
+                    // Present from the current window
+                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                       let window = windowScene.windows.first,
+                       let rootViewController = window.rootViewController {
+                        
+                        var presentingController = rootViewController
+                        while let presented = presentingController.presentedViewController {
+                            presentingController = presented
+                        }
+                        presentingController.present(alert, animated: true)
+                    }
+                }
+            }
+        }, rejecter: { code, message, error in
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+            }
+        })
+    }
+}
+
+// MARK: - Helper Views
+struct InfoRow: View {
+    let label: String
+    let value: String
+    
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.body)
+                .foregroundColor(.secondary)
+                .frame(width: 100, alignment: .leading)
+            
+            Text(value)
+                .font(.body)
+                .fontWeight(.medium)
+            
+            Spacer()
+        }
+    }
+}
+
+struct PDFFirstPageView: UIViewRepresentable {
+    let data: Data
+    
+    func makeUIView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        pdfView.document = PDFDocument(data: data)
+        pdfView.displayMode = .singlePage
+        pdfView.autoScales = true
+        pdfView.displayDirection = .vertical
+        pdfView.usePageViewController(true)
+        pdfView.pageShadowsEnabled = false
+        pdfView.isUserInteractionEnabled = false  // Disable interaction for preview
+        return pdfView
+    }
+    
+    func updateUIView(_ uiView: PDFView, context: Context) {
+        if uiView.document?.dataRepresentation() != data {
+            uiView.document = PDFDocument(data: data)
+        }
+        // Always show first page
+        if let document = uiView.document, let firstPage = document.page(at: 0) {
+            uiView.go(to: firstPage)
+        }
+    }
+}
+
+extension DateFormatter {
+    static let shortDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
+
+struct DocumentPicker: UIViewControllerRepresentable {
+    let completion: ([URL]) -> Void
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [
+            .pdf, .rtf, .plainText, .image, .jpeg, .png, .heic,
+            UTType("com.microsoft.word.doc")!,
+            UTType("org.openxmlformats.wordprocessingml.document")!,
+            UTType("com.microsoft.powerpoint.ppt")!,
+            UTType("org.openxmlformats.presentationml.presentation")!,
+            .spreadsheet,
+            .json,
+            .xml
+        ], asCopy: true)
+        
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = true
+        
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: DocumentPicker
+        
+        init(_ parent: DocumentPicker) {
+            self.parent = parent
+        }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.completion(urls)
+        }
+    }
+}
+
+struct DocumentScannerView: UIViewControllerRepresentable {
+    let completion: ([UIImage]) -> Void
+    
+    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+        let scanner = VNDocumentCameraViewController()
+        scanner.delegate = context.coordinator
+        return scanner
+    }
+    
+    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        let parent: DocumentScannerView
+        
+        init(_ parent: DocumentScannerView) {
+            self.parent = parent
+        }
+        
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+            var scannedImages: [UIImage] = []
+            
+            for pageIndex in 0..<scan.pageCount {
+                // Get the processed, cropped image from the scanner
+                let image = scan.imageOfPage(at: pageIndex)
+                scannedImages.append(image)
+            }
+            
+            parent.completion(scannedImages)
+            controller.dismiss(animated: true)
+        }
+        
+        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
+            controller.dismiss(animated: true)
+        }
+        
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) {
+            print("Document scanning failed: \(error.localizedDescription)")
+            controller.dismiss(animated: true)
+        }
+    }
+}
+
+struct SimpleCameraView: UIViewControllerRepresentable {
+    let completion: (String) -> Void
+    
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        
+        // Check if camera is available
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            picker.sourceType = .camera
+        } else {
+            // Fallback to photo library if camera not available (simulator)
+            picker.sourceType = .photoLibrary
+        }
+        
+        picker.allowsEditing = false
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: SimpleCameraView
+        
+        init(_ parent: SimpleCameraView) {
+            self.parent = parent
+        }
+        
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                let recognizedText = performOCR(on: image)
+                parent.completion(recognizedText)
+            }
+            picker.dismiss(animated: true)
+        }
+        
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+        }
+        
+        private func performOCR(on image: UIImage) -> String {
+            guard let cgImage = image.cgImage else {
+                return "Could not process image"
+            }
+            
+            let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            
+            var recognizedText = ""
+            
+            do {
+                try requestHandler.perform([request])
+                if let results = request.results {
+                    recognizedText = results.compactMap { result in
+                        result.topCandidates(1).first?.string
+                    }.joined(separator: "\n")
+                }
+            } catch {
+                recognizedText = "OCR failed: \(error.localizedDescription)"
+            }
+            
+            return recognizedText.isEmpty ? "No text found in image" : recognizedText
+        }
+    }
+}
+
+struct ChatMessage: Identifiable, Equatable {
+    let id = UUID()
+    let role: String // "user" or "assistant"
+    let text: String
+    let date: Date
+}
+
+struct NativeChatView: View {
+    @State private var input: String = ""
+    @State private var messages: [ChatMessage] = []
+    @State private var isGenerating: Bool = false
+    @FocusState private var isFocused: Bool
+    @StateObject private var documentManager = DocumentManager()
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            if messages.isEmpty {
+                                Text("Model Ready.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.top, 24)
+                            }
+
+                            ForEach(messages) { msg in
+                                MessageRow(msg: msg)
+                                    .id(msg.id)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                    .onChange(of: messages) { newValue in
+                        if let last = newValue.last {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            TextField("Message", text: $input)
+                                .focused($isFocused)
+                                .disabled(isGenerating)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                        }
+                        .background(Color(.tertiarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .stroke(Color(.separator), lineWidth: 0.33)
+                        )
+
+                        Button {
+                            send()
+                        } label: {
+                            Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
+                                .font(.system(size: 30, weight: .medium))
+                                .foregroundColor(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? .secondary : .white)
+                                .background(
+                                    Circle()
+                                        .fill(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? Color(.systemFill) : Color.accentColor)
+                                )
+                        }
+                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isGenerating)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
+                }
+                .background(Color(.systemBackground))
+            }
+            .navigationTitle("MindVault")
+            .navigationBarTitleDisplayMode(.large)
+        }
+    }
+
+    private func send() {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let userMsg = ChatMessage(role: "user", text: trimmed, date: Date())
+        messages.append(userMsg)
+        input = ""
+        isGenerating = true
+
+        // Always provide document context if documents exist - let AI decide relevance
+        var contextualPrompt = trimmed
+        if !documentManager.documents.isEmpty {
+            let documentContext = documentManager.getAllDocumentContent()
+            contextualPrompt = """
+            You are an AI assistant with access to the user's document collection. These documents contain OCR-extracted text from scanned pages/images and manually added files.
+            
+            Use this information to provide helpful, accurate responses when relevant. Note that some text may contain OCR extraction errors - use context to understand unclear parts.
+
+            Available Documents (OCR-extracted and manual content):
+            \(documentContext)
+
+            User: \(trimmed)
+            
+            Remember: Only reference the documents when they're relevant to the user's question. Provide natural, conversational responses.
+            """
+        }
+
+        // Call into RN JS via EdgeAI native module
+        Task {
+            do {
+                guard let edgeAI = EdgeAI.shared else {
+                    DispatchQueue.main.async {
+                        self.isGenerating = false
+                        self.messages.append(ChatMessage(role: "assistant", text: "Error: EdgeAI not initialized", date: Date()))
+                    }
+                    return
+                }
+                
+                let reply = try await withCheckedThrowingContinuation { continuation in
+                    edgeAI.generate(contextualPrompt, resolver: { result in
+                        continuation.resume(returning: result as? String ?? "")
+                    }, rejecter: { code, message, error in
+                        continuation.resume(throwing: NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: message ?? "Unknown error"]))
+                    })
+                }
+                
+                DispatchQueue.main.async {
+                    self.isGenerating = false
+                    let text = reply.isEmpty ? "(No response)" : reply
+                    self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isGenerating = false
+                    self.messages.append(ChatMessage(role: "assistant", text: "Error: \(error.localizedDescription)", date: Date()))
+                }
+            }
+        }
+    }
+    
+    private func isDocumentQuery(_ query: String) -> Bool {
+        let lowercaseQuery = query.lowercased()
+        let documentKeywords = [
+            "document", "file", "pdf", "summary", "what does", "explain",
+            "according to", "based on", "in the document", "tell me about",
+            "what is", "how does", "find", "search", "content"
+        ]
+        return documentKeywords.contains { lowercaseQuery.contains($0) }
+    }
+}
+
+private struct MessageRow: View {
+    let msg: ChatMessage
+
+    var body: some View {
+        HStack {
+            if msg.role == "assistant" {
+                bubble
+                Spacer(minLength: 40)
+            } else {
+                Spacer(minLength: 40)
+                bubble
+            }
+        }
+    }
+
+    private var bubble: some View {
+        Text(msg.text)
+            .font(.body)
+            .foregroundStyle(msg.role == "user" ? Color.white : Color.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(msg.role == "user" ? Color.accentColor : Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(msg.role == "user" ? Color.clear : Color(.separator), lineWidth: msg.role == "user" ? 0 : 0.5)
+            )
+    }
+}
+
+struct PDFViewRepresentable: UIViewRepresentable {
+    let data: Data
+    
+    func makeUIView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        pdfView.document = PDFDocument(data: data)
+        pdfView.autoScales = false  // Disable auto scaling to control it manually
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.backgroundColor = UIColor.systemBackground
+        
+        // Set initial scale to fit width
+        DispatchQueue.main.async {
+            let fitScale = pdfView.scaleFactorForSizeToFit
+            pdfView.scaleFactor = fitScale
+            pdfView.minScaleFactor = fitScale * 0.9  // Allow slight zoom out
+            pdfView.maxScaleFactor = fitScale * 4.0  // Allow zoom in up to 4x
+        }
+        
+        return pdfView
+    }
+    
+    func updateUIView(_ pdfView: PDFView, context: Context) {
+        // Ensure proper scaling is maintained
+        DispatchQueue.main.async {
+            let fitScale = pdfView.scaleFactorForSizeToFit
+            if pdfView.scaleFactor < fitScale * 0.9 {
+                pdfView.scaleFactor = fitScale
+            }
+            // Update min scale factor in case view size changed
+            pdfView.minScaleFactor = fitScale * 0.9
+            pdfView.maxScaleFactor = fitScale * 4.0
+        }
+    }
+}
