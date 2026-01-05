@@ -2,6 +2,8 @@ import Foundation
 import PDFKit
 import UIKit
 import Vision
+import SSZipArchive
+import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
     @Published var documents: [Document] = []
@@ -28,6 +30,78 @@ class DocumentManager: ObservableObject {
         documents.removeAll { $0.id == document.id }
         saveDocuments()
     }
+
+    func updateSummary(for documentId: UUID, to newSummary: String) {
+        if let idx = documents.firstIndex(where: { $0.id == documentId }) {
+            let old = documents[idx]
+            let updated = Document(
+                id: old.id,
+                title: old.title,
+                content: old.content,
+                summary: newSummary,
+                dateCreated: old.dateCreated,
+                type: old.type,
+                imageData: old.imageData,
+                pdfData: old.pdfData,
+                originalFileData: old.originalFileData
+            )
+            documents[idx] = updated
+            saveDocuments()
+        }
+    }
+
+    func updateContent(for documentId: UUID, to newContent: String) {
+        if let idx = documents.firstIndex(where: { $0.id == documentId }) {
+            let old = documents[idx]
+            let updated = Document(
+                id: old.id,
+                title: old.title,
+                content: newContent,
+                summary: old.summary,
+                dateCreated: old.dateCreated,
+                type: old.type,
+                imageData: old.imageData,
+                pdfData: old.pdfData,
+                originalFileData: old.originalFileData
+            )
+            documents[idx] = updated
+            saveDocuments()
+        }
+    }
+
+    func getDocument(by id: UUID) -> Document? {
+        return documents.first(where: { $0.id == id })
+    }
+
+    func refreshContentIfNeeded(for documentId: UUID) {
+        guard let doc = getDocument(by: documentId) else { return }
+        guard doc.type == .docx else { return }
+        let content = doc.content
+        if looksLikeXML(content) {
+            if let data = doc.originalFileData {
+                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("repair_\(doc.id).docx")
+                do {
+                    try data.write(to: tempURL)
+                    let fresh = extractTextFromWordDocument(url: tempURL)
+                    try? FileManager.default.removeItem(at: tempURL)
+                    if !fresh.isEmpty && !looksLikeXML(fresh) {
+                        updateContent(for: documentId, to: formatExtractedText(fresh))
+                    }
+                } catch {
+                    print("📄 DocumentManager: refresh write failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func looksLikeXML(_ s: String) -> Bool {
+        if s.contains("<?xml") { return true }
+        if s.contains("<w:") || s.contains("</w:") || s.contains("<w:t") { return true }
+        if s.contains("xmlns") { return true }
+        if s.contains("PK!") { return true }
+        let ltCount = s.filter { $0 == "<" }.count
+        return ltCount > 20 && s.count > 200
+    }
     
     func generateSummary(for document: Document) {
         // This will integrate with EdgeAI to generate summaries
@@ -45,11 +119,14 @@ class DocumentManager: ObservableObject {
     
     func processFile(at url: URL) -> Document? {
         print("📄 DocumentManager: Processing file at \\(url.lastPathComponent)")
-        guard url.startAccessingSecurityScopedResource() else {
-            print("❌ DocumentManager: Failed to access security scoped resource")
-            return nil
+        
+        // Try to start accessing security scoped resource
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer { 
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource() 
+            }
         }
-        defer { url.stopAccessingSecurityScopedResource() }
         
         let fileName = url.lastPathComponent
         let fileExtension = url.pathExtension.lowercased()
@@ -92,10 +169,15 @@ class DocumentManager: ObservableObject {
         // Store original file data for preview - ALWAYS try to store the original file
         var imageData: [Data]? = nil
         var pdfData: Data? = nil
+        var originalFileData: Data? = nil
         
         do {
             let fileData = try Data(contentsOf: url)
             print("📄 DocumentManager: Successfully read \\(fileData.count) bytes from file")
+            
+            // Always store original file data for QuickLook preview
+            originalFileData = fileData
+            print("📄 DocumentManager: Original file data stored for QuickLook preview")
             
             switch fileExtension {
             case "pdf":
@@ -105,11 +187,9 @@ class DocumentManager: ObservableObject {
                 imageData = [fileData]
                 print("📄 DocumentManager: Image data stored for preview")
             case "docx", "doc", "rtf", "txt":
-                // For text documents, we could store as PDF data for better viewing
-                // For now, just use text content
-                print("📄 DocumentManager: Text document processed")
+                print("📄 DocumentManager: Text document processed, original file available for preview")
             default:
-                print("📄 DocumentManager: File data read but no specific preview format")
+                print("📄 DocumentManager: File data read, original file available for preview")
             }
         } catch {
             print("❌ DocumentManager: Failed to read file data: \\(error.localizedDescription)")
@@ -122,7 +202,8 @@ class DocumentManager: ObservableObject {
             dateCreated: Date(),
             type: documentType,
             imageData: imageData,
-            pdfData: pdfData
+            pdfData: pdfData,
+            originalFileData: originalFileData
         )
         
         print("📄 DocumentManager: ✅ Document created successfully:")
@@ -195,25 +276,186 @@ class DocumentManager: ObservableObject {
     }
     
     private func extractTextFromWordDocument(url: URL) -> String {
-        do {
-            // Try to read as RTF/Word document using NSAttributedString
-            let attributedString = try NSAttributedString(url: url, options: [
-                .documentType: NSAttributedString.DocumentType.rtf,
-                .characterEncoding: String.Encoding.utf8.rawValue
-            ], documentAttributes: nil)
-            
-            let plainText = attributedString.string
-            return plainText.isEmpty ? "No text content found in document" : plainText
-            
-        } catch {
-            // Fallback: try reading as plain text
-            do {
-                let content = try String(contentsOf: url, encoding: .utf8)
-                return content.isEmpty ? "No text content found in document" : content
-            } catch {
-                return "Could not read Word document: \(error.localizedDescription)\n\nThis document may require a different reader or may be password protected."
+        print("📄 DocumentManager: Attempting to extract text from Word document")
+        let ext = url.pathExtension.lowercased()
+
+        // Preferred: Parse DOCX XML body and extract <w:t> text nodes (no XML returned)
+        if ext == "docx" {
+            let parsed = extractTextFromDOCXArchive(url: url)
+            let cleaned = formatExtractedText(parsed)
+            if !cleaned.isEmpty && !looksLikeXML(cleaned) {
+                print("📄 DocumentManager: Using DOCX parsed text (\(cleaned.count))")
+                return cleaned
             }
         }
+
+        // Fallback: OCR a rendered thumbnail of the document
+        if let ocrText = extractTextFromDOCXViaOCR(url: url), !ocrText.isEmpty, !ocrText.contains("OCR failed") {
+            print("📄 DocumentManager: Using OCR text from DOC thumbnail (\(ocrText.count))")
+            return formatExtractedText(ocrText)
+        }
+
+        // Last resort placeholder without exposing XML
+        print("📄 DocumentManager: No readable text extracted from Word; returning placeholder")
+        return "Imported Word document. Text extraction is limited on this file."
+    }
+
+    @available(iOS 13.0, *)
+    private func generateDOCXThumbnail(url: URL, size: CGSize = CGSize(width: 2048, height: 2048)) -> UIImage? {
+        let request = QLThumbnailGenerator.Request(fileAt: url,
+                                                   size: size,
+                                                   scale: UIScreen.main.scale,
+                                                   representationTypes: .thumbnail)
+        let generator = QLThumbnailGenerator.shared
+        let semaphore = DispatchSemaphore(value: 0)
+        var image: UIImage?
+        generator.generateBestRepresentation(for: request) { rep, error in
+            if let rep = rep {
+                image = rep.uiImage
+            } else {
+                if let error = error { print("📄 DocumentManager: QL thumbnail error: \(error.localizedDescription)") }
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 5)
+        return image
+    }
+
+    private func extractTextFromDOCXViaOCR(url: URL) -> String? {
+        if #available(iOS 13.0, *) {
+            if let img = generateDOCXThumbnail(url: url) {
+                return performOCR(on: img)
+            }
+        }
+        return nil
+    }
+    
+    private func extractTextFromXMLContent(_ xmlContent: String) -> String {
+        var extractedText = ""
+        
+        // Look for text content between XML tags, specifically targeting common document content
+        let patterns = [
+            // Word document text content patterns
+            "<w:t[^>]*>([^<]+)</w:t>",
+            "<text[^>]*>([^<]+)</text>",
+            // General XML text patterns
+            ">([A-Za-z][^<]{10,})<",
+            // Fallback for any substantial text content
+            "([A-Za-z][A-Za-z0-9\\s.,!?;:()\\[\\]\"'-]{20,})"
+        ]
+        
+        for pattern in patterns {
+            do {
+                let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
+                let matches = regex.matches(in: xmlContent, options: [], range: NSRange(xmlContent.startIndex..., in: xmlContent))
+                
+                for match in matches {
+                    if match.numberOfRanges > 1 {
+                        let range = match.range(at: 1)
+                        if let swiftRange = Range(range, in: xmlContent) {
+                            let matchedText = String(xmlContent[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                            
+                            // Filter out XML artifacts and binary data indicators
+                            if !matchedText.isEmpty && 
+                               !matchedText.contains("<?xml") && 
+                               !matchedText.contains("PK!") &&
+                               !matchedText.contains("<") &&
+                               !matchedText.contains("xmlns") &&
+                               matchedText.count > 10 {
+                                extractedText += matchedText + " "
+                            }
+                        }
+                    }
+                }
+                
+                if extractedText.count > 100 { // If we found substantial text, use this pattern
+                    break
+                }
+            } catch {
+                print("📄 DocumentManager: Regex pattern failed: \\(error.localizedDescription)")
+                continue
+            }
+        }
+        
+        return extractedText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func extractTextFromDOCXArchive(url: URL) -> String {
+        // Unzip DOCX to temp folder and read word/document.xml
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("docx_extract_\(UUID().uuidString)", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true) } catch {
+            print("📄 DocumentManager: Failed to create temp dir: \(error.localizedDescription)")
+            return ""
+        }
+
+        var unzipError: NSError?
+        // Use overload with preserveAttributes preceding overwrite to match header
+        let ok = SSZipArchive.unzipFile(atPath: url.path,
+                        toDestination: tempDir.path,
+                        preserveAttributes: false,
+                        overwrite: true,
+                        password: nil,
+                        error: &unzipError,
+                        delegate: nil)
+        if !ok {
+            if let unzipError = unzipError { print("📄 DocumentManager: Unzip failed: \(unzipError.localizedDescription)") }
+            try? FileManager.default.removeItem(at: tempDir)
+            return ""
+        }
+
+        let docXML = tempDir.appendingPathComponent("word/document.xml")
+        guard let xmlData = try? Data(contentsOf: docXML), let xml = String(data: xmlData, encoding: .utf8) else {
+            print("📄 DocumentManager: document.xml missing or unreadable")
+            try? FileManager.default.removeItem(at: tempDir)
+            return ""
+        }
+
+        var body = ""
+        do {
+            let re = try NSRegularExpression(pattern: "<w:t[^>]*>(.*?)</w:t>", options: [.dotMatchesLineSeparators])
+            let ns = xml as NSString
+            let matches = re.matches(in: xml, range: NSRange(location: 0, length: ns.length))
+            for m in matches {
+                if m.numberOfRanges >= 2 {
+                    let t = ns.substring(with: m.range(at: 1))
+                        .replacingOccurrences(of: "&amp;", with: "&")
+                        .replacingOccurrences(of: "&lt;", with: "<")
+                        .replacingOccurrences(of: "&gt;", with: ">")
+                        .replacingOccurrences(of: "&quot;", with: "\"")
+                        .replacingOccurrences(of: "&apos;", with: "'")
+                    body += t
+                }
+            }
+        } catch {
+            print("📄 DocumentManager: Regex failed: \(error.localizedDescription)")
+        }
+
+        if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let cleaned = extractTextFromXMLContent(xml)
+            if !cleaned.isEmpty { body = cleaned }
+        }
+
+        try? FileManager.default.removeItem(at: tempDir)
+        return formatExtractedText(body)
+    }
+    
+    private func formatExtractedText(_ text: String) -> String {
+        // Flatten to plain text: single spaces, no line artifacts, strip XML remnants
+        return text
+            // Remove special/control characters
+            .replacingOccurrences(of: "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]", with: "", options: .regularExpression)
+            // Remove XML/HTML tags
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            // Decode common entities
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            // Collapse all whitespace (including newlines) to single spaces
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func extractTextFromJSON(url: URL) -> String {

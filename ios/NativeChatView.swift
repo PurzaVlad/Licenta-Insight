@@ -3,6 +3,7 @@ import Vision
 import VisionKit
 import UniformTypeIdentifiers
 import PDFKit
+import QuickLook
 
 // No need for TempDocumentManager - using DocumentManager.swift
 
@@ -15,8 +16,9 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let type: DocumentType
     let imageData: [Data]? // Store scanned images
     let pdfData: Data? // Store generated PDF
+    let originalFileData: Data? // Store original file for QuickLook preview
     
-    init(title: String, content: String, summary: String, dateCreated: Date, type: DocumentType, imageData: [Data]?, pdfData: Data?) {
+    init(title: String, content: String, summary: String, dateCreated: Date, type: DocumentType, imageData: [Data]?, pdfData: Data?, originalFileData: Data? = nil) {
         self.id = UUID()
         self.title = title
         self.content = content
@@ -25,6 +27,19 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.type = type
         self.imageData = imageData
         self.pdfData = pdfData
+        self.originalFileData = originalFileData
+    }
+    
+    init(id: UUID, title: String, content: String, summary: String, dateCreated: Date, type: DocumentType, imageData: [Data]?, pdfData: Data?, originalFileData: Data? = nil) {
+        self.id = id
+        self.title = title
+        self.content = content
+        self.summary = summary
+        self.dateCreated = dateCreated
+        self.type = type
+        self.imageData = imageData
+        self.pdfData = pdfData
+        self.originalFileData = originalFileData
     }
     
     enum DocumentType: String, CaseIterable, Codable {
@@ -74,6 +89,11 @@ struct DocumentsView: View {
     @State private var customName = ""
     @State private var scannedImages: [UIImage] = []
     @State private var extractedText = ""
+    @State private var showingDocumentPreview = false
+    @State private var previewDocumentURL: URL?
+    @State private var currentDocument: Document?
+    @State private var showingAISummary = false
+    @State private var isOpeningPreview = false
     
     var body: some View {
         NavigationView {
@@ -112,13 +132,31 @@ struct DocumentsView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List {
-                        ForEach(documentManager.documents, id: \.id) { document in
-                            NavigationLink(destination: DocumentDetailView(document: document)) {
-                                DocumentRowView(document: document)
+                    ZStack {
+                        List {
+                            ForEach(documentManager.documents, id: \ .id) { document in
+                                Button(action: {
+                                    openDocumentPreview(document: document)
+                                }) {
+                                    DocumentRowView(document: document)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .contentShape(Rectangle())
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                            .onDelete(perform: deleteDocuments)
+                        }
+                        
+                        if isOpeningPreview {
+                            Color.black.opacity(0.15)
+                                .ignoresSafeArea()
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .scaleEffect(1.2)
+                                Text("Opening preview...")
+                                    .foregroundColor(.secondary)
                             }
                         }
-                        .onDelete(perform: deleteDocuments)
                     }
                 }
                 
@@ -200,6 +238,20 @@ struct DocumentsView: View {
         } message: {
             Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
         }
+        .sheet(isPresented: $showingDocumentPreview, onDismiss: { isOpeningPreview = false }) {
+            if let url = previewDocumentURL, let document = currentDocument {
+                DocumentPreviewView(url: url, document: document, onAISummary: {
+                    showingDocumentPreview = false
+                    showingAISummary = true
+                })
+            }
+        }
+        .sheet(isPresented: $showingAISummary) {
+            if let document = currentDocument {
+                DocumentSummaryView(document: document)
+                    .environmentObject(documentManager)
+            }
+        }
     }
     
     private func deleteDocuments(offsets: IndexSet) {
@@ -221,14 +273,11 @@ struct DocumentsView: View {
             print("📱 UI: File URL: \\(url.absoluteString)")
             print("📱 UI: File exists: \\(FileManager.default.fileExists(atPath: url.path))")
             
-            // Ensure we can access the file
-            guard url.startAccessingSecurityScopedResource() else {
-                print("❌ UI: Cannot access security scoped resource for \\(url.lastPathComponent)")
-                continue
-            }
+            // Try to access the security scoped resource
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+            print("📱 UI: Security scoped access: \\(didStartAccess)")
             
-            defer { url.stopAccessingSecurityScopedResource() }
-            
+            // Even if security access fails, try to process the file
             if let document = documentManager.processFile(at: url) {
                 print("📱 UI: ✅ Successfully created document: \\(document.title)")
                 print("📱 UI: Document content preview: \\(String(document.content.prefix(100)))...")
@@ -238,6 +287,11 @@ struct DocumentsView: View {
                 print("📱 UI: Document added. Total documents now: \\(documentManager.documents.count)")
             } else {
                 print("❌ UI: Failed to create document for: \\(url.lastPathComponent)")
+            }
+            
+            // Stop accessing security scoped resource if we started it
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
             }
         }
         
@@ -564,6 +618,50 @@ struct DocumentsView: View {
         
         return image
     }
+    
+    private func openDocumentPreview(document: Document) {
+        isOpeningPreview = true
+        let tempDirectory = FileManager.default.temporaryDirectory
+        let fileExt = getFileExtension(for: document.type)
+        let tempURL = tempDirectory.appendingPathComponent("\(document.title).\(fileExt)")
+        
+        func present(url: URL) {
+            self.previewDocumentURL = url
+            self.currentDocument = document
+            self.showingDocumentPreview = true
+        }
+        
+        // Prefer original file, then PDF, then first image fallback
+        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
+            do {
+                try data.write(to: tempURL)
+                present(url: tempURL)
+            } catch {
+                print("Error creating temp file: \(error)")
+                isOpeningPreview = false
+            }
+        } else {
+            // Fallback: show content in a simple text preview via summary sheet
+            self.currentDocument = document
+            self.showingAISummary = true
+            isOpeningPreview = false
+        }
+    }
+    
+    private func getFileExtension(for type: Document.DocumentType) -> String {
+        switch type {
+        case .pdf:
+            return "pdf"
+        case .docx:
+            return "docx"
+        case .text:
+            return "txt"
+        case .scanned:
+            return "pdf"
+        case .image:
+            return "jpg"
+        }
+    }
 }
 
 struct DocumentRowView: View {
@@ -579,6 +677,7 @@ struct DocumentRowView: View {
                         .frame(width: 60, height: 80)
                         .cornerRadius(6)
                         .shadow(radius: 2)
+                        .allowsHitTesting(false)
                         
                 } else if let imageDataArray = document.imageData,
                           !imageDataArray.isEmpty,
@@ -593,6 +692,7 @@ struct DocumentRowView: View {
                         .clipped()
                         .cornerRadius(6)
                         .shadow(radius: 2)
+                        .allowsHitTesting(false)
                         
                 } else {
                     // Document type specific icon
@@ -612,6 +712,7 @@ struct DocumentRowView: View {
                             }
                         )
                         .shadow(radius: 2)
+                        .allowsHitTesting(false)
                 }
             }
             
@@ -633,6 +734,8 @@ struct DocumentRowView: View {
             Spacer()
         }
         .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .frame(minHeight: 96) // Minimum height, but allows expansion
     }
 }
@@ -642,6 +745,8 @@ struct DocumentDetailView: View {
     @State private var currentPage = 0
     @State private var showingTextView = false
     @State private var isGeneratingSummary = false
+    @State private var showingDocumentPreview = false
+    @State private var documentURL: URL?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -678,6 +783,11 @@ struct DocumentDetailView: View {
                 HStack {
                     Button("Text View") {
                         showingTextView = true
+                    }
+                    .padding()
+                    
+                    Button("Preview") {
+                        prepareDocumentForPreview()
                     }
                     .padding()
                     
@@ -818,29 +928,52 @@ struct DocumentDetailView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            // AI Summary Button
-            Button(action: {
-                generateAISummary()
-            }) {
-                HStack {
-                    if isGeneratingSummary {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "brain.head.profile")
+            VStack(spacing: 12) {
+                // Document Preview Button
+                Button(action: {
+                    prepareDocumentForPreview()
+                }) {
+                    HStack {
+                        Image(systemName: "doc.magnifyingglass")
+                        Text("Preview")
+                            .font(.caption.weight(.medium))
                     }
-                    Text(isGeneratingSummary ? "Generating..." : "AI Summary")
-                        .font(.caption.weight(.medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.green)
+                    .clipShape(Capsule())
                 }
-                .foregroundColor(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.blue)
-                .clipShape(Capsule())
+                
+                // AI Summary Button
+                Button(action: {
+                    generateAISummary()
+                }) {
+                    HStack {
+                        if isGeneratingSummary {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "brain.head.profile")
+                        }
+                        Text(isGeneratingSummary ? "Generating..." : "AI Summary")
+                            .font(.caption.weight(.medium))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.blue)
+                    .clipShape(Capsule())
+                }
+                .disabled(isGeneratingSummary)
             }
             .padding()
-            .disabled(isGeneratingSummary)
+        }
+        .sheet(isPresented: $showingDocumentPreview) {
+            if let url = documentURL {
+                DocumentPreviewView(url: url)
+            }
         }
     }
     
@@ -898,6 +1031,69 @@ struct DocumentDetailView: View {
             }
         })
     }
+    
+    private func prepareDocumentForPreview() {
+        // Create a temporary file for preview
+        let tempDirectory = FileManager.default.temporaryDirectory
+        let fileExtension = getFileExtension(for: document.type)
+        let tempFileName = "preview_\(document.id).\(fileExtension)"
+        let tempURL = tempDirectory.appendingPathComponent(tempFileName)
+        
+        // Try to get the original document data
+        if let originalData = getDocumentData() {
+            do {
+                try originalData.write(to: tempURL)
+                documentURL = tempURL
+                showingDocumentPreview = true
+                print("📄 DocumentDetailView: Prepared document for preview at \(tempURL)")
+            } catch {
+                print("📄 DocumentDetailView: Failed to prepare document for preview: \(error)")
+                // Fallback to text view
+                showingTextView = true
+            }
+        } else {
+            print("📄 DocumentDetailView: No document data available, showing text view")
+            showingTextView = true
+        }
+    }
+    
+    private func getDocumentData() -> Data? {
+        // Return the stored original file data for QuickLook preview
+        if let originalData = document.originalFileData {
+            print("📄 DocumentDetailView: Retrieved \\(originalData.count) bytes of original file data")
+            return originalData
+        }
+        
+        // Fallback to PDF data if available
+        if let pdfData = document.pdfData {
+            print("📄 DocumentDetailView: Using PDF data as fallback (\\(pdfData.count) bytes)")
+            return pdfData
+        }
+        
+        // Fallback to image data if available
+        if let imageData = document.imageData?.first {
+            print("📄 DocumentDetailView: Using image data as fallback (\\(imageData.count) bytes)")
+            return imageData
+        }
+        
+        print("📄 DocumentDetailView: No document data available for preview")
+        return nil
+    }
+    
+    private func getFileExtension(for type: Document.DocumentType) -> String {
+        switch type {
+        case .pdf:
+            return "pdf"
+        case .docx:
+            return "docx"
+        case .text:
+            return "txt"
+        case .scanned:
+            return "pdf"  // Scanned documents are typically saved as PDF
+        case .image:
+            return "jpg"
+        }
+    }
 }
 
 // MARK: - Helper Functions
@@ -941,7 +1137,7 @@ struct PDFThumbnailView: UIViewRepresentable {
 }
 
 // MARK: - Document Preview View
-struct DocumentPreviewView: View {
+struct OldDocumentPreviewView: View {
     let document: Document
     @Binding var showingDocumentInfo: Bool
     @State private var isGeneratingSummary = false
@@ -1217,6 +1413,7 @@ struct DocumentPicker: UIViewControllerRepresentable {
         
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = true
+        picker.shouldShowFileExtensions = true
         
         return picker
     }
@@ -1578,5 +1775,242 @@ struct PDFViewRepresentable: UIViewRepresentable {
             pdfView.minScaleFactor = fitScale * 0.9
             pdfView.maxScaleFactor = fitScale * 4.0
         }
+    }
+}
+
+// MARK: - QuickLook Document Preview
+struct DocumentPreviewView: UIViewControllerRepresentable {
+    let url: URL
+    let document: Document?
+    let onAISummary: (() -> Void)?
+    
+    init(url: URL, document: Document? = nil, onAISummary: (() -> Void)? = nil) {
+        self.url = url
+        self.document = document
+        self.onAISummary = onAISummary
+    }
+    
+    func makeUIViewController(context: Context) -> UIViewController {
+        let previewController = QLPreviewController()
+        previewController.dataSource = context.coordinator
+        
+        // Create a container view controller to add floating buttons
+        let containerController = UIViewController()
+        containerController.addChild(previewController)
+        containerController.view.addSubview(previewController.view)
+        previewController.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            previewController.view.topAnchor.constraint(equalTo: containerController.view.topAnchor),
+            previewController.view.leadingAnchor.constraint(equalTo: containerController.view.leadingAnchor),
+            previewController.view.trailingAnchor.constraint(equalTo: containerController.view.trailingAnchor),
+            previewController.view.bottomAnchor.constraint(equalTo: containerController.view.bottomAnchor)
+        ])
+        previewController.didMove(toParent: containerController)
+        
+        // Add floating buttons
+        addFloatingButtons(to: containerController, coordinator: context.coordinator)
+        
+        return containerController
+    }
+    
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        // Updates handled by coordinator
+    }
+    
+    private func addFloatingButtons(to containerController: UIViewController, coordinator: Coordinator) {
+        // AI Button (bottom right)
+        let aiButton = UIButton(type: .system)
+        aiButton.setTitle("AI", for: .normal)
+        aiButton.backgroundColor = .systemBlue
+        aiButton.setTitleColor(.white, for: .normal)
+        aiButton.titleLabel?.font = .boldSystemFont(ofSize: 16)
+        aiButton.layer.cornerRadius = 25
+        aiButton.frame = CGRect(x: 0, y: 0, width: 50, height: 50)
+        aiButton.addTarget(coordinator, action: #selector(Coordinator.aiButtonTapped), for: .touchUpInside)
+        
+        containerController.view.addSubview(aiButton)
+        aiButton.translatesAutoresizingMaskIntoConstraints = false
+        
+        NSLayoutConstraint.activate([
+            // AI Button - bottom right
+            aiButton.trailingAnchor.constraint(equalTo: containerController.view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+            aiButton.bottomAnchor.constraint(equalTo: containerController.view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+            aiButton.widthAnchor.constraint(equalToConstant: 50),
+            aiButton.heightAnchor.constraint(equalToConstant: 50)
+        ])
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let parent: DocumentPreviewView
+        
+        init(_ parent: DocumentPreviewView) {
+            self.parent = parent
+        }
+        
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
+            return 1
+        }
+        
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            return parent.url as QLPreviewItem
+        }
+        
+        @objc func aiButtonTapped() {
+            parent.onAISummary?()
+        }
+    }
+}
+
+// MARK: - Document Summary View
+struct DocumentSummaryView: View {
+    let document: Document
+    @State private var summary: String = ""
+    @State private var isGeneratingSummary = false
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var documentManager: DocumentManager
+
+    private var currentDoc: Document {
+        documentManager.getDocument(by: document.id) ?? document
+    }
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Document info
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(document.title)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        
+                        Text("Created: \(document.dateCreated, style: .date)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Text("Type: \(document.type.rawValue)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(10)
+                    
+                    // Summary section
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("AI Summary")
+                                .font(.headline)
+                            
+                            Spacer()
+                            
+                            Button("Generate") {
+                                generateAISummary()
+                            }
+                            .disabled(isGeneratingSummary)
+                        }
+                        
+                        if isGeneratingSummary {
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Generating summary...")
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical)
+                        } else if summary.isEmpty {
+                            Text("Tap 'Generate' to create an AI summary of this document.")
+                                .foregroundColor(.secondary)
+                                .italic()
+                                .padding(.vertical)
+                        } else {
+                            Text(summary)
+                                .padding()
+                                .background(Color(.tertiarySystemBackground))
+                                .cornerRadius(8)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(10)
+                    
+                    // Document content preview
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Document Content")
+                            .font(.headline)
+                        
+                        ScrollView {
+                            Text(currentDoc.content)
+                                .font(.system(size: 14, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color(.tertiarySystemBackground))
+                                .cornerRadius(8)
+                        }
+                        .frame(height: 200)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(10)
+                    
+                    Spacer()
+                }
+                .padding()
+            }
+            .navigationTitle("Document Summary")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .onAppear {
+            // Repair Word content if it was previously saved as XML noise
+            documentManager.refreshContentIfNeeded(for: document.id)
+            // Use saved summary if available; avoid regenerating every time
+            self.summary = currentDoc.summary
+            if summary.isEmpty || summary == "Processing..." || summary == "Processing summary..." {
+                generateAISummary()
+            }
+        }
+    }
+    
+    private func generateAISummary() {
+        isGeneratingSummary = true
+        
+        let preprompt = """
+        Task: Write a concise, faithful summary of the source text.
+        Requirements:
+        - Roughly 10x shorter than the input (±50%).
+        - Capture key points, entities, numbers, and conclusions.
+        - Prefer compact sentences; use short bullets if clearer.
+        - No extraneous commentary; return plain text only.
+        """
+        let prompt = "\(preprompt)\n\n---\nSource:\n\(currentDoc.content)"
+        
+        EdgeAI.shared?.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                
+                if let result = result as? String {
+                    self.summary = result
+                    // Persist to the associated document so it isn't regenerated unnecessarily
+                    self.documentManager.updateSummary(for: document.id, to: result)
+                } else {
+                    self.summary = "Failed to generate summary. Please try again."
+                }
+            }
+        }, rejecter: { _, _, _ in
+            DispatchQueue.main.async {
+                self.isGeneratingSummary = false
+                self.summary = "Failed to generate summary. Please try again."
+            }
+        })
     }
 }

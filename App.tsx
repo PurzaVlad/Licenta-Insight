@@ -13,9 +13,9 @@ type Message = {
   timestamp: number;
 };
 
-const MODEL_FILENAME = 'qwen2-1_5b-instruct-q4_k_m.gguf';
+const MODEL_FILENAME = 'gemma-2-2b-Q2_K.gguf';
 const MODEL_URL =
-  'https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf';
+  'https://huggingface.co/tensorblock/gemma-2-2b-GGUF/resolve/main/gemma-2-2b-Q2_K.gguf';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -89,8 +89,13 @@ useEffect(() => {
   const sub = emitter.addListener('EdgeAIRequest', async (evt) => {
     const {requestId, prompt} = evt;
     try {
+      const isSummary = prompt.includes('Task: Write a concise, faithful summary');
       const userMessage: Message = { role: 'user', content: prompt, timestamp: Date.now() };
-      const messagesForAI: Message[] = [...conversationRef.current, userMessage];
+      const baseSystem: Message = { role: 'system', content: 'You are a helpful AI assistant. Be concise and friendly.', timestamp: Date.now() };
+
+      const messagesForAI: Message[] = isSummary
+        ? [baseSystem, userMessage] // stateless summary
+        : [...conversationRef.current, userMessage]; // chat continues
 
       const result = await context.completion(
         { messages: messagesForAI, n_predict: 400, stop: ['<|im_end|>'] },
@@ -99,11 +104,14 @@ useEffect(() => {
 
       const text = (result?.text ?? '').trim();
 
-      if (text.length > 0) {
-        const assistantMessage: Message = { role: 'assistant', content: text, timestamp: Date.now() };
-        conversationRef.current = [...messagesForAI, assistantMessage];
-      } else {
-        conversationRef.current = messagesForAI;
+      if (!isSummary) {
+        // Persist conversation only for chat
+        if (text.length > 0) {
+          const assistantMessage: Message = { role: 'assistant', content: text, timestamp: Date.now() };
+          conversationRef.current = [...messagesForAI, assistantMessage];
+        } else {
+          conversationRef.current = messagesForAI;
+        }
       }
 
       EdgeAI.resolveRequest(requestId, text);
