@@ -106,7 +106,7 @@ class DocumentManager: ObservableObject {
     func generateSummary(for document: Document) {
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
-        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a concise summary of this document:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Summarize this document in 4-6 bullet points:\n\n\(document.content)"
         
         print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
         // Send to EdgeAI for processing
@@ -128,6 +128,46 @@ class DocumentManager: ObservableObject {
             
             Content:
             \(document.content)
+            
+            ---
+            
+            """
+        }.joined()
+    }
+    
+    func getDocumentSummaries() -> String {
+        print("🤖 DocumentManager: Getting document summaries, document count: \(documents.count)")
+        return documents.map { document in
+            """
+            Document: \(document.title)
+            Type: \(document.type.rawValue)
+            Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
+            Summary: \(document.summary)
+            Content Length: \(document.content.count) characters
+            
+            ---
+            
+            """
+        }.joined()
+    }
+    
+    func getSmartDocumentContext() -> String {
+        print("🤖 DocumentManager: Getting smart document context, document count: \(documents.count)")
+        return documents.map { document in
+            // Use summary if available and meaningful, otherwise use first 500 characters
+            let hasUsableSummary = !document.summary.isEmpty && 
+                                  document.summary != "Processing..." && 
+                                  document.summary != "Processing summary..."
+            
+            let contentToUse = hasUsableSummary ? document.summary : String(document.content.prefix(500))
+            let contentType = hasUsableSummary ? "Summary:" : "Content (first 500 chars):"
+            
+            return """
+            Document: \(document.title)
+            Type: \(document.type.rawValue)
+            Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
+            \(contentType)
+            \(contentToUse)
             
             ---
             

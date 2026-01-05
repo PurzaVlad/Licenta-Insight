@@ -7,26 +7,26 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		01C65DFAFE25FA3FFC721C89 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
-		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
-		710247F0DC70CA0284C0A149 /* libPods-EdgeLLMTuto.a in Frameworks */ = {isa = PBXBuildFile; fileRef = F21B508A3D60849CA0F7F4DD /* libPods-EdgeLLMTuto.a */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
-		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */; };
 		AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD28532F0B119400C3390F /* DocumentManager.swift */; };
 		AEE10FE02F0B0A8800D8EFF7 /* NativeChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */; };
 		AEE10FE12F0B0A8800D8EFF7 /* NativeChatViewManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */; };
 		AEE10FE22F0B0A8800D8EFF7 /* EdgeAI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */; };
 		AEE10FE32F0B0A8800D8EFF7 /* EdgeAI.m in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */; };
+		B12D6F9E03A4A66CA4E522E0 /* libPods-VaultAI.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 43A934517A58E224B45297CF /* libPods-VaultAI.a */; };
+		B51DE01B08C2900F75FA8AC0 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		13B07F961A680F5B00A75B9A /* EdgeLLMTuto.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EdgeLLMTuto.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		13B07F961A680F5B00A75B9A /* VaultAI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VaultAI.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = EdgeLLMTuto/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = EdgeLLMTuto/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = EdgeLLMTuto/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		43A934517A58E224B45297CF /* libPods-VaultAI.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-VaultAI.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.release.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.release.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = EdgeLLMTuto/AppDelegate.swift; sourceTree = "<group>"; };
+		8187BEE6B6DC936AAA3D94C7 /* Pods-VaultAI.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VaultAI.debug.xcconfig"; path = "Target Support Files/Pods-VaultAI/Pods-VaultAI.debug.xcconfig"; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = EdgeLLMTuto/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDatabase.swift; sourceTree = "<group>"; };
 		AEBD28532F0B119400C3390F /* DocumentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentManager.swift; sourceTree = "<group>"; };
@@ -36,8 +36,8 @@
 		AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatViewManager.swift; sourceTree = "<group>"; };
 		AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EdgeLLMTuto-Bridging-Header.h"; sourceTree = "<group>"; };
 		B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.debug.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.debug.xcconfig"; sourceTree = "<group>"; };
+		DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VaultAI.release.xcconfig"; path = "Target Support Files/Pods-VaultAI/Pods-VaultAI.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
-		F21B508A3D60849CA0F7F4DD /* libPods-EdgeLLMTuto.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-EdgeLLMTuto.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -45,7 +45,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				710247F0DC70CA0284C0A149 /* libPods-EdgeLLMTuto.a in Frameworks */,
+				B12D6F9E03A4A66CA4E522E0 /* libPods-VaultAI.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,7 +75,7 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				F21B508A3D60849CA0F7F4DD /* libPods-EdgeLLMTuto.a */,
+				43A934517A58E224B45297CF /* libPods-VaultAI.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -104,7 +104,7 @@
 		83CBBA001A601CBA00E9B192 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				13B07F961A680F5B00A75B9A /* EdgeLLMTuto.app */,
+				13B07F961A680F5B00A75B9A /* VaultAI.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -114,6 +114,8 @@
 			children = (
 				B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */,
 				537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */,
+				8187BEE6B6DC936AAA3D94C7 /* Pods-VaultAI.debug.xcconfig */,
+				DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -121,25 +123,26 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		13B07F861A680F5B00A75B9A /* EdgeLLMTuto */ = {
+		13B07F861A680F5B00A75B9A /* VaultAI */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "EdgeLLMTuto" */;
+			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "VaultAI" */;
 			buildPhases = (
 				5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
-				13B07F8E1A680F5B00A75B9A /* Resources */,
+				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				D311E31CB2A18094574EDFBE /* [CP] Embed Pods Frameworks */,
 				2C1B12108D9BEC4F6BD3D32A /* [CP] Copy Pods Resources */,
+				B37103DE89BE196AF47A910B /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
-			name = EdgeLLMTuto;
-			productName = EdgeLLMTuto;
-			productReference = 13B07F961A680F5B00A75B9A /* EdgeLLMTuto.app */;
+			name = VaultAI;
+			productName = VaultAI;
+			productReference = 13B07F961A680F5B00A75B9A /* VaultAI.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -155,7 +158,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "EdgeLLMTuto" */;
+			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "VaultAI" */;
 			compatibilityVersion = "Xcode 12.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -168,19 +171,17 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				13B07F861A680F5B00A75B9A /* EdgeLLMTuto */,
+				13B07F861A680F5B00A75B9A /* VaultAI */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		13B07F8E1A680F5B00A75B9A /* Resources */ = {
+		B37103DE89BE196AF47A910B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
-				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
-				01C65DFAFE25FA3FFC721C89 /* PrivacyInfo.xcprivacy in Resources */,
+				B51DE01B08C2900F75FA8AC0 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -209,15 +210,15 @@
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */ = {
@@ -235,7 +236,7 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-EdgeLLMTuto-checkManifestLockResult.txt",
+				"$(DERIVED_FILE_DIR)/Pods-VaultAI-checkManifestLockResult.txt",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -248,15 +249,15 @@
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-frameworks-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto-frameworks.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -281,7 +282,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */;
+			baseConfigurationReference = 8187BEE6B6DC936AAA3D94C7 /* Pods-VaultAI.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -303,7 +304,7 @@
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.edgellmtuto;
-				PRODUCT_NAME = EdgeLLMTuto;
+				PRODUCT_NAME = VaultAI;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "EdgeLLMTuto-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -314,7 +315,7 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */;
+			baseConfigurationReference = DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -335,7 +336,7 @@
 					"-lc++",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.edgellmtuto;
-				PRODUCT_NAME = EdgeLLMTuto;
+				PRODUCT_NAME = VaultAI;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "EdgeLLMTuto-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -498,7 +499,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "EdgeLLMTuto" */ = {
+		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "VaultAI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				13B07F941A680F5B00A75B9A /* Debug */,
@@ -507,7 +508,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "EdgeLLMTuto" */ = {
+		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "VaultAI" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,

@@ -18,7 +18,7 @@ const MODEL_URL =
   'https://huggingface.co/medmekk/gemma-2-2b-it.GGUF/resolve/main/gemma-2-2b-it-Q3_K_S.gguf';
 
 const SUMMARY_SYSTEM_PROMPT =
-  'You are a precise document reviewer. Work ONLY with the provided text. Write in clear English. Avoid speculation, filler and disclaimers. Produce a concise summary with 4–6 bullet points that capture key facts, figures, names, and actions. If the text lacks content, say: "Insufficient content to summarize."';
+  'Summarize in 4-6 bullet points. Include key facts, names, actions. Be concise.';
 
 const CHAT_SYSTEM_PROMPT =
   'You are an expert assistant. Provide accurate, neutral answers. Prefer English. Base responses on the given context; avoid fabrications.';
@@ -193,15 +193,15 @@ useEffect(() => {
           const completionParams = isSummary
             ? {
                 prompt: promptText,
-                n_predict: 150,
-                temperature: 0.1,
-                top_p: 0.7,
+                n_predict: 100,
+                temperature: 0.3,
+                top_p: 0.8,
                 repeat_penalty: 1.1,
                 stop: ["<end_of_turn>", "</s>"]
               }
             : {
                 prompt: promptText,
-                n_predict: 200,
+                n_predict: 180,
                 temperature: 0.4,
                 top_p: 0.8,
                 repeat_penalty: 1.1,

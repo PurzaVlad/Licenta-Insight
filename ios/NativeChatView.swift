@@ -1748,7 +1748,7 @@ struct NativeChatView: View {
                 }
                 .background(Color(.systemBackground))
             }
-            .navigationTitle("MindVault")
+            .navigationTitle("VaultAI")
             .navigationBarTitleDisplayMode(.large)
         }
     }
@@ -1763,23 +1763,32 @@ struct NativeChatView: View {
         input = ""
         isGenerating = true
 
-        // Always provide document context if documents exist - let AI decide relevance
+        // Smart context: Only include documents when question seems document-related
         var contextualPrompt = trimmed
-        if !documentManager.documents.isEmpty {
-            let documentContext = documentManager.getAllDocumentContent()
-            print("💬 NativeChatView: Adding document context, length: \(documentContext.count)")
+        if !documentManager.documents.isEmpty && isDocumentQuery(trimmed) {
+            // Use full content for detailed analysis, smart context for general questions
+            let isDetailedQuery = isDetailedDocumentQuery(trimmed)
+            let documentContext = isDetailedQuery ? 
+                documentManager.getAllDocumentContent() : 
+                documentManager.getSmartDocumentContext()
+            
+            let contextType = isDetailedQuery ? "full content" : "smart context (summaries/500 chars)"
+            print("💬 NativeChatView: Document query detected, using \(contextType), length: \(documentContext.count)")
+            
             contextualPrompt = """
             You are an AI assistant with access to the user's document collection. These documents contain OCR-extracted text from scanned pages/images and manually added files.
             
-            Use this information to provide helpful, accurate responses when relevant. Note that some text may contain OCR extraction errors - use context to understand unclear parts.
-
-            Available Documents (OCR-extracted and manual content):
+            Use this information to provide helpful, accurate responses. Note that some text may contain OCR extraction errors - use context to understand unclear parts.
+            
+            \(isDetailedQuery ? "Full Document Content:" : "Document Information:")
             \(documentContext)
 
             User: \(trimmed)
             
-            Remember: Only reference the documents when they're relevant to the user's question. Provide natural, conversational responses.
+            \(isDetailedQuery ? "Provide a detailed response based on the full document content." : "Provide a helpful response based on the available document information. If you need more specific details, let the user know they can ask for more detailed analysis.")
             """
+        } else if !documentManager.documents.isEmpty {
+            print("💬 NativeChatView: General query - not including document context (performance optimization)")
         } else {
             print("💬 NativeChatView: No documents available for context")
         }
@@ -1827,12 +1836,49 @@ struct NativeChatView: View {
     
     private func isDocumentQuery(_ query: String) -> Bool {
         let lowercaseQuery = query.lowercased()
+        
+        // Keywords that suggest the user wants document-based information
         let documentKeywords = [
-            "document", "file", "pdf", "summary", "what does", "explain",
-            "according to", "based on", "in the document", "tell me about",
-            "what is", "how does", "find", "search", "content"
+            // Direct document references
+            "document", "file", "pdf", "page", "summary", "summarize", "summery",
+            
+            // Query patterns about content
+            "what does", "explain", "according to", "based on", "in the document", 
+            "in the file", "tell me about", "what is", "how does", "what are",
+            
+            // Search and analysis terms  
+            "find", "search", "look for", "show me", "content", "text", "information",
+            
+            // Analysis and interpretation
+            "analyze", "review", "extract", "main points", "key points", "details",
+            "meaning", "interpretation", "context", "reference", "mentions"
         ]
-        return documentKeywords.contains { lowercaseQuery.contains($0) }
+        
+        // Check if query contains any document-related keywords
+        let hasDocumentKeywords = documentKeywords.contains { lowercaseQuery.contains($0) }
+        
+        // Check for question patterns that typically relate to documents
+        let questionPatterns = [
+            "what", "how", "why", "when", "where", "who", "which"
+        ]
+        let hasQuestionPattern = questionPatterns.contains { lowercaseQuery.hasPrefix($0) }
+        
+        // If it's a question and user has documents, it's likely document-related
+        // Or if it explicitly contains document keywords
+        return hasDocumentKeywords || (hasQuestionPattern && !documentManager.documents.isEmpty)
+    }
+    
+    private func isDetailedDocumentQuery(_ query: String) -> Bool {
+        let lowercaseQuery = query.lowercased()
+        
+        // Keywords that suggest the user wants detailed analysis or specific information
+        let detailedKeywords = [
+            "detailed", "details", "specific", "exactly", "quote", "extract", "analyze",
+            "full text", "complete", "entire", "all", "everything", "comprehensive",
+            "step by step", "thorough", "in-depth", "precise", "exact", "word for word"
+        ]
+        
+        return detailedKeywords.contains { lowercaseQuery.contains($0) }
     }
 }
 
