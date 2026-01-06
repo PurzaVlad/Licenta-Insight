@@ -31,8 +31,8 @@ class EdgeAI: RCTEventEmitter {
         let requestId = UUID().uuidString
         print("[EdgeAI] Generated requestId: \(requestId)")
         
-        // Use longer timeout for summaries (4 minutes), shorter for chat (1 minute)
-        let timeoutSeconds: TimeInterval = prompt.contains("<<<SUMMARY_REQUEST>>>") ? 240 : 60
+        // Use the same timeout for both chat and summaries to avoid premature timeouts on slower devices.
+        let timeoutSeconds: TimeInterval = 240
         
         EdgeAI.sharedRequests.store(requestId: requestId, resolve: resolve, reject: reject, timeoutSeconds: timeoutSeconds)
 

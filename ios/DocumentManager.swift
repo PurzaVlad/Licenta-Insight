@@ -7,19 +7,77 @@ import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
     @Published var documents: [Document] = []
-    private let documentsKey = "SavedDocuments_v2"
+    @Published var folders: [DocumentFolder] = []
+    @Published var prefersGridLayout: Bool = false
+    @Published var activeFolderNavigationId: UUID? = nil
+    private let documentsKey = "SavedDocuments_v2" // legacy (migration only)
+    private let documentsFileName = "SavedDocuments_v2.json"
+
+    private struct PersistedState: Codable {
+        var documents: [Document]
+        var folders: [DocumentFolder]
+        var prefersGridLayout: Bool
+    }
     
     init() {
         loadDocuments()
+    }
+
+    func setPrefersGridLayout(_ value: Bool) {
+        guard prefersGridLayout != value else { return }
+        prefersGridLayout = value
+        saveState()
+    }
+
+    enum FolderDeleteMode {
+        case deleteAllItems
+        case moveItemsToParent
+    }
+
+    private func documentsFileURL() -> URL {
+        // Use Application Support instead of UserDefaults (NSUserDefaults has a ~4MB limit).
+        let fm = FileManager.default
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("VaultAI", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir.appendingPathComponent(documentsFileName)
     }
     
     // MARK: - Document Management
     
     func addDocument(_ document: Document) {
         print("💾 DocumentManager: Adding document '\\(document.title)' (\\(document.type.rawValue))")
-        documents.append(document)
+        var updated = Self.withInferredMetadataIfNeeded(document)
+
+        // Assign ordering at the end of the target container (root by default).
+        if updated.sortOrder == 0 {
+            let targetFolder = updated.folderId
+            let maxOrder = documents
+                .filter { $0.folderId == targetFolder }
+                .map { $0.sortOrder }
+                .max() ?? -1
+            updated = Document(
+                id: updated.id,
+                title: updated.title,
+                content: updated.content,
+                summary: updated.summary,
+                category: updated.category,
+                keywordsResume: updated.keywordsResume,
+                dateCreated: updated.dateCreated,
+                folderId: updated.folderId,
+                sortOrder: maxOrder + 1,
+                type: updated.type,
+                imageData: updated.imageData,
+                pdfData: updated.pdfData,
+                originalFileData: updated.originalFileData
+            )
+        }
+
+        documents.append(updated)
         print("💾 DocumentManager: Document array now has \\(documents.count) items")
-        saveDocuments()
+        saveState()
         print("💾 DocumentManager: Document saved successfully")
         
         // Generate AI summary
@@ -28,7 +86,7 @@ class DocumentManager: ObservableObject {
     
     func deleteDocument(_ document: Document) {
         documents.removeAll { $0.id == document.id }
-        saveDocuments()
+        saveState()
     }
 
     func updateSummary(for documentId: UUID, to newSummary: String) {
@@ -39,14 +97,18 @@ class DocumentManager: ObservableObject {
                 title: old.title,
                 content: old.content,
                 summary: newSummary,
+                category: old.category,
+                keywordsResume: old.keywordsResume,
                 dateCreated: old.dateCreated,
+                folderId: old.folderId,
+                sortOrder: old.sortOrder,
                 type: old.type,
                 imageData: old.imageData,
                 pdfData: old.pdfData,
                 originalFileData: old.originalFileData
             )
             documents[idx] = updated
-            saveDocuments()
+            saveState()
         }
     }
 
@@ -58,14 +120,263 @@ class DocumentManager: ObservableObject {
                 title: old.title,
                 content: newContent,
                 summary: old.summary,
+                category: old.category,
+                keywordsResume: old.keywordsResume,
                 dateCreated: old.dateCreated,
+                folderId: old.folderId,
+                sortOrder: old.sortOrder,
                 type: old.type,
                 imageData: old.imageData,
                 pdfData: old.pdfData,
                 originalFileData: old.originalFileData
             )
             documents[idx] = updated
-            saveDocuments()
+            saveState()
+        }
+    }
+
+    // MARK: - Folder Management
+
+    func createFolder(name: String, parentId: UUID? = nil) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let maxOrder = folders
+            .filter { $0.parentId == parentId }
+            .map { $0.sortOrder }
+            .max() ?? -1
+        folders.append(DocumentFolder(name: trimmed, parentId: parentId, sortOrder: maxOrder + 1))
+        saveState()
+    }
+
+    func renameFolder(folderId: UUID, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let idx = folders.firstIndex(where: { $0.id == folderId }) {
+            let old = folders[idx]
+            folders[idx] = DocumentFolder(id: old.id, name: trimmed, dateCreated: old.dateCreated, parentId: old.parentId, sortOrder: old.sortOrder)
+            saveState()
+        }
+    }
+
+    func deleteFolder(folderId: UUID, mode: FolderDeleteMode) {
+        guard let folder = folders.first(where: { $0.id == folderId }) else { return }
+        let parentId = folder.parentId
+
+        switch mode {
+        case .moveItemsToParent:
+            // Move direct documents to parent.
+            let docsToMove = documents(in: folderId)
+            for d in docsToMove {
+                moveDocument(documentId: d.id, toFolder: parentId)
+            }
+
+            // Move direct subfolders to parent.
+            let children = folders(in: folderId)
+            for child in children {
+                moveFolder(folderId: child.id, toParent: parentId)
+            }
+
+            // Remove the folder itself.
+            folders.removeAll { $0.id == folderId }
+            normalizeFolderSortOrders(in: parentId)
+            saveState()
+
+        case .deleteAllItems:
+            // Delete folder, all descendants, and all documents inside.
+            let idsToDelete = descendantFolderIds(includingSelf: folderId)
+
+            documents.removeAll { doc in
+                guard let fid = doc.folderId else { return false }
+                return idsToDelete.contains(fid)
+            }
+
+            folders.removeAll { idsToDelete.contains($0.id) }
+            normalizeFolderSortOrders(in: parentId)
+            saveState()
+        }
+    }
+
+    func folders(in parentId: UUID?) -> [DocumentFolder] {
+        folders
+            .filter { $0.parentId == parentId }
+            .sorted { a, b in
+                if a.sortOrder != b.sortOrder { return a.sortOrder < b.sortOrder }
+                return a.dateCreated < b.dateCreated
+            }
+    }
+
+    func moveFolder(folderId: UUID, toParent parentId: UUID?) {
+        guard let idx = folders.firstIndex(where: { $0.id == folderId }) else { return }
+        let old = folders[idx]
+        guard old.parentId != parentId else { return }
+
+        // Prevent cycles (can't move into itself or its descendants).
+        let descendants = descendantFolderIds(of: folderId)
+        if let parentId, descendants.contains(parentId) || parentId == folderId {
+            return
+        }
+
+        let maxOrder = folders
+            .filter { $0.parentId == parentId && $0.id != old.id }
+            .map { $0.sortOrder }
+            .max() ?? -1
+
+        folders[idx] = DocumentFolder(
+            id: old.id,
+            name: old.name,
+            dateCreated: old.dateCreated,
+            parentId: parentId,
+            sortOrder: maxOrder + 1
+        )
+
+        normalizeFolderSortOrders(in: old.parentId)
+        normalizeFolderSortOrders(in: parentId)
+        saveState()
+    }
+
+    func descendantFolderIds(of folderId: UUID) -> Set<UUID> {
+        var result = Set<UUID>()
+        var stack: [UUID] = [folderId]
+        while let current = stack.popLast() {
+            let children = folders.filter { $0.parentId == current }.map { $0.id }
+            for child in children {
+                if result.insert(child).inserted {
+                    stack.append(child)
+                }
+            }
+        }
+        return result
+    }
+
+    private func descendantFolderIds(includingSelf folderId: UUID) -> Set<UUID> {
+        var ids = descendantFolderIds(of: folderId)
+        ids.insert(folderId)
+        return ids
+    }
+
+    private func normalizeFolderSortOrders(in parentId: UUID?) {
+        let bucket = folders(in: parentId)
+        for (i, f) in bucket.enumerated() {
+            if let idx = folders.firstIndex(where: { $0.id == f.id }) {
+                let old = folders[idx]
+                if old.sortOrder != i {
+                    folders[idx] = DocumentFolder(
+                        id: old.id,
+                        name: old.name,
+                        dateCreated: old.dateCreated,
+                        parentId: old.parentId,
+                        sortOrder: i
+                    )
+                }
+            }
+        }
+    }
+
+    func moveDocument(documentId: UUID, toFolder folderId: UUID?) {
+        guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
+        let old = documents[idx]
+
+        let maxOrder = documents
+            .filter { $0.folderId == folderId && $0.id != old.id }
+            .map { $0.sortOrder }
+            .max() ?? -1
+
+        let updated = Document(
+            id: old.id,
+            title: old.title,
+            content: old.content,
+            summary: old.summary,
+            category: old.category,
+            keywordsResume: old.keywordsResume,
+            dateCreated: old.dateCreated,
+            folderId: folderId,
+            sortOrder: maxOrder + 1,
+            type: old.type,
+            imageData: old.imageData,
+            pdfData: old.pdfData,
+            originalFileData: old.originalFileData
+        )
+        documents[idx] = updated
+
+        normalizeSortOrders(in: folderId)
+        saveState()
+    }
+
+    func reorderDocuments(in folderId: UUID?, draggedId: UUID, targetId: UUID) {
+        guard draggedId != targetId else { return }
+
+        var bucket = documents
+            .filter { $0.folderId == folderId }
+            .sorted { $0.sortOrder < $1.sortOrder }
+
+        guard let from = bucket.firstIndex(where: { $0.id == draggedId }),
+              let to = bucket.firstIndex(where: { $0.id == targetId }) else { return }
+
+        let moved = bucket.remove(at: from)
+        bucket.insert(moved, at: to)
+
+        // Write back sequential sortOrder.
+        for (i, doc) in bucket.enumerated() {
+            if let idx = documents.firstIndex(where: { $0.id == doc.id }) {
+                let old = documents[idx]
+                documents[idx] = Document(
+                    id: old.id,
+                    title: old.title,
+                    content: old.content,
+                    summary: old.summary,
+                    category: old.category,
+                    keywordsResume: old.keywordsResume,
+                    dateCreated: old.dateCreated,
+                    folderId: old.folderId,
+                    sortOrder: i,
+                    type: old.type,
+                    imageData: old.imageData,
+                    pdfData: old.pdfData,
+                    originalFileData: old.originalFileData
+                )
+            }
+        }
+
+        saveState()
+    }
+
+    func documents(in folderId: UUID?) -> [Document] {
+        documents
+            .filter { $0.folderId == folderId }
+            .sorted { a, b in
+                if a.sortOrder != b.sortOrder { return a.sortOrder < b.sortOrder }
+                return a.dateCreated < b.dateCreated
+            }
+    }
+
+    func folderName(for folderId: UUID?) -> String? {
+        guard let folderId else { return nil }
+        return folders.first(where: { $0.id == folderId })?.name
+    }
+
+    private func normalizeSortOrders(in folderId: UUID?) {
+        let bucket = documents(in: folderId)
+        for (i, doc) in bucket.enumerated() {
+            if let idx = documents.firstIndex(where: { $0.id == doc.id }) {
+                let old = documents[idx]
+                if old.sortOrder != i {
+                    documents[idx] = Document(
+                        id: old.id,
+                        title: old.title,
+                        content: old.content,
+                        summary: old.summary,
+                        category: old.category,
+                        keywordsResume: old.keywordsResume,
+                        dateCreated: old.dateCreated,
+                        folderId: old.folderId,
+                        sortOrder: i,
+                        type: old.type,
+                        imageData: old.imageData,
+                        pdfData: old.pdfData,
+                        originalFileData: old.originalFileData
+                    )
+                }
+            }
         }
     }
 
@@ -123,6 +434,8 @@ class DocumentManager: ObservableObject {
             """
             Document: \(document.title)
             Type: \(document.type.rawValue)
+            Category: \(document.category.rawValue)
+            Keywords: \(document.keywordsResume)
             Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
             Summary: \(document.summary)
             
@@ -214,12 +527,18 @@ class DocumentManager: ObservableObject {
         case "xml":
             content = extractTextFromXML(url: url)
             documentType = .text
-        case "ppt", "pptx":
+        case "ppt":
             content = "PowerPoint document - text extraction coming soon"
-            documentType = .docx
-        case "xls", "xlsx":
+            documentType = .ppt
+        case "pptx":
+            content = "PowerPoint document - text extraction coming soon"
+            documentType = .pptx
+        case "xls":
             content = "Excel document - text extraction coming soon"
-            documentType = .docx
+            documentType = .xls
+        case "xlsx":
+            content = "Excel document - text extraction coming soon"
+            documentType = .xlsx
         default:
             content = "Unsupported file type: .\(fileExtension)"
         }
@@ -259,6 +578,8 @@ class DocumentManager: ObservableObject {
             title: fileName,
             content: content,
             summary: "Processing...",
+            category: .general,
+            keywordsResume: "",
             dateCreated: Date(),
             type: documentType,
             imageData: imageData,
@@ -547,28 +868,132 @@ class DocumentManager: ObservableObject {
     
     // MARK: - Persistence
     
-    private func saveDocuments() {
+    private func saveState() {
         do {
-            let encoded = try JSONEncoder().encode(documents)
-            UserDefaults.standard.set(encoded, forKey: documentsKey)
-            print("💾 DocumentManager: Successfully saved \(documents.count) documents to UserDefaults")
+            let encoded = try JSONEncoder().encode(PersistedState(documents: documents, folders: folders, prefersGridLayout: prefersGridLayout))
+            let url = documentsFileURL()
+            try encoded.write(to: url, options: [.atomic])
+            print("💾 DocumentManager: Successfully saved \(documents.count) documents + \(folders.count) folders to \(url.lastPathComponent)")
         } catch {
             print("❌ DocumentManager: Failed to encode documents: \(error.localizedDescription)")
         }
     }
     
     private func loadDocuments() {
+        let url = documentsFileURL()
+
+        if let data = try? Data(contentsOf: url) {
+            do {
+                if let state = try? JSONDecoder().decode(PersistedState.self, from: data) {
+                    let decodedDocuments = state.documents
+                    let backfilled = decodedDocuments.map { Self.withInferredMetadataIfNeeded($0) }
+                    self.documents = backfilled
+                    self.folders = state.folders
+                    self.prefersGridLayout = state.prefersGridLayout
+                    backfillSortOrdersIfNeeded()
+                    backfillFolderSortOrdersIfNeeded()
+                    print("💾 DocumentManager: Successfully loaded \(documents.count) documents + \(folders.count) folders from \(url.lastPathComponent)")
+
+                    // Persist backfilled metadata/order once.
+                    if zip(decodedDocuments, backfilled).contains(where: { $0.keywordsResume != $1.keywordsResume || $0.category != $1.category }) {
+                        saveState()
+                    }
+                    return
+                }
+
+                // Legacy file format (documents only)
+                let decodedDocuments = try JSONDecoder().decode([Document].self, from: data)
+                let backfilled = decodedDocuments.map { Self.withInferredMetadataIfNeeded($0) }
+                self.documents = backfilled
+                self.folders = []
+                self.prefersGridLayout = false
+                backfillSortOrdersIfNeeded()
+                backfillFolderSortOrdersIfNeeded()
+                print("💾 DocumentManager: Loaded legacy documents-only file (\(documents.count) docs)")
+                saveState()
+                return
+            } catch {
+                print("❌ DocumentManager: Failed to decode documents file: \(error.localizedDescription)")
+            }
+        }
+
+        // One-time migration: older builds stored JSON in UserDefaults.
         if let data = UserDefaults.standard.data(forKey: documentsKey) {
             do {
                 let decodedDocuments = try JSONDecoder().decode([Document].self, from: data)
-                self.documents = decodedDocuments
-                print("💾 DocumentManager: Successfully loaded \(documents.count) documents from UserDefaults")
+                let backfilled = decodedDocuments.map { Self.withInferredMetadataIfNeeded($0) }
+                self.documents = backfilled
+                self.folders = []
+                self.prefersGridLayout = false
+                backfillSortOrdersIfNeeded()
+                backfillFolderSortOrdersIfNeeded()
+                print("💾 DocumentManager: Migrated \(documents.count) documents from UserDefaults -> file")
+                saveState()
+                UserDefaults.standard.removeObject(forKey: documentsKey)
+                return
             } catch {
-                print("❌ DocumentManager: Failed to decode documents: \(error.localizedDescription)")
+                print("❌ DocumentManager: Failed to decode legacy UserDefaults documents: \(error.localizedDescription)")
             }
-        } else {
-            print("💾 DocumentManager: No saved documents found in UserDefaults")
         }
+
+        print("💾 DocumentManager: No saved documents found")
+    }
+
+    private func backfillSortOrdersIfNeeded() {
+        // If everything is 0 (legacy), assign stable ordering within each folder bucket.
+        let hasAnyNonZero = documents.contains(where: { $0.sortOrder != 0 })
+        if hasAnyNonZero { return }
+
+        // Preserve current array order within each folder bucket.
+        let grouped = Dictionary(grouping: documents, by: { $0.folderId })
+        for (folderId, bucket) in grouped {
+            for (i, doc) in bucket.enumerated() {
+                if let idx = documents.firstIndex(where: { $0.id == doc.id }) {
+                    let old = documents[idx]
+                    documents[idx] = Document(
+                        id: old.id,
+                        title: old.title,
+                        content: old.content,
+                        summary: old.summary,
+                        category: old.category,
+                        keywordsResume: old.keywordsResume,
+                        dateCreated: old.dateCreated,
+                        folderId: old.folderId,
+                        sortOrder: i,
+                        type: old.type,
+                        imageData: old.imageData,
+                        pdfData: old.pdfData,
+                        originalFileData: old.originalFileData
+                    )
+                }
+            }
+            normalizeSortOrders(in: folderId)
+        }
+    }
+
+    private func backfillFolderSortOrdersIfNeeded() {
+        // If everything is 0 (legacy), assign stable ordering within each parent bucket.
+        let hasAnyNonZero = folders.contains(where: { $0.sortOrder != 0 })
+        if hasAnyNonZero { return }
+
+        let grouped = Dictionary(grouping: folders, by: { $0.parentId })
+        for (parentId, bucket) in grouped {
+            let stable = bucket.sorted { a, b in a.dateCreated < b.dateCreated }
+            for (i, f) in stable.enumerated() {
+                if let idx = folders.firstIndex(where: { $0.id == f.id }) {
+                    let old = folders[idx]
+                    folders[idx] = DocumentFolder(
+                        id: old.id,
+                        name: old.name,
+                        dateCreated: old.dateCreated,
+                        parentId: old.parentId,
+                        sortOrder: i
+                    )
+                }
+            }
+            normalizeFolderSortOrders(in: parentId)
+        }
+        saveState()
     }
     
     // MARK: - Search and Query
@@ -578,7 +1003,103 @@ class DocumentManager: ObservableObject {
         return documents.filter { document in
             document.title.lowercased().contains(lowercaseQuery) ||
             document.content.lowercased().contains(lowercaseQuery) ||
-            document.summary.lowercased().contains(lowercaseQuery)
+            document.summary.lowercased().contains(lowercaseQuery) ||
+            document.category.rawValue.lowercased().contains(lowercaseQuery) ||
+            document.keywordsResume.lowercased().contains(lowercaseQuery)
         }
+    }
+
+    // MARK: - Auto Categorization + Keywords
+
+    private static func withInferredMetadataIfNeeded(_ doc: Document) -> Document {
+        // If we already have a keyword resume, assume metadata is present.
+        if !doc.keywordsResume.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return doc
+        }
+        let inferredCategory = inferCategory(title: doc.title, content: doc.content, summary: doc.summary)
+        let inferredKeywords = makeKeywordsResume(title: doc.title, content: doc.content, summary: doc.summary)
+        return Document(
+            id: doc.id,
+            title: doc.title,
+            content: doc.content,
+            summary: doc.summary,
+            category: inferredCategory,
+            keywordsResume: inferredKeywords,
+            dateCreated: doc.dateCreated,
+            folderId: doc.folderId,
+            sortOrder: doc.sortOrder,
+            type: doc.type,
+            imageData: doc.imageData,
+            pdfData: doc.pdfData,
+            originalFileData: doc.originalFileData
+        )
+    }
+
+    static func inferCategory(title: String, content: String, summary: String) -> Document.DocumentCategory {
+        let t = title.lowercased()
+        let s = summary.lowercased()
+        let c = String(content.prefix(4000)).lowercased()
+        let combined = "\(t)\n\(s)\n\(c)"
+
+        func has(_ needles: [String]) -> Bool {
+            for n in needles where combined.contains(n) { return true }
+            return false
+        }
+
+        if has(["cv", "resume", "résumé", "curriculum vitae", "work experience", "education", "skills", "linkedin", "github"]) {
+            return .resume
+        }
+        if has(["invoice", "receipt", "statement", "payment", "balance", "iban", "swift", "tax", "salary", "budget"]) {
+            return combined.contains("receipt") ? .receipts : .finance
+        }
+        if has(["agreement", "contract", "terms", "nda", "non-disclosure", "liability", "lease", "court", "jurisdiction"]) {
+            return .legal
+        }
+        if has(["diagnosis", "prescription", "patient", "clinic", "doctor", "hospital", "medication", "allergy"]) {
+            return .medical
+        }
+        if has(["passport", "driver", "license", "identity", "id card", "ssn", "social security"]) {
+            return .identity
+        }
+        if has(["meeting", "notes", "minutes", "agenda", "todo", "brainstorm", "journal"]) {
+            return .notes
+        }
+        return .general
+    }
+
+    static func makeKeywordsResume(title: String, content: String, summary: String) -> String {
+        let stop: Set<String> = [
+            "the","and","for","with","that","this","from","are","was","were","have","has","had",
+            "you","your","they","their","them","not","but","can","will","would","should","could",
+            "a","an","to","of","in","on","at","as","by","or","be","is","it","we","i"
+        ]
+
+        let text = "\(title)\n\(summary)\n\(String(content.prefix(2500)))".lowercased()
+        let tokens = text
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 && !stop.contains($0) }
+
+        var freq: [String: Int] = [:]
+        for tok in tokens {
+            freq[tok, default: 0] += 1
+        }
+
+        let ranked = freq
+            .sorted { a, b in a.value == b.value ? a.key < b.key : a.value > b.value }
+            .map { $0.key }
+
+        var parts: [String] = []
+        for w in ranked {
+            if parts.count >= 10 { break }
+            parts.append(w)
+            let candidate = parts.joined(separator: ", ")
+            if candidate.count >= 50 { break }
+        }
+
+        let joined = parts.joined(separator: ", ")
+        if joined.count <= 50 { return joined }
+        let idx = joined.index(joined.startIndex, offsetBy: 50)
+        return String(joined[..<idx])
     }
 }

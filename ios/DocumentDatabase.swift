@@ -18,6 +18,8 @@ extension DocumentEntity {
     @NSManaged public var content: String
     @NSManaged public var ocrText: String
     @NSManaged public var summary: String
+    @NSManaged public var category: String
+    @NSManaged public var keywordsResume: String
     @NSManaged public var dateCreated: Date
     @NSManaged public var documentType: String
     @NSManaged public var fileData: Data?
@@ -61,6 +63,8 @@ class DocumentDatabase: ObservableObject {
         entity.content = document.content
         entity.ocrText = document.content // For now, content = OCR text
         entity.summary = document.summary
+        entity.category = document.category.rawValue
+        entity.keywordsResume = document.keywordsResume
         entity.dateCreated = document.dateCreated
         entity.documentType = document.type.rawValue
         
@@ -119,9 +123,12 @@ class DocumentDatabase: ObservableObject {
                 }
                 
                 return Document(
+                    id: entity.id,
                     title: entity.title,
                     content: entity.ocrText.isEmpty ? entity.content : entity.ocrText,
                     summary: entity.summary,
+                    category: Document.DocumentCategory(rawValue: entity.category) ?? .general,
+                    keywordsResume: entity.keywordsResume,
                     dateCreated: entity.dateCreated,
                     type: type,
                     imageData: imageData,
