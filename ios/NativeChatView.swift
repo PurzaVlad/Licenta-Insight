@@ -66,16 +66,16 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
 struct TabContainerView: View {
     var body: some View {
         TabView {
-            NativeChatView()
-                .tabItem {
-                    Image(systemName: "message")
-                    Text("Chat")
-                }
-            
             DocumentsView()
                 .tabItem {
                     Image(systemName: "doc.text")
                     Text("Documents")
+                }
+            
+            NativeChatView()
+                .tabItem {
+                    Image(systemName: "message")
+                    Text("Chat")
                 }
         }
     }
@@ -96,10 +96,14 @@ struct DocumentsView: View {
     @State private var currentDocument: Document?
     @State private var showingAISummary = false
     @State private var isOpeningPreview = false
+    @State private var showingRenameDialog = false
+    @State private var renameText = ""
+    @State private var documentToRename: Document?
     
     var body: some View {
         NavigationView {
-            VStack {
+            ZStack {
+                VStack {
                 // Debug: Print current document count whenever view refreshes
                 let _ = print("🖥️ DocumentsView: Current document count: \\(documentManager.documents.count)")
                 let _ = print("🖥️ DocumentsView: Documents: \\(documentManager.documents.map { $0.title })")
@@ -140,7 +144,12 @@ struct DocumentsView: View {
                                 Button(action: {
                                     openDocumentPreview(document: document)
                                 }) {
-                                    DocumentRowView(document: document)
+                                    DocumentRowView(
+                                        document: document,
+                                        onRename: { renameDocument(document) },
+                                        onDelete: { deleteDocument(document) },
+                                        onConvert: { convertDocument(document) }
+                                    )
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .contentShape(Rectangle())
@@ -164,20 +173,39 @@ struct DocumentsView: View {
                         }
                     }
                 }
-                
+            }
+            
+            // Full-screen processing overlay
+            if isProcessing {
+                ZStack {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .ignoresSafeArea(.all)
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Processing document...")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                    }
+                }
+
+                }
+
+                // Full-screen processing overlay
                 if isProcessing {
                     ZStack {
                         Rectangle()
                             .fill(.ultraThinMaterial)
-                            .ignoresSafeArea()
+                            .ignoresSafeArea(.all)
                         VStack(spacing: 16) {
                             ProgressView()
-                                .scaleEffect(1.2)
+                                .scaleEffect(1.5)
                             Text("Processing document...")
-                                .foregroundColor(.secondary)
+                                .font(.headline)
+                                .foregroundColor(.primary)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .navigationTitle("Documents")
@@ -247,6 +275,43 @@ struct DocumentsView: View {
         } message: {
             Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
         }
+        .alert("Rename Document", isPresented: $showingRenameDialog) {
+            TextField("Document name", text: $renameText)
+            
+            Button("Rename") {
+                guard let document = documentToRename else { return }
+                let newTitle = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !newTitle.isEmpty else { return }
+
+                if let idx = documentManager.documents.firstIndex(where: { $0.id == document.id }) {
+                    let old = documentManager.documents[idx]
+                    let updated = Document(
+                        id: old.id,
+                        title: newTitle,
+                        content: old.content,
+                        summary: old.summary,
+                        dateCreated: old.dateCreated,
+                        type: old.type,
+                        imageData: old.imageData,
+                        pdfData: old.pdfData,
+                        originalFileData: old.originalFileData
+                    )
+                    documentManager.documents[idx] = updated
+
+                    // Persist via an existing public save-triggering method.
+                    documentManager.updateSummary(for: updated.id, to: updated.summary)
+                }
+
+                documentToRename = nil
+            }
+            
+            Button("Cancel", role: .cancel) {
+                documentToRename = nil
+                renameText = ""
+            }
+        } message: {
+            Text("Enter a new name for the document")
+        }
         .sheet(isPresented: $showingDocumentPreview, onDismiss: { isOpeningPreview = false }) {
             if let url = previewDocumentURL, let document = currentDocument {
                 DocumentPreviewView(url: url, document: document, onAISummary: {
@@ -268,6 +333,22 @@ struct DocumentsView: View {
             let document = documentManager.documents[index]
             documentManager.deleteDocument(document)
         }
+    }
+    
+    // Menu actions
+    private func renameDocument(_ document: Document) {
+        documentToRename = document
+        renameText = document.title
+        showingRenameDialog = true
+    }
+    
+    private func deleteDocument(_ document: Document) {
+        documentManager.deleteDocument(document)
+    }
+    
+    private func convertDocument(_ document: Document) {
+        // TODO: Implement document conversion functionality
+        print("Convert document: \(document.title)")
     }
     
     private func processImportedFiles(_ urls: [URL]) {
@@ -704,6 +785,10 @@ struct DocumentsView: View {
 struct DocumentRowView: View {
     let document: Document
     @State private var isGeneratingSummary = false
+
+    let onRename: () -> Void
+    let onDelete: () -> Void
+    let onConvert: () -> Void
     
     var body: some View {
         HStack(spacing: 12) {
@@ -770,6 +855,19 @@ struct DocumentRowView: View {
             }
             
             Spacer()
+            
+            // 3-dot menu
+            Menu {
+                Button(action: onRename) { Text("✏️ Rename") }
+                Button(action: onDelete) { Text("🗑️ Delete") }
+                Button(action: onConvert) { Text("♻️ Convert") }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(PlainButtonStyle())
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1882,6 +1980,31 @@ struct NativeChatView: View {
     }
 }
 
+private func formatMarkdownText(_ text: String) -> AttributedString {
+    var processedText = text
+    
+    // Convert markdown lists to bullet points
+    processedText = processedText.replacingOccurrences(of: "* ", with: "• ")
+    
+    // Fix malformed bold markdown: **text* → **text**
+    let malformedBoldRegex = try! NSRegularExpression(pattern: "\\*\\*([^*]+)\\*(?!\\*)", options: [])
+    processedText = malformedBoldRegex.stringByReplacingMatches(in: processedText, options: [], range: NSRange(location: 0, length: processedText.count), withTemplate: "**$1**")
+    
+    // Preserve double newlines for paragraphs
+    processedText = processedText.replacingOccurrences(of: "\n\n", with: "\n\n")
+    
+    // Create AttributedString with markdown support
+    do {
+        var options = AttributedString.MarkdownParsingOptions()
+        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+        let attributedString = try AttributedString(markdown: processedText, options: options)
+        return attributedString
+    } catch {
+        // Fallback to plain text if markdown parsing fails
+        return AttributedString(processedText)
+    }
+}
+
 private struct MessageRow: View {
     let msg: ChatMessage
 
@@ -1898,7 +2021,7 @@ private struct MessageRow: View {
     }
 
     private var bubble: some View {
-        Text(msg.text)
+        Text(formatMarkdownText(msg.text))
             .font(.body)
             .foregroundStyle(msg.role == "user" ? Color.white : Color.primary)
             .padding(.horizontal, 12)
@@ -2105,7 +2228,7 @@ struct DocumentSummaryView: View {
                                 .italic()
                                 .padding(.vertical)
                         } else {
-                            Text(summary)
+                            Text(formatMarkdownText(summary))
                                 .padding()
                                 .background(Color(.tertiarySystemBackground))
                                 .cornerRadius(8)

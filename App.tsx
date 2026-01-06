@@ -21,7 +21,7 @@ const SUMMARY_SYSTEM_PROMPT =
   'Summarize in 4-6 bullet points. Include key facts, names, actions. Be concise.';
 
 const CHAT_SYSTEM_PROMPT =
-  'You are an expert assistant. Provide accurate, neutral answers. Prefer English. Base responses on the given context; avoid fabrications.';
+  'You are a document analysis assistant specializing in OCR file extraction and organization. Speak formally and professionally. Provide clear, accurate information about uploaded documents.';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
