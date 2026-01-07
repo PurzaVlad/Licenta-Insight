@@ -417,7 +417,7 @@ class DocumentManager: ObservableObject {
     func generateSummary(for document: Document) {
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
-        let prompt = "<<<SUMMARY_REQUEST>>>Summarize this document in 4-6 bullet points:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Summarize the document content only. No introduction, no commentary, no suggestions, no feedback. Do not write the word \"Summary\":\n\n\(document.content)"
         
         print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
         // Send to EdgeAI for processing
@@ -534,10 +534,10 @@ class DocumentManager: ObservableObject {
             content = "PowerPoint document - text extraction coming soon"
             documentType = .pptx
         case "xls":
-            content = "Excel document - text extraction coming soon"
+            content = extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xls
         case "xlsx":
-            content = "Excel document - text extraction coming soon"
+            content = extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xlsx
         default:
             content = "Unsupported file type: .\(fileExtension)"
@@ -709,6 +709,18 @@ class DocumentManager: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func extractTextFromSpreadsheetViaOCR(url: URL) -> String {
+        if #available(iOS 13.0, *) {
+            if let img = generateDOCXThumbnail(url: url) {
+                let text = performOCR(on: img)
+                if !text.isEmpty && !text.contains("OCR failed") {
+                    return formatExtractedText(text)
+                }
+            }
+        }
+        return "Imported spreadsheet. Text extraction is limited on this file."
     }
     
     private func extractTextFromXMLContent(_ xmlContent: String) -> String {

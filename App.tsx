@@ -18,10 +18,10 @@ const MODEL_URL =
   'https://huggingface.co/medmekk/gemma-2-2b-it.GGUF/resolve/main/gemma-2-2b-it-Q3_K_S.gguf';
 
 const SUMMARY_SYSTEM_PROMPT =
-  'Summarize in 4-6 bullet points. Include key facts, names, actions. Be concise.';
+  'Summarize the document content only. Output factual summary sentences only. No introduction, no commentary, no suggestions, no feedback. Do not write the word "Summary".';
 
 const CHAT_SYSTEM_PROMPT =
-  'You are a document analysis assistant specializing in OCR file extraction and organization. Speak formally and professionally. Provide clear, accurate information about uploaded documents.';
+  'You are a document analysis assistant specializing in file extraction. Provide any information you can find in the already uploaded documents and help improve them however you are asked to. Be concise';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -69,7 +69,7 @@ function App(): React.JSX.Element {
         const llamaContext = await initLlama({
           model: filePath,
           use_mlock: false,
-          n_ctx: 2048,
+          n_ctx: 1536,
           n_gpu_layers: 0, // CPU only for better compatibility
         });
         
@@ -190,34 +190,57 @@ useEffect(() => {
           console.log('[EdgeAI] Generated prompt length:', promptText.length);
           console.log('[EdgeAI] Prompt preview:', promptText.substring(0, 200) + '...');
           
-          const completionParams = isSummary
-            ? {
-                prompt: promptText,
-                n_predict: 100,
-                temperature: 0.3,
+          let text = "";
+          if (isSummary) {
+            const summaryMessages: Message[] = [
+              { role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() },
+              { role: 'user', content: userContent, timestamp: Date.now() }
+            ];
+            const summaryPrompt = formatGemmaPrompt(summaryMessages);
+            const summaryResult = await context.completion(
+              {
+                prompt: summaryPrompt,
+                n_predict: 220,
+                temperature: 0.2,
                 top_p: 0.8,
-                repeat_penalty: 1.1,
+                repeat_penalty: 1.15,
                 stop: ["<end_of_turn>", "</s>"]
-              }
-            : {
-                prompt: promptText,
-                n_predict: 180,
-                temperature: 0.4,
-                top_p: 0.8,
-                repeat_penalty: 1.1,
-                stop: ["<end_of_turn>", "</s>"]
-              };
-              
-          console.log('[EdgeAI] Calling context.completion with params:', Object.keys(completionParams));
-          const result = await context.completion(completionParams, () => {});
-          
-          console.log('[EdgeAI] Got result:', {
-            hasText: !!result?.text,
-            textLength: result?.text?.length ?? 0,
-            textPreview: result?.text?.substring(0, 100)
-          });
+              },
+              () => {}
+            );
 
-          let text = (result?.text ?? '').trim();
+            text = (summaryResult?.text ?? '').trim();
+            const candidates = [
+              text.lastIndexOf('\n'),
+              text.lastIndexOf('.'),
+              text.lastIndexOf('!'),
+              text.lastIndexOf('?')
+            ];
+            const cut = Math.max(...candidates);
+            if (cut > 0 && cut < text.length - 2) {
+              text = text.slice(0, cut + 1).trim();
+            }
+          } else {
+            const completionParams = {
+              prompt: promptText,
+              n_predict: 180,
+              temperature: 0.4,
+              top_p: 0.8,
+              repeat_penalty: 1.1,
+              stop: ["<end_of_turn>", "</s>"]
+            };
+
+            console.log('[EdgeAI] Calling context.completion with params:', Object.keys(completionParams));
+            const result = await context.completion(completionParams, () => {});
+
+            console.log('[EdgeAI] Got result:', {
+              hasText: !!result?.text,
+              textLength: result?.text?.length ?? 0,
+              textPreview: result?.text?.substring(0, 100)
+            });
+
+            text = (result?.text ?? '').trim();
+          }
 
           // strip only template artifacts
           text = text

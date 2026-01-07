@@ -31,8 +31,8 @@ class EdgeAI: RCTEventEmitter {
         let requestId = UUID().uuidString
         print("[EdgeAI] Generated requestId: \(requestId)")
         
-        // Use the same timeout for both chat and summaries to avoid premature timeouts on slower devices.
-        let timeoutSeconds: TimeInterval = 240
+        // No timeout; allow long-running generations (summaries can be slow on-device).
+        let timeoutSeconds: TimeInterval = 0
         
         EdgeAI.sharedRequests.store(requestId: requestId, resolve: resolve, reject: reject, timeoutSeconds: timeoutSeconds)
 
@@ -70,18 +70,20 @@ final class EdgeAIRequests {
         resolvers[requestId] = resolve
         rejecters[requestId] = reject
 
-        let timer = Timer.scheduledTimer(withTimeInterval: timeoutSeconds, repeats: false) { [weak self] _ in
-            guard let self = self else { return }
-            print("[EdgeAIRequests] Request \(requestId) timed out")
-            self.lock.lock(); defer { self.lock.unlock() }
-            if let _ = self.rejecters.removeValue(forKey: requestId) {
-                _ = self.resolvers.removeValue(forKey: requestId)
-                self.timers.removeValue(forKey: requestId)
-                // Reject due to timeout
-                reject("TIMEOUT", "The AI request timed out after \(timeoutSeconds) seconds.", nil)
+        if timeoutSeconds > 0 {
+            let timer = Timer.scheduledTimer(withTimeInterval: timeoutSeconds, repeats: false) { [weak self] _ in
+                guard let self = self else { return }
+                print("[EdgeAIRequests] Request \(requestId) timed out")
+                self.lock.lock(); defer { self.lock.unlock() }
+                if let _ = self.rejecters.removeValue(forKey: requestId) {
+                    _ = self.resolvers.removeValue(forKey: requestId)
+                    self.timers.removeValue(forKey: requestId)
+                    // Reject due to timeout
+                    reject("TIMEOUT", "The AI request timed out after \(timeoutSeconds) seconds.", nil)
+                }
             }
+            timers[requestId] = timer
         }
-        timers[requestId] = timer
         print("[EdgeAIRequests] Active requests: \(resolvers.count)")
     }
 

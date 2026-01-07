@@ -163,25 +163,148 @@ private enum DocumentLayoutMode {
 }
 
 struct TabContainerView: View {
+    @StateObject private var documentManager = DocumentManager()
+    @State private var summaryRequestsInFlight: Set<UUID> = []
+    @State private var summaryQueue: [SummaryJob] = []
+    @State private var isSummarizing = false
+    @State private var currentSummaryDocId: UUID? = nil
+    @State private var canceledSummaryIds: Set<UUID> = []
+
+    private struct SummaryJob: Equatable {
+        let documentId: UUID
+        let prompt: String
+    }
+
     var body: some View {
         TabView {
             DocumentsView()
+                .environmentObject(documentManager)
                 .tabItem {
                     Image(systemName: "doc.text")
                     Text("Documents")
                 }
             
+            ConversionView()
+                .environmentObject(documentManager)
+                .tabItem {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Text("Convert")
+                }
+            
             NativeChatView()
+                .environmentObject(documentManager)
                 .tabItem {
                     Image(systemName: "message")
                     Text("Chat")
                 }
         }
+        .onAppear {
+            for doc in documentManager.documents where isSummaryPlaceholder(doc.summary) {
+                documentManager.generateSummary(for: doc)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CancelDocumentSummary"))) { notification in
+            guard let idString = notification.userInfo?["documentId"] as? String,
+                  let docId = UUID(uuidString: idString) else { return }
+
+            // Remove from queue if it hasn't started.
+            if let idx = summaryQueue.firstIndex(where: { $0.documentId == docId }) {
+                summaryQueue.remove(at: idx)
+            }
+
+            // Mark in-flight summaries as canceled so results are ignored.
+            if currentSummaryDocId == docId {
+                canceledSummaryIds.insert(docId)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("GenerateDocumentSummary"))) { notification in
+            guard let userInfo = notification.userInfo,
+                  let idString = userInfo["documentId"] as? String,
+                  let prompt = userInfo["prompt"] as? String,
+                  let docId = UUID(uuidString: idString) else {
+                return
+            }
+
+            // Skip if we already generated (or are generating) a summary.
+            if summaryRequestsInFlight.contains(docId) {
+                return
+            }
+            if let doc = documentManager.getDocument(by: docId),
+               !isSummaryPlaceholder(doc.summary) {
+                return
+            }
+
+            let job = SummaryJob(documentId: docId, prompt: prompt)
+            if !summaryQueue.contains(where: { $0.documentId == docId }) {
+                summaryQueue.append(job)
+            }
+            processNextSummaryIfNeeded()
+        }
+    }
+
+    private func isSummaryPlaceholder(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
+    }
+
+    private func processNextSummaryIfNeeded() {
+        guard !isSummarizing else { return }
+        guard let next = summaryQueue.first else { return }
+        guard let doc = documentManager.getDocument(by: next.documentId),
+              isSummaryPlaceholder(doc.summary) else {
+            summaryQueue.removeFirst()
+            processNextSummaryIfNeeded()
+            return
+        }
+
+        isSummarizing = true
+        currentSummaryDocId = next.documentId
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SummaryGenerationStatus"),
+            object: nil,
+            userInfo: ["isActive": true, "documentId": next.documentId.uuidString]
+        )
+        summaryRequestsInFlight.insert(next.documentId)
+
+        EdgeAI.shared?.generate(next.prompt, resolver: { result in
+            DispatchQueue.main.async {
+                self.summaryRequestsInFlight.remove(next.documentId)
+                if !self.canceledSummaryIds.contains(next.documentId),
+                   let summary = result as? String, !summary.isEmpty {
+                    self.documentManager.updateSummary(for: next.documentId, to: summary)
+                }
+                self.finishSummary(for: next.documentId)
+            }
+        }, rejecter: { _, _, _ in
+            DispatchQueue.main.async {
+                self.summaryRequestsInFlight.remove(next.documentId)
+                self.finishSummary(for: next.documentId)
+            }
+        })
+    }
+
+    private func finishSummary(for documentId: UUID) {
+        canceledSummaryIds.remove(documentId)
+
+        if let idx = summaryQueue.firstIndex(where: { $0.documentId == documentId }) {
+            summaryQueue.remove(at: idx)
+        } else if !summaryQueue.isEmpty {
+            summaryQueue.removeFirst()
+        }
+
+        isSummarizing = false
+        currentSummaryDocId = nil
+        NotificationCenter.default.post(
+            name: NSNotification.Name("SummaryGenerationStatus"),
+            object: nil,
+            userInfo: ["isActive": false, "documentId": documentId.uuidString]
+        )
+        processNextSummaryIfNeeded()
     }
 }
 
 struct DocumentsView: View {
-    @StateObject private var documentManager = DocumentManager()
+    @EnvironmentObject private var documentManager: DocumentManager
     @State private var showingDocumentPicker = false
     @State private var showingScanner = false
     @State private var isProcessing = false
@@ -192,8 +315,6 @@ struct DocumentsView: View {
     @State private var extractedText = ""
     @State private var pendingCategory: Document.DocumentCategory = .general
     @State private var pendingKeywordsResume: String = ""
-    @State private var pendingImportedDocument: Document?
-    @State private var pendingImportedQueue: [Document] = []
     @State private var showingDocumentPreview = false
     @State private var previewDocumentURL: URL?
     @State private var currentDocument: Document?
@@ -206,7 +327,6 @@ struct DocumentsView: View {
 
     @State private var showingNewFolderDialog = false
     @State private var newFolderName = ""
-    @State private var showingMoveToFolderSheet = false
     @State private var documentToMove: Document?
 
     @State private var showingRenameFolderDialog = false
@@ -282,7 +402,7 @@ struct DocumentsView: View {
                             )
                             .background(
                                 NavigationLink(
-                                    destination: FolderDocumentsView(folder: folder).environmentObject(documentManager),
+                                    destination: FolderDocumentsView(folder: folder, onOpenDocument: openDocumentPreview).environmentObject(documentManager),
                                     tag: folder.id,
                                     selection: $documentManager.activeFolderNavigationId
                                 ) { EmptyView() }
@@ -302,7 +422,6 @@ struct DocumentsView: View {
                         onRename: { renameDocument(document) },
                         onMoveToFolder: {
                             documentToMove = document
-                            showingMoveToFolderSheet = true
                         },
                         onDelete: { deleteDocument(document) },
                         onConvert: { convertDocument(document) }
@@ -354,11 +473,11 @@ struct DocumentsView: View {
                             }
                         )
                         .background(
-                            NavigationLink(
-                                destination: FolderDocumentsView(folder: folder).environmentObject(documentManager),
-                                tag: folder.id,
-                                selection: $documentManager.activeFolderNavigationId
-                            ) { EmptyView() }
+                                NavigationLink(
+                                    destination: FolderDocumentsView(folder: folder, onOpenDocument: openDocumentPreview).environmentObject(documentManager),
+                                    tag: folder.id,
+                                    selection: $documentManager.activeFolderNavigationId
+                                ) { EmptyView() }
                             .opacity(0)
                         )
                         .onDrop(of: [UTType.text], isTargeted: nil) { providers in
@@ -371,10 +490,9 @@ struct DocumentsView: View {
                             document: document,
                             onOpen: { openDocumentPreview(document: document) },
                             onRename: { renameDocument(document) },
-                            onMoveToFolder: {
-                                documentToMove = document
-                                showingMoveToFolderSheet = true
-                            },
+                        onMoveToFolder: {
+                            documentToMove = document
+                        },
                             onDelete: { deleteDocument(document) },
                             onConvert: { convertDocument(document) }
                         )
@@ -459,9 +577,14 @@ struct DocumentsView: View {
     var body: some View {
         NavigationView {
             documentsMainStack
-                .navigationTitle("Documents")
-                .navigationBarTitleDisplayMode(.large)
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Text(" Documents ")
+                            .font(.headline)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
                         Button {
                             documentManager.setPrefersGridLayout(false)
@@ -552,28 +675,34 @@ struct DocumentsView: View {
                 )
             }
         }
-        .sheet(isPresented: $showingMoveToFolderSheet) {
-            if let doc = documentToMove {
-                MoveToFolderSheet(
-                    document: doc,
-                    folders: documentManager.folders,
-                    currentFolderName: documentManager.folderName(for: doc.folderId),
-                    onSelectFolder: { folderId in
-                        documentManager.moveDocument(documentId: doc.id, toFolder: folderId)
-                        documentToMove = nil
-                        showingMoveToFolderSheet = false
-                    },
-                    onCancel: {
-                        documentToMove = nil
-                        showingMoveToFolderSheet = false
-                    }
-                )
-            }
+        .sheet(item: $documentToMove) { doc in
+            MoveToFolderSheet(
+                document: doc,
+                folders: documentManager.folders(in: nil),
+                currentFolderName: documentManager.folderName(for: doc.folderId),
+                currentContainerName: "Documents",
+                allowRootSelection: true,
+                onSelectFolder: { folderId in
+                    documentManager.moveDocument(documentId: doc.id, toFolder: folderId)
+                    documentToMove = nil
+                },
+                onCancel: {
+                    documentToMove = nil
+                }
+            )
         }
         .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker { urls in
                 processImportedFiles(urls)
             }
+        }
+        .onAppear {
+            // Force refresh when the view appears to show newly converted documents
+            documentManager.objectWillChange.send()
+        }
+        .refreshable {
+            // Add pull-to-refresh functionality
+            documentManager.objectWillChange.send()
         }
         .sheet(isPresented: $showingScanner) {
             if VNDocumentCameraViewController.isSupported {
@@ -599,21 +728,14 @@ struct DocumentsView: View {
             }
             
             Button("Cancel", role: .cancel) {
-                if pendingImportedDocument != nil {
-                    pendingImportedDocument = nil
-                    suggestedName = ""
-                    customName = ""
-                    pendingCategory = .general
-                    pendingKeywordsResume = ""
-                    if !pendingImportedQueue.isEmpty {
-                        startNextImportedNaming()
-                    } else {
-                        isProcessing = false
-                    }
-                } else {
-                    scannedImages.removeAll()
-                    extractedText = ""
-                }
+                // Only handle scanned documents now since imported files keep original names
+                scannedImages.removeAll()
+                extractedText = ""
+                suggestedName = ""
+                customName = ""
+                pendingCategory = .general
+                pendingKeywordsResume = ""
+                isProcessing = false
             }
         } message: {
             Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
@@ -676,10 +798,11 @@ struct DocumentsView: View {
                 DocumentPreviewContainerView(url: url, document: document, onAISummary: {
                     showingDocumentPreview = false
                     showingAISummary = true
+                    isOpeningPreview = false
                 })
             }
         }
-        .sheet(isPresented: $showingAISummary) {
+        .sheet(isPresented: $showingAISummary, onDismiss: { isOpeningPreview = false }) {
             if let document = currentDocument {
                 DocumentSummaryView(document: document)
                     .environmentObject(documentManager)
@@ -709,8 +832,10 @@ struct DocumentsView: View {
     }
     
     private func convertDocument(_ document: Document) {
-        // TODO: Implement document conversion functionality
+        // Navigate to conversion view with pre-selected document
+        // This will be handled by the dedicated Convert tab
         print("Convert document: \(document.title)")
+        // Note: Users should use the Convert tab for full conversion functionality
     }
 
     private func handleFolderDrop(providers: [NSItemProvider], folderId: UUID) -> Bool {
@@ -736,7 +861,6 @@ struct DocumentsView: View {
         
         // Process each file synchronously to avoid async issues
         var processedCount = 0
-        var docs: [Document] = []
         
         for url in urls {
             print("📱 UI: Processing file: \\(url.lastPathComponent)")
@@ -749,10 +873,41 @@ struct DocumentsView: View {
             
             // Even if security access fails, try to process the file
             if let document = documentManager.processFile(at: url) {
-                print("📱 UI: ✅ Successfully created document: \\(document.title)")
+                print("📱 UI: ✅ Successfully created document with original name: \\(document.title)")
                 print("📱 UI: Document content preview: \\(String(document.content.prefix(100)))...")
 
-                docs.append(document)
+                // Persist and add to list immediately so it appears in the UI.
+                documentManager.addDocument(document)
+
+                // Generate category and keywords in background but keep original filename
+                let fullTextForKeywords = document.content
+                DispatchQueue.global(qos: .utility).async {
+                    let cat = DocumentManager.inferCategory(title: document.title, content: fullTextForKeywords, summary: document.summary)
+                    let kw = DocumentManager.makeKeywordsResume(title: document.title, content: fullTextForKeywords, summary: document.summary)
+                    
+                    DispatchQueue.main.async {
+                        // Update the document with category and keywords but keep the original title
+                        let updatedDocument = Document(
+                            id: document.id,
+                            title: document.title, // Keep original name
+                            content: document.content,
+                            summary: document.summary,
+                            category: cat,
+                            keywordsResume: kw,
+                            dateCreated: document.dateCreated,
+                            type: document.type,
+                            imageData: document.imageData,
+                            pdfData: document.pdfData,
+                            originalFileData: document.originalFileData
+                        )
+                        
+                        // Update document in the manager
+                        if let idx = self.documentManager.documents.firstIndex(where: { $0.id == document.id }) {
+                            self.documentManager.documents[idx] = updatedDocument
+                        }
+                    }
+                }
+                
                 processedCount += 1
             } else {
                 print("❌ UI: Failed to create document for: \\(url.lastPathComponent)")
@@ -765,44 +920,10 @@ struct DocumentsView: View {
         }
         
         print("📱 UI: ✅ Processing complete. Processed \\\(processedCount)/\\\(urls.count) files")
-
-        // Kick off the same naming flow as scanning (name from first 100 chars; keywords from full content).
+        
+        // No more AI naming queue - files are processed directly with original names
         DispatchQueue.main.async {
-            self.pendingImportedQueue = docs
-            self.startNextImportedNaming()
-        }
-    }
-
-    private func startNextImportedNaming() {
-        guard !pendingImportedQueue.isEmpty else {
-            isProcessing = false
-            return
-        }
-
-        let next = pendingImportedQueue.removeFirst()
-        pendingImportedDocument = next
-
-        // Background metadata from full extracted text
-        let fullTextForKeywords = next.content
-        DispatchQueue.global(qos: .utility).async {
-            let cat = DocumentManager.inferCategory(title: next.title, content: fullTextForKeywords, summary: next.summary)
-            let kw = DocumentManager.makeKeywordsResume(title: next.title, content: fullTextForKeywords, summary: next.summary)
-            DispatchQueue.main.async {
-                self.pendingCategory = cat
-                self.pendingKeywordsResume = kw
-            }
-        }
-
-        // Name suggestion from only the first 100 chars
-        isProcessing = true
-        let snippet = String(next.content.prefix(100))
-        if snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            suggestedName = next.title
-            customName = suggestedName
-            isProcessing = false
-            showingNamingDialog = true
-        } else {
-            generateAIDocumentName(from: snippet)
+            self.isProcessing = false
         }
     }
 
@@ -810,37 +931,7 @@ struct DocumentsView: View {
         let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let safeName = finalName.isEmpty ? suggestedName : finalName
 
-        if let imported = pendingImportedDocument {
-            let updated = Document(
-                id: imported.id,
-                title: safeName,
-                content: imported.content,
-                summary: imported.summary,
-                category: pendingCategory,
-                keywordsResume: pendingKeywordsResume,
-                dateCreated: imported.dateCreated,
-                type: imported.type,
-                imageData: imported.imageData,
-                pdfData: imported.pdfData,
-                originalFileData: imported.originalFileData
-            )
-
-            documentManager.addDocument(updated)
-
-            pendingImportedDocument = nil
-            suggestedName = ""
-            customName = ""
-            pendingCategory = .general
-            pendingKeywordsResume = ""
-
-            if !pendingImportedQueue.isEmpty {
-                startNextImportedNaming()
-            } else {
-                isProcessing = false
-            }
-            return
-        }
-
+        // This function now only handles scanned documents since imported files keep original names
         finalizeDocument(with: safeName)
     }
     
@@ -930,36 +1021,51 @@ struct DocumentsView: View {
             }.joined(separator: " ")
         }
         func heuristicName(from text: String) -> String {
-            // Extract first few meaningful words
             let stop: Set<String> = ["the","a","an","and","or","of","to","for","in","on","by","with","from","at","as","is","are","was","were","be","been","being"]
-            let tokens = text
+
+            let rawTokens = text
                 .replacingOccurrences(of: "[^A-Za-z0-9 ]+", with: " ", options: .regularExpression)
-                .lowercased()
                 .split(separator: " ")
-                .filter { !$0.isEmpty && $0.count > 2 && !stop.contains(String($0)) }
-            let words = Array(tokens.prefix(3))
-            if words.isEmpty { return "Scanned Document" }
-            return titleCase(words.joined(separator: " "))
+                .map(String.init)
+
+            let filtered = rawTokens
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count > 2 && !stop.contains($0.lowercased()) }
+
+            let specificWord = filtered.first { token in
+                let first = token.prefix(1)
+                return first.rangeOfCharacter(from: CharacterSet.uppercaseLetters) != nil
+            } ?? filtered.first
+
+            let typeWord = filtered.first { token in
+                guard token != specificWord else { return false }
+                return token.lowercased() != (specificWord?.lowercased() ?? "")
+            }
+
+            let specific = specificWord.map { titleCase(sanitizeTitle($0)) } ?? "Scan"
+            let type = typeWord.map { titleCase(sanitizeTitle($0)) } ?? "Notes"
+            return "\(specific) \(type)"
         }
-        // Prompt: ONLY use the first 100 OCR chars for naming.
+        // Prompt: ONLY use the first 150 OCR chars for naming.
         let prompt = """
         <<<NAME_REQUEST>>>Create a short document title using ONLY the provided OCR snippet (do not guess beyond it).
         
         STRICT REQUIREMENTS:
-        - Exactly 2-4 words maximum
+        - Exactly 2-3 words maximum
         - Use Title Case (First Letter Of Each Word Capitalized)
+        - MUST include a document type word (e.g., Analysis, Results, Report, Invoice, Contract, Agreement, Summary, Notes)
         - Prefer proper nouns in the snippet (clinic/company/person) if present
         - No generic words like "Document", "Text", "File"
         - No file extensions
         
         Examples of good names:
-        - "Meeting Notes"
-        - "Invoice Receipt"
-        - "Lab Report"
-        - "Contract Agreement"
+        - "UPS Contract"
+        - "Google Analysis"
+        - "Xcode Folder"
+        - "Clinic Invoice"
         
-        OCR Snippet (first 100 chars):
-        \(text.prefix(100))
+        OCR Snippet (first 150 chars):
+        \(text.prefix(150))
         
         Response format: Just the title, nothing else.
         """
@@ -1391,66 +1497,67 @@ struct DocumentGridItemView: View {
     var body: some View {
         let parts = splitDisplayTitle(document.title)
 
-        ZStack(alignment: .topTrailing) {
-            Button(action: onOpen) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.clear)
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.clear)
 
-                        Group {
-                            if let pdfData = document.pdfData {
-                                PDFThumbnailView(data: pdfData)
-                            } else if let imageDataArray = document.imageData,
-                                      !imageDataArray.isEmpty,
-                                      let firstImageData = imageDataArray.first,
-                                      let uiImage = UIImage(data: firstImageData) {
-                                Image(uiImage: uiImage)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                            } else {
-                                Image(systemName: iconForDocumentType(document.type))
-                                    .font(.system(size: 34))
-                                    .foregroundColor(.blue)
-                            }
+                    Group {
+                        if let pdfData = document.pdfData {
+                            PDFThumbnailView(data: pdfData)
+                        } else if let imageDataArray = document.imageData,
+                                  !imageDataArray.isEmpty,
+                                  let firstImageData = imageDataArray.first,
+                                  let uiImage = UIImage(data: firstImageData) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            Image(systemName: iconForDocumentType(document.type))
+                                .font(.system(size: 34))
+                                .foregroundColor(.blue)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
                     }
-                    .aspectRatio(0.75, contentMode: .fit)
-                    .cornerRadius(10)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(parts.base)
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                        Text("\(fileTypeLabel(documentType: document.type, titleParts: parts))")
-                            .font(.caption2)
-                            .foregroundColor(Color(.tertiaryLabel))
-                            .lineLimit(1)
-                    }
-                    .padding(.trailing, 18)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
                 }
-            }
-            .buttonStyle(PlainButtonStyle())
+                .aspectRatio(0.75, contentMode: .fit)
+                .cornerRadius(10)
+                .frame(maxWidth: .infinity, alignment: .topTrailing)
+                .overlay(alignment: .topTrailing) {
+                    Menu {
+                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                        Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+                        Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
+                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(.top, 6)
+                    .padding(.trailing, 6)
+                }
 
-            Menu {
-                Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 24, height: 24)
-                    .foregroundColor(.secondary)
-                    .contentShape(Rectangle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(parts.base)
+                        .font(.subheadline)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Text("\(fileTypeLabel(documentType: document.type, titleParts: parts))")
+                        .font(.caption2)
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .lineLimit(1)
+                }
+                .padding(.trailing, 18)
             }
-            .buttonStyle(PlainButtonStyle())
-            .padding(.top, 4)
-            .padding(.trailing, 0)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
@@ -1508,53 +1615,55 @@ struct FolderGridItemView: View {
     let onDelete: () -> Void
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Button(action: onOpen) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.clear)
-                        Image(systemName: "folder.fill")
-                            .font(.system(size: 34))
-                            .foregroundColor(.blue)
-                    }
-                    .aspectRatio(0.75, contentMode: .fit)
-                    .cornerRadius(10)
-
-                    Text(folder.name)
-                        .font(.subheadline)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                    Text("\(docCount) item\(docCount == 1 ? "" : "s")")
-                        .font(.caption2)
-                        .foregroundColor(Color(.tertiaryLabel))
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.clear)
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 34))
+                        .foregroundColor(.blue)
                 }
-                .padding(.trailing, 18)
-            }
-            .buttonStyle(PlainButtonStyle())
+                .aspectRatio(0.75, contentMode: .fit)
+                .cornerRadius(10)
+                .frame(maxWidth: .infinity, alignment: .topTrailing)
+                .overlay(alignment: .topTrailing) {
+                    Menu {
+                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                        Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(.top, 6)
+                    .padding(.trailing, 6)
+                }
 
-            Menu {
-                Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 24, height: 24)
-                    .foregroundColor(.secondary)
-                    .contentShape(Rectangle())
+                Text(folder.name)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Text("\(docCount) item\(docCount == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundColor(Color(.tertiaryLabel))
             }
-            .buttonStyle(PlainButtonStyle())
-            .padding(.top, 4)
+            .padding(.trailing, 18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
 struct FolderDocumentsView: View {
     let folder: DocumentFolder
+    let onOpenDocument: (Document) -> Void
     @EnvironmentObject private var documentManager: DocumentManager
     private var layoutMode: DocumentLayoutMode { documentManager.prefersGridLayout ? .grid : .list }
-    @State private var showingMoveToFolderSheet = false
     @State private var documentToMove: Document?
 
     @State private var activeSubfolderId: UUID?
@@ -1568,11 +1677,6 @@ struct FolderDocumentsView: View {
 
     @State private var showingDeleteFolderDialog = false
     @State private var folderToDelete: DocumentFolder?
-
-    @State private var showingDocumentPreview = false
-    @State private var previewDocumentURL: URL?
-    @State private var currentDocument: Document?
-    @State private var isOpeningPreview = false
 
     @State private var showingRenameDialog = false
     @State private var renameText = ""
@@ -1610,7 +1714,7 @@ struct FolderDocumentsView: View {
                                 )
                                 .background(
                                     NavigationLink(
-                                        destination: FolderDocumentsView(folder: sub).environmentObject(documentManager),
+                                        destination: FolderDocumentsView(folder: sub, onOpenDocument: onOpenDocument).environmentObject(documentManager),
                                         tag: sub.id,
                                         selection: $activeSubfolderId
                                     ) { EmptyView() }
@@ -1626,11 +1730,10 @@ struct FolderDocumentsView: View {
                     ForEach(docs, id: \ .id) { document in
                         DocumentRowView(
                             document: document,
-                            onOpen: { openDocumentPreview(document: document) },
+                            onOpen: { onOpenDocument(document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
                                 documentToMove = document
-                                showingMoveToFolderSheet = true
                             },
                             onDelete: { documentManager.deleteDocument(document) },
                             onConvert: { }
@@ -1672,12 +1775,12 @@ struct FolderDocumentsView: View {
                                 }
                             )
                             .background(
-                                NavigationLink(
-                                    destination: FolderDocumentsView(folder: sub).environmentObject(documentManager),
-                                    tag: sub.id,
-                                    selection: $activeSubfolderId
-                                ) { EmptyView() }
-                                .opacity(0)
+                            NavigationLink(
+                                destination: FolderDocumentsView(folder: sub, onOpenDocument: onOpenDocument).environmentObject(documentManager),
+                                tag: sub.id,
+                                selection: $activeSubfolderId
+                            ) { EmptyView() }
+                            .opacity(0)
                             )
                             .onDrop(of: [UTType.text], isTargeted: nil) { providers in
                                 handleFolderDrop(providers: providers, folderId: sub.id)
@@ -1685,14 +1788,13 @@ struct FolderDocumentsView: View {
                         }
 
                         ForEach(docs, id: \ .id) { document in
-                            DocumentGridItemView(
-                                document: document,
-                                onOpen: { openDocumentPreview(document: document) },
-                                onRename: { renameDocument(document) },
-                                onMoveToFolder: {
-                                    documentToMove = document
-                                    showingMoveToFolderSheet = true
-                                },
+                        DocumentGridItemView(
+                            document: document,
+                            onOpen: { onOpenDocument(document) },
+                            onRename: { renameDocument(document) },
+                            onMoveToFolder: {
+                                documentToMove = document
+                            },
                                 onDelete: { documentManager.deleteDocument(document) },
                                 onConvert: { }
                             )
@@ -1734,23 +1836,21 @@ struct FolderDocumentsView: View {
                 .foregroundColor(layoutMode == .grid ? .primary : .secondary)
             }
         }
-        .sheet(isPresented: $showingMoveToFolderSheet) {
-            if let doc = documentToMove {
-                MoveToFolderSheet(
-                    document: doc,
-                    folders: documentManager.folders,
-                    currentFolderName: documentManager.folderName(for: doc.folderId),
-                    onSelectFolder: { folderId in
-                        documentManager.moveDocument(documentId: doc.id, toFolder: folderId)
-                        documentToMove = nil
-                        showingMoveToFolderSheet = false
-                    },
-                    onCancel: {
-                        documentToMove = nil
-                        showingMoveToFolderSheet = false
-                    }
-                )
-            }
+        .sheet(item: $documentToMove) { doc in
+            MoveToFolderSheet(
+                document: doc,
+                folders: documentManager.folders(in: folder.id),
+                currentFolderName: documentManager.folderName(for: doc.folderId),
+                currentContainerName: folder.name,
+                allowRootSelection: true,
+                onSelectFolder: { folderId in
+                    documentManager.moveDocument(documentId: doc.id, toFolder: folderId)
+                    documentToMove = nil
+                },
+                onCancel: {
+                    documentToMove = nil
+                }
+            )
         }
         .alert("Rename Document", isPresented: $showingRenameDialog) {
             TextField("Document name", text: $renameText)
@@ -1844,11 +1944,6 @@ struct FolderDocumentsView: View {
                 )
             }
         }
-        .fullScreenCover(isPresented: $showingDocumentPreview, onDismiss: { isOpeningPreview = false }) {
-            if let url = previewDocumentURL, let document = currentDocument {
-                DocumentPreviewContainerView(url: url, document: document, onAISummary: nil)
-            }
-        }
     }
 
     private func handleFolderDrop(providers: [NSItemProvider], folderId: UUID) -> Bool {
@@ -1874,60 +1969,37 @@ struct FolderDocumentsView: View {
         showingRenameDialog = true
     }
 
-    private func openDocumentPreview(document: Document) {
-        isOpeningPreview = true
-        currentDocument = document
-        // The root view builds a temporary URL; replicate minimal logic here by reusing existing helper.
-        if let url = buildPreviewURL(for: document) {
-            previewDocumentURL = url
-            showingDocumentPreview = true
-        }
-        isOpeningPreview = false
-    }
-
-    private func buildPreviewURL(for document: Document) -> URL? {
-        // Prefer an in-memory original file when available.
-        let tempDir = FileManager.default.temporaryDirectory
-        let baseName = "doc_\(document.id.uuidString)"
-        let extFromTitle = splitDisplayTitle(document.title).ext
-        let ext = !extFromTitle.isEmpty ? extFromTitle : fileExtension(for: document.type)
-        let url = tempDir.appendingPathComponent(baseName).appendingPathExtension(ext)
-
-        if let data = document.originalFileData {
-            try? data.write(to: url, options: [.atomic])
-            return url
-        }
-        if let pdf = document.pdfData {
-            try? pdf.write(to: url, options: [.atomic])
-            return url
-        }
-        if let imgs = document.imageData, let first = imgs.first {
-            try? first.write(to: url, options: [.atomic])
-            return url
-        }
-        return nil
-    }
 }
 
 struct MoveToFolderSheet: View {
     let document: Document
     let folders: [DocumentFolder]
     let currentFolderName: String?
+    let currentContainerName: String
+    let allowRootSelection: Bool
     let onSelectFolder: (UUID?) -> Void
     let onCancel: () -> Void
 
     var body: some View {
         NavigationView {
             List {
-                Button {
-                    onSelectFolder(nil)
-                } label: {
-                    HStack {
-                        Text("On My iPhone")
-                        Spacer()
-                        if currentFolderName == nil {
-                            Image(systemName: "checkmark")
-                                .foregroundColor(.blue)
+                HStack {
+                    Text(currentContainerName)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+
+                if allowRootSelection {
+                    Button {
+                        onSelectFolder(nil)
+                    } label: {
+                        HStack {
+                            Text("Documents")
+                            Spacer()
+                            if currentFolderName == nil {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                            }
                         }
                     }
                 }
@@ -2866,15 +2938,18 @@ struct ChatMessage: Identifiable, Equatable {
 }
 
 struct NativeChatView: View {
-        @State private var activeDocsForChat: [Document] = []
-        @State private var lastDocScopedQuestion: String = ""
+    @State private var activeDocsForChat: [Document] = []
+    @State private var lastDocScopedQuestion: String = ""
     @State private var input: String = ""
     @State private var messages: [ChatMessage] = []
     @State private var isGenerating: Bool = false
     @State private var isThinkingPulseOn: Bool = false
     @State private var pendingDocConfirmation: PendingDocConfirmation? = nil
+    @State private var showSummaryLoadingWarning = false
+    @State private var hasShownSummaryLoadingWarning = false
+    @State private var isSummaryGenerationActive = false
     @FocusState private var isFocused: Bool
-    @StateObject private var documentManager = DocumentManager()
+    @EnvironmentObject private var documentManager: DocumentManager
 
     private struct PendingDocConfirmation {
         let question: String
@@ -2924,7 +2999,7 @@ struct NativeChatView: View {
                         HStack(spacing: 8) {
                             TextField("Message", text: $input)
                                 .focused($isFocused)
-                                .disabled(isGenerating)
+                                .disabled(isGenerating || isSummaryGenerationActive)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 8)
                         }
@@ -2940,13 +3015,13 @@ struct NativeChatView: View {
                         } label: {
                             Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
                                 .font(.system(size: 30, weight: .medium))
-                                .foregroundColor(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? .secondary : .white)
+                                .foregroundColor(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating || isSummaryGenerationActive ? .secondary : .white)
                                 .background(
                                     Circle()
-                                        .fill(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? Color(.systemFill) : Color.accentColor)
+                                        .fill(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating || isSummaryGenerationActive ? Color(.systemFill) : Color.accentColor)
                                 )
                         }
-                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isGenerating)
+                        .disabled(isSummaryGenerationActive || (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isGenerating))
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
@@ -2954,14 +3029,40 @@ struct NativeChatView: View {
                 }
                 .background(Color(.systemBackground))
             }
-            .navigationTitle("VaultAI")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Text(" Chat ")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+        }
+        .alert("Some documents are still preparing", isPresented: $showSummaryLoadingWarning) {
+            Button("OK") {}
+        } message: {
+            Text("You can keep chatting now. I’ll answer using the documents that are ready.")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SummaryGenerationStatus"))) { notification in
+            guard let active = notification.userInfo?["isActive"] as? Bool else { return }
+            isSummaryGenerationActive = active
         }
     }
 
     private func send() {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        if isSummaryGenerationActive {
+            messages.append(ChatMessage(
+                role: "assistant",
+                text: "I am busy generating a summary. Try again later.",
+                date: Date()
+            ))
+            input = ""
+            return
+        }
 
         print("💬 NativeChatView: Sending message: '\(trimmed)'")
         let userMsg = ChatMessage(role: "user", text: trimmed, date: Date())
@@ -3000,6 +3101,14 @@ struct NativeChatView: View {
             return
         }
 
+        let readyDocs = documentsWithReadySummaries()
+        if readyDocs.count < documentManager.documents.count {
+            if !hasShownSummaryLoadingWarning {
+                showSummaryLoadingWarning = true
+                hasShownSummaryLoadingWarning = true
+            }
+        }
+
         // If the user is asking a follow-up and we already have an active document scope,
         // keep using the same document(s) unless they explicitly mention a different one.
         if !activeDocsForChat.isEmpty,
@@ -3011,27 +3120,20 @@ struct NativeChatView: View {
             return
         }
 
-        // Stage A (fast): metadata-only ranking (keywordsResume + category + title)
-        let rankedMeta = selectRelevantDocumentsByMetadata(for: trimmed, maxDocs: 5)
-        var ranked = rankedMeta
-        var candidates = ranked.map { $0.doc }
-
-        // If metadata is inconclusive, Stage B: include summaries + first ~200 chars of OCR/content.
-        let metaTop = ranked.first?.score ?? 0
-        let metaSecond = ranked.dropFirst().first?.score ?? 0
-        let metaConfident = candidates.count == 1 || (metaTop >= 10 && metaTop >= (metaSecond + 4))
-        if !metaConfident {
-            let rankedFull = selectRelevantDocumentsWithScores(for: trimmed, maxDocs: 5)
-            if !rankedFull.isEmpty {
-                ranked = rankedFull
-                candidates = ranked.map { $0.doc }
-            }
+        // Step A (fast): rank using only the first 100 chars of each summary.
+        if readyDocs.isEmpty {
+            print("💬 NativeChatView: No summaries ready yet; proceeding without document context")
+            runLLMAnswer(question: trimmed, docsToSearch: [])
+            return
         }
+
+        let ranked = selectRelevantDocumentsBySummaryPrefix(for: trimmed, in: readyDocs, maxDocs: 5)
+        let candidates = ranked.map { $0.doc }
 
         if candidates.isEmpty {
             messages.append(ChatMessage(
                 role: "assistant",
-                text: "I couldn't find a relevant document based on your question. Is this supposed to be part of a specific document? If yes, tell me the document name (or paste a unique phrase).",
+                text: "I couldn't find a relevant document based on your summaries. Tell me the document name (or paste a unique phrase) and I can check it directly.",
                 date: Date()
             ))
             pendingDocConfirmation = PendingDocConfirmation(question: trimmed, candidates: [])
@@ -3039,26 +3141,18 @@ struct NativeChatView: View {
             return
         }
 
-        // First, try to auto-pick using local snippet evidence (fast and reliable, no LLM).
-        if let evidencePick = pickDocumentBySnippetEvidence(question: trimmed, docs: candidates) {
-            print("💬 NativeChatView: Auto-selected by snippet evidence: \(evidencePick.title)")
-            activeDocsForChat = [evidencePick]
-            lastDocScopedQuestion = trimmed
-            runLLMAnswer(question: trimmed, docsToSearch: [evidencePick])
-            return
-        }
-
-        // Otherwise, auto-pick when the top match is clearly better; else ask.
+        // Step B: if top match is clearly better, search full OCR for that document.
         let topScore = ranked.first?.score ?? 0
         let secondScore = ranked.dropFirst().first?.score ?? 0
-        let confident = candidates.count == 1 || (topScore >= 8 && topScore >= (secondScore + 3))
+        let confident = candidates.count == 1 || (topScore >= 6 && topScore >= (secondScore + 3))
 
         if confident, let topDoc = ranked.first?.doc {
-            print("💬 NativeChatView: Auto-selected document: \(topDoc.title) (score \(topScore), second \(secondScore))")
+            print("💬 NativeChatView: Auto-selected by summary prefix: \(topDoc.title) (score \(topScore), second \(secondScore))")
             activeDocsForChat = [topDoc]
             lastDocScopedQuestion = trimmed
             runLLMAnswer(question: trimmed, docsToSearch: [topDoc])
         } else {
+            // Step C: suggest a few documents and ask the user to pick.
             let preview = buildCandidatePreview(candidates)
             if !preview.isEmpty {
                 messages.append(ChatMessage(role: "assistant", text: preview, date: Date()))
@@ -3100,7 +3194,7 @@ struct NativeChatView: View {
 
         // If we had no candidates, treat the reply as a document name hint.
         if pending.candidates.isEmpty {
-            let matches = bestTitleMatches(for: lower, within: documentManager.documents)
+            let matches = bestTitleMatches(for: lower, within: documentsWithReadySummaries())
             if matches.isEmpty {
                 return false
             }
@@ -3127,7 +3221,7 @@ struct NativeChatView: View {
             runLLMAnswer(question: pending.question, docsToSearch: [doc])
             return true
         }
-        if let doc = bestTitleMatches(for: lower, within: documentManager.documents).first {
+        if let doc = bestTitleMatches(for: lower, within: documentsWithReadySummaries()).first {
             pendingDocConfirmation = nil
             activeDocsForChat = [doc]
             lastDocScopedQuestion = pending.question
@@ -3170,7 +3264,7 @@ struct NativeChatView: View {
             return true
         }
 
-        if bestTitleMatches(for: lower, within: documentManager.documents).first != nil {
+        if bestTitleMatches(for: lower, within: documentsWithReadySummaries()).first != nil {
             // If they name a document, treat it as an explicit target (i.e., can switch).
             return true
         }
@@ -3525,6 +3619,44 @@ struct NativeChatView: View {
         return Array(scored.prefix(maxDocs))
     }
 
+    private func selectRelevantDocumentsBySummaryPrefix(for query: String, in docs: [Document], maxDocs: Int) -> [(doc: Document, score: Int)] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let tokens = trimmed
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 }
+
+        func score(_ doc: Document) -> Int {
+            let summary = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if summary.isEmpty || summary == "Processing..." || summary == "Processing summary..." {
+                return 0
+            }
+            let prefix = String(summary.prefix(100)).lowercased()
+            var s = 0
+            for t in tokens.prefix(8) {
+                if prefix.contains(t) { s += 4 }
+            }
+            return s
+        }
+
+        let scored = docs
+            .map { (doc: $0, score: score($0)) }
+            .filter { $0.score > 0 }
+            .sorted { a, b in a.score > b.score }
+
+        return Array(scored.prefix(maxDocs))
+    }
+
+    private func documentsWithReadySummaries() -> [Document] {
+        documentManager.documents.filter { doc in
+            let trimmed = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !(trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary...")
+        }
+    }
+
     private func buildDocumentContextBlock(for docs: [Document], detailed: Bool) -> String {
         // Keep prompts small even with many documents.
         let maxCharsPerDoc = detailed ? 1800 : 200
@@ -3630,27 +3762,42 @@ struct NativeChatView: View {
 
 private func formatMarkdownText(_ text: String) -> AttributedString {
     var processedText = text
-    
+
     // Convert markdown lists to bullet points
     processedText = processedText.replacingOccurrences(of: "* ", with: "• ")
-    
+
     // Fix malformed bold markdown: **text* → **text**
     let malformedBoldRegex = try! NSRegularExpression(pattern: "\\*\\*([^*]+)\\*(?!\\*)", options: [])
     processedText = malformedBoldRegex.stringByReplacingMatches(in: processedText, options: [], range: NSRange(location: 0, length: processedText.count), withTemplate: "**$1**")
-    
-    // Preserve double newlines for paragraphs
-    processedText = processedText.replacingOccurrences(of: "\n\n", with: "\n\n")
-    
-    // Create AttributedString with markdown support
-    do {
-        var options = AttributedString.MarkdownParsingOptions()
-        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-        let attributedString = try AttributedString(markdown: processedText, options: options)
-        return attributedString
-    } catch {
-        // Fallback to plain text if markdown parsing fails
-        return AttributedString(processedText)
+
+    // Support custom heading pattern: "## "
+    let lines = processedText.split(separator: "\n", omittingEmptySubsequences: false)
+    var output = AttributedString()
+
+    for (idx, line) in lines.enumerated() {
+        let lineText = String(line)
+        if lineText.hasPrefix("## ") {
+            let title = String(lineText.dropFirst(3))
+            var heading = AttributedString(title)
+            heading.font = .system(size: 17, weight: .semibold)
+            output.append(heading)
+        } else {
+            do {
+                var options = AttributedString.MarkdownParsingOptions()
+                options.interpretedSyntax = .inlineOnlyPreservingWhitespace
+                let attributedLine = try AttributedString(markdown: lineText, options: options)
+                output.append(attributedLine)
+            } catch {
+                output.append(AttributedString(lineText))
+            }
+        }
+
+        if idx < lines.count - 1 {
+            output.append(AttributedString("\n"))
+        }
     }
+
+    return output
 }
 
 private struct MessageRow: View {
@@ -3727,6 +3874,8 @@ struct DocumentPreviewContainerView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showingInfo = false
+    @State private var showingSearchSheet = false
+    @State private var previewController: CustomQLPreviewController?
 
     init(url: URL, document: Document? = nil, onAISummary: (() -> Void)? = nil) {
         self.url = url
@@ -3735,52 +3884,109 @@ struct DocumentPreviewContainerView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            Color(.systemBackground).ignoresSafeArea()
+        ZStack {
+            // Full screen PDF preview
+            DocumentPreviewNavControllerView(
+                url: url,
+                title: document.map { splitDisplayTitle($0.title).base } ?? "Preview",
+                onDismiss: { dismiss() },
+                onControllerReady: { controller in
+                    previewController = controller
+                }
+            )
+            .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                ZStack {
-                    DocumentPreviewNavControllerView(
-                        url: url,
-                        title: document.map { splitDisplayTitle($0.title).base } ?? "Preview",
-                        onDismiss: { dismiss() }
-                    )
-
-                // Info button bottom-left (opposite AI)
-                if document != nil {
+            // Top overlay with title and buttons
+            VStack {
+                HStack {
+                    // Back button
                     Button {
-                        showingInfo = true
+                        dismiss()
                     } label: {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 20, weight: .semibold))
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(.white)
-                            .frame(width: 54, height: 54)
-                            .background(Color(.systemGray))
+                            .frame(width: 44, height: 44)
+                            .background(Color.black.opacity(0.6))
                             .clipShape(Circle())
                     }
                     .padding(.leading, 20)
-                    .padding(.bottom, 20)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                }
-
-                // AI button bottom-right
-                if onAISummary != nil {
+                    
+                    Spacer()
+                    
+                    // Document title
+                    Text(document.map { splitDisplayTitle($0.title).base } ?? "Preview")
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                        .lineLimit(1)
+                    
+                    Spacer()
+                    
+                    // Search button
                     Button {
-                        onAISummary?()
+                        if document != nil {
+                            showingSearchSheet = true
+                        } else {
+                            // Fallback to QuickLook search when no document context exists.
+                            triggerSearch()
+                        }
                     } label: {
-                        Image(systemName: "brain.head.profile")
+                        Image(systemName: "magnifyingglass")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                            .background(Color(.systemBlue))
+                            .frame(width: 44, height: 44)
+                            .background(Color.black.opacity(0.6))
                             .clipShape(Circle())
                     }
                     .padding(.trailing, 20)
-                    .padding(.bottom, 20)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                 }
+                .padding(.top, 15)
+                
+                Spacer()
+            }
 
+            // Bottom buttons
+            VStack {
+                Spacer()
+                HStack {
+                    // Info button bottom-left
+                    if document != nil {
+                        Button {
+                            showingInfo = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 54, height: 54)
+                                .background(Color(.systemGray))
+                                .clipShape(Circle())
+                        }
+                        .padding(.leading, 20)
+                    }
+                    
+                    Spacer()
+                    
+                    // AI button bottom-right
+                    if onAISummary != nil {
+                        Button {
+                            onAISummary?()
+                        } label: {
+                            Image(systemName: "brain.head.profile")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 50, height: 50)
+                                .background(Color(.systemBlue))
+                                .clipShape(Circle())
+                        }
+                        .padding(.trailing, 20)
+                    }
                 }
+                .padding(.bottom, 50)
             }
         }
         .sheet(isPresented: $showingInfo) {
@@ -3788,61 +3994,133 @@ struct DocumentPreviewContainerView: View {
                 DocumentInfoView(document: doc, fileURL: url)
             }
         }
+        .sheet(isPresented: $showingSearchSheet) {
+            if let doc = document {
+                SearchInDocumentSheet(document: doc)
+            }
+        }
+    }
+    
+    private func triggerSearch() {
+        // Directly trigger search on the preview controller if available
+        previewController?.triggerSearchDirectly()
     }
 
+}
+
+struct SearchInDocumentSheet: View {
+    let document: Document
+    @Environment(\.dismiss) private var dismiss
+    @State private var query: String = ""
+    @State private var results: [String] = []
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 12) {
+                TextField("Search text", text: $query)
+                    .textInputAutocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .padding(12)
+                    .background(Color(.tertiarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.horizontal)
+
+                if document.content.isEmpty {
+                    Text("No text content available for this document.")
+                        .foregroundColor(.secondary)
+                        .padding()
+                } else if results.isEmpty && !query.isEmpty {
+                    Text("No matches found.")
+                        .foregroundColor(.secondary)
+                        .padding()
+                } else {
+                    List(results, id: \.self) { snippet in
+                        Text(snippet)
+                            .font(.body)
+                            .foregroundColor(.primary)
+                    }
+                    .listStyle(.plain)
+                }
+
+                Spacer()
+            }
+            .navigationTitle("Search")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onChange(of: query) { _ in
+                results = searchSnippets(in: document.content, query: query)
+            }
+            .onAppear {
+                results = searchSnippets(in: document.content, query: query)
+            }
+        }
+    }
+
+    private func searchSnippets(in text: String, query: String) -> [String] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let lowerText = text.lowercased()
+        let tokens = trimmed
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 2 }
+
+        let searchTerms = tokens.isEmpty ? [trimmed.lowercased()] : tokens
+        let window = 80
+        var snippets: [String] = []
+
+        for term in searchTerms.prefix(4) {
+            var searchStart = lowerText.startIndex
+            while snippets.count < 10,
+                  let range = lowerText.range(of: term, range: searchStart..<lowerText.endIndex) {
+                let start = lowerText.index(range.lowerBound, offsetBy: -window, limitedBy: lowerText.startIndex) ?? lowerText.startIndex
+                let end = lowerText.index(range.upperBound, offsetBy: window, limitedBy: lowerText.endIndex) ?? lowerText.endIndex
+                let snippet = String(text[start..<end]).replacingOccurrences(of: "\n", with: " ")
+                snippets.append(snippet)
+                searchStart = range.upperBound
+            }
+            if snippets.count >= 10 { break }
+        }
+
+        let unique = Array(NSOrderedSet(array: snippets)) as? [String] ?? snippets
+        return Array(unique.prefix(10))
+    }
 }
 
 struct DocumentPreviewNavControllerView: UIViewControllerRepresentable {
     let url: URL
     let title: String
     let onDismiss: () -> Void
+    let onControllerReady: (CustomQLPreviewController) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(url: url, onDismiss: onDismiss)
     }
 
     func makeUIViewController(context: Context) -> UIViewController {
-        let previewController = QLPreviewController()
+        let previewController = CustomQLPreviewController()
         previewController.dataSource = context.coordinator
-        previewController.navigationItem.title = title
-        previewController.navigationItem.largeTitleDisplayMode = .never
-        previewController.navigationItem.leftBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "chevron.left"),
-            style: .plain,
-            target: context.coordinator,
-            action: #selector(Coordinator.handleBack)
-        )
-
-        let nav = UINavigationController(rootViewController: previewController)
-        nav.hidesBarsOnSwipe = true
-        nav.navigationBar.prefersLargeTitles = false
-
-        // Style the bar like iOS gray header.
-        let appearance = UINavigationBarAppearance()
-        appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = UIColor.systemGray6
-        appearance.shadowColor = UIColor.separator
-        appearance.titleTextAttributes = [
-            .font: UIFont.systemFont(ofSize: 17, weight: .semibold)
-        ]
-        nav.navigationBar.standardAppearance = appearance
-        nav.navigationBar.scrollEdgeAppearance = appearance
-        nav.navigationBar.compactAppearance = appearance
-        nav.navigationBar.tintColor = UIColor.label
-
-        // Round only the top corners of the bar.
-        nav.navigationBar.layer.cornerRadius = 16
-        nav.navigationBar.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-        nav.navigationBar.layer.masksToBounds = true
-
-        return nav
+        previewController.delegate = context.coordinator
+        
+        // Notify that controller is ready
+        DispatchQueue.main.async {
+            self.onControllerReady(previewController)
+        }
+        
+        return previewController
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
         // No-op
     }
 
-    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
         let url: URL
         let onDismiss: () -> Void
 
@@ -3856,10 +4134,115 @@ struct DocumentPreviewNavControllerView: UIViewControllerRepresentable {
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
             url as QLPreviewItem
         }
+        
+        // Allow search but disable editing modes
+        func previewController(_ controller: QLPreviewController, editingModeFor previewItem: QLPreviewItem) -> QLPreviewItemEditingMode {
+            return .disabled
+        }
+        
+        // Block external app opening but allow internal actions like search
+        func previewController(_ controller: QLPreviewController, shouldOpen url: URL, for item: QLPreviewItem) -> Bool {
+            return false
+        }
+        
+        // Remove specific unwanted toolbar items but allow search
+        func previewController(_ controller: QLPreviewController, frameFor item: QLPreviewItem, inSourceView view: AutoreleasingUnsafeMutablePointer<UIView?>) -> CGRect {
+            return CGRect.zero
+        }
 
         @objc func handleBack() {
             onDismiss()
         }
+    }
+}
+
+// Custom QLPreviewController to remove unwanted UI elements
+class CustomQLPreviewController: QLPreviewController {
+    
+    func triggerSearchDirectly() {
+        // Use the standard iOS search functionality
+        if #available(iOS 16.0, *) {
+            becomeFirstResponder()
+            let searchCommand = #selector(UIResponder.find(_:))
+            if canPerformAction(searchCommand, withSender: self) {
+                perform(searchCommand, with: self)
+            }
+        } else {
+            // For iOS < 16, try to find and show search interface
+            DispatchQueue.main.async {
+                self.findAndActivateSearch()
+            }
+        }
+    }
+    
+    private func findAndActivateSearch() {
+        // Look for search functionality in the view hierarchy
+        func findSearchController(in view: UIView) -> UISearchController? {
+            if let searchController = view as? UISearchController {
+                return searchController
+            }
+            for subview in view.subviews {
+                if let found = findSearchController(in: subview) {
+                    return found
+                }
+            }
+            return nil
+        }
+        
+        // Try to activate search through menu system
+        let menuController = UIMenuController.shared
+        menuController.showMenu(from: self.view, rect: CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        // Hide navigation bar and toolbar
+        navigationController?.setNavigationBarHidden(true, animated: false)
+        navigationController?.setToolbarHidden(true, animated: false)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        
+        // Force hide all bars and remove unwanted buttons
+        navigationController?.setNavigationBarHidden(true, animated: false)
+        navigationController?.setToolbarHidden(true, animated: false)
+        
+        // Remove share button and action button
+        navigationItem.rightBarButtonItem = nil
+        navigationItem.leftBarButtonItem = nil
+        toolbarItems = []
+        
+        // Remove the dropdown button by searching through subviews
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.removeUnwantedButtons()
+        }
+    }
+    
+    private func removeUnwantedButtons() {
+        // Recursively search for and hide share/action buttons
+        func hideShareButtons(in view: UIView) {
+            for subview in view.subviews {
+                if let button = subview as? UIButton {
+                    // Hide share/action buttons but keep search
+                    if button.accessibilityIdentifier?.contains("share") == true ||
+                       button.accessibilityIdentifier?.contains("action") == true {
+                        button.isHidden = true
+                    }
+                }
+                hideShareButtons(in: subview)
+            }
+        }
+        hideShareButtons(in: self.view)
+    }
+    
+    override var canBecomeFirstResponder: Bool {
+        return true
     }
 }
 
@@ -3962,6 +4345,7 @@ struct DocumentSummaryView: View {
     let document: Document
     @State private var summary: String = ""
     @State private var isGeneratingSummary = false
+    @State private var hasCanceledCurrent = false
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var documentManager: DocumentManager
 
@@ -3981,8 +4365,13 @@ struct DocumentSummaryView: View {
                             Text("Summary")
                                 .font(.headline)
                             Spacer()
-                            Button("Generate") { generateAISummary() }
-                                .disabled(isGeneratingSummary)
+                            if isGeneratingSummary {
+                                Button("Cancel") { cancelSummary() }
+                            } else if hasUsableSummary {
+                                Button("Regenerate") { generateAISummary() }
+                            } else {
+                                Button("Generate") { generateAISummary() }
+                            }
                         }
                         
                         if isGeneratingSummary {
@@ -3994,7 +4383,7 @@ struct DocumentSummaryView: View {
                             }
                             .padding(.vertical)
                         } else if summary.isEmpty {
-                            Text("Tap 'Generate' to create an AI summary of this document.")
+                            Text("No summary.")
                                 .foregroundColor(.secondary)
                                 .italic()
                                 .padding(.vertical)
@@ -4047,40 +4436,854 @@ struct DocumentSummaryView: View {
             documentManager.refreshContentIfNeeded(for: document.id)
             // Use saved summary if available; avoid regenerating every time
             self.summary = currentDoc.summary
-            if summary.isEmpty || summary == "Processing..." || summary == "Processing summary..." {
-                generateAISummary()
+            self.isGeneratingSummary = isSummaryPlaceholder(self.summary)
+        }
+        .onChange(of: currentDoc.summary) { newValue in
+            if summary != newValue {
+                summary = newValue
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SummaryGenerationStatus"))) { notification in
+            guard let userInfo = notification.userInfo,
+                  let idString = userInfo["documentId"] as? String,
+                  let docId = UUID(uuidString: idString) else { return }
+            guard docId == document.id else { return }
+            if let active = userInfo["isActive"] as? Bool {
+                if active {
+                    if !hasCanceledCurrent {
+                        isGeneratingSummary = true
+                    }
+                } else {
+                    isGeneratingSummary = false
+                    hasCanceledCurrent = false
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CancelDocumentSummary"))) { notification in
+            guard let idString = notification.userInfo?["documentId"] as? String,
+                  let docId = UUID(uuidString: idString) else { return }
+            guard docId == document.id else { return }
+            hasCanceledCurrent = true
+            isGeneratingSummary = false
+        }
+    }
+
+    private var hasUsableSummary: Bool {
+        !isSummaryPlaceholder(summary)
+    }
+
+    private func isSummaryPlaceholder(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
+    }
+    
+    private func generateAISummary() {
+        print("🧠 DocumentSummaryView: Requesting AI summary for '\(document.title)'")
+        isGeneratingSummary = true
+        documentManager.generateSummary(for: currentDoc)
+    }
+
+    private func cancelSummary() {
+        hasCanceledCurrent = true
+        isGeneratingSummary = false
+        NotificationCenter.default.post(
+            name: NSNotification.Name("CancelDocumentSummary"),
+            object: nil,
+            userInfo: ["documentId": document.id.uuidString]
+        )
+    }
+}
+
+// MARK: - Conversion View
+struct ConversionView: View {
+    @EnvironmentObject private var documentManager: DocumentManager
+    @State private var selectedDocument: Document? = nil
+    @State private var sourceFormat: DocumentFormat = .pdf
+    @State private var targetFormat: DocumentFormat = .docx
+    @State private var isConverting = false
+    @State private var conversionProgress: Double = 0.0
+    @State private var showingResult = false
+    @State private var conversionResult: ConversionResult? = nil
+    @State private var showingDocumentPicker = false
+    
+    enum DocumentFormat: String, CaseIterable {
+        case pdf = "PDF"
+        case docx = "Word Document"
+        case txt = "Text File"
+        case image = "Image (JPEG)"
+        case html = "HTML"
+        
+        var fileExtension: String {
+            switch self {
+            case .pdf: return "pdf"
+            case .docx: return "docx"
+            case .txt: return "txt"
+            case .image: return "jpg"
+            case .html: return "html"
+            }
+        }
+        
+        var systemImage: String {
+            switch self {
+            case .pdf: return "doc.fill"
+            case .docx: return "doc.text.fill"
+            case .txt: return "doc.plaintext.fill"
+            case .image: return "photo.fill"
+            case .html: return "globe.fill"
             }
         }
     }
     
-    private func generateAISummary() {
-        print("🧠 DocumentSummaryView: Generating AI summary for '\(document.title)'")
-        isGeneratingSummary = true
-        
-        // Send only a mode marker and the raw source; system preprompt is injected in JS
-        let prompt = "<<<SUMMARY_REQUEST>>>\n\(currentDoc.content)"
-        
-        print("🧠 DocumentSummaryView: Sending summary request, content length: \(currentDoc.content.count)")
-        EdgeAI.shared?.generate(prompt, resolver: { result in
-            print("🧠 DocumentSummaryView: Got summary result: \(String(describing: result))")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                if let result = result as? String, !result.isEmpty {
-                    self.summary = result
-                    // Persist to the associated document so it isn't regenerated unnecessarily
-                    self.documentManager.updateSummary(for: document.id, to: result)
-                } else {
-                    print("❌ DocumentSummaryView: Empty or nil result")
-                    self.summary = "Failed to generate summary: Empty response. Please try again."
+    struct ConversionResult {
+        let success: Bool
+        let outputData: Data?
+        let filename: String
+        let message: String
+    }
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Header
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 40))
+                            .foregroundColor(.blue)
+                        Text("Document Converter")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                        Text("Convert documents between different formats")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top)
+                    
+                    // Document Selection
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Select Document")
+                            .font(.headline)
+                        
+                        if let document = selectedDocument {
+                            DocumentSelectionCard(document: document) {
+                                selectedDocument = nil
+                            }
+                        } else {
+                            Button(action: { showingDocumentPicker = true }) {
+                                HStack {
+                                    Image(systemName: "doc.badge.plus")
+                                        .font(.title2)
+                                    Text("Choose Document")
+                                        .font(.headline)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding()
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(12)
+                            }
+                            .foregroundColor(.primary)
+                        }
+                    }
+                    .padding(.horizontal)
+                    
+                    // Format Selection
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Conversion Settings")
+                            .font(.headline)
+                            .padding(.horizontal)
+                        
+                        VStack(spacing: 12) {
+                            // Source Format
+                            FormatSelectionRow(
+                                title: "From",
+                                selectedFormat: $sourceFormat,
+                                isEnabled: selectedDocument != nil
+                            )
+                            
+                            // Conversion Arrow
+                            HStack {
+                                Spacer()
+                                Image(systemName: "arrow.down")
+                                    .font(.title2)
+                                    .foregroundColor(.blue)
+                                Spacer()
+                            }
+                            .padding(.vertical, 8)
+                            
+                            // Target Format
+                            FormatSelectionRow(
+                                title: "To",
+                                selectedFormat: $targetFormat,
+                                isEnabled: true
+                            )
+                        }
+                        .padding(.horizontal)
+                    }
+                    
+                    // Conversion Button
+                    VStack(spacing: 16) {
+                        if isConverting {
+                            VStack(spacing: 12) {
+                                ProgressView(value: conversionProgress)
+                                    .progressViewStyle(LinearProgressViewStyle(tint: .blue))
+                                Text("Converting... \(Int(conversionProgress * 100))%")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal)
+                        } else {
+                            Button(action: performConversion) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                    Text("Convert Document")
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(canConvert ? Color.blue : Color.gray)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                            }
+                            .disabled(!canConvert)
+                            .padding(.horizontal)
+                        }
+                    }
+                    
+                    Spacer()
                 }
             }
-        }, rejecter: { code, message, error in
-            print("❌ DocumentSummaryView: Summary generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                self.summary = "Failed to generate summary: \(message ?? "Unknown error"). Please try again."
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Text(" Convert ")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
-        })
+        }
+        .sheet(isPresented: $showingDocumentPicker) {
+            DocumentPickerSheet(selectedDocument: $selectedDocument, documentManager: documentManager)
+        }
+        .sheet(isPresented: $showingResult) {
+            if let result = conversionResult {
+                ConversionResultSheet(result: result, documentManager: documentManager, onDismiss: {
+                    showingResult = false
+                    conversionResult = nil
+                })
+            }
+        }
+        .onChange(of: selectedDocument) { document in
+            if let document = document {
+                sourceFormat = formatFromDocumentType(document.type)
+            }
+        }
     }
+    
+    private var canConvert: Bool {
+        selectedDocument != nil && sourceFormat != targetFormat && !isConverting
+    }
+    
+    private func formatFromDocumentType(_ type: Document.DocumentType) -> DocumentFormat {
+        switch type {
+        case .pdf: return .pdf
+        case .docx: return .docx
+        case .text: return .txt
+        case .image: return .image
+        default: return .pdf
+        }
+    }
+    
+    private func performConversion() {
+        guard let document = selectedDocument else { return }
+        
+        isConverting = true
+        conversionProgress = 0.0
+        
+        // Simulate progress updates
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
+            if conversionProgress < 0.9 {
+                conversionProgress += 0.05
+            }
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = convertDocument(document, from: sourceFormat, to: targetFormat)
+            
+            DispatchQueue.main.async {
+                timer.invalidate()
+                conversionProgress = 1.0
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    isConverting = false
+                    conversionResult = result
+                    showingResult = true
+                }
+            }
+        }
+    }
+    
+    private func convertDocument(_ document: Document, from sourceFormat: DocumentFormat, to targetFormat: DocumentFormat) -> ConversionResult {
+        let filename = "\(document.title.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
+        
+        do {
+            let outputData: Data?
+            
+            switch (sourceFormat, targetFormat) {
+            case (.pdf, .txt), (.docx, .txt), (.image, .txt):
+                outputData = document.content.data(using: .utf8)
+                
+            case (.txt, .pdf), (.docx, .pdf), (.image, .pdf):
+                outputData = convertToPDF(content: document.content, title: document.title)
+                
+            case (.pdf, .docx), (.txt, .docx):
+                outputData = convertToDocx(content: document.content, title: document.title)
+                
+            case (.pdf, .html), (.docx, .html), (.txt, .html):
+                outputData = convertToHTML(content: document.content, title: document.title)
+                
+            case (.pdf, .image), (.docx, .image), (.txt, .image):
+                outputData = convertToImage(content: document.content)
+                
+            default:
+                throw ConversionError.unsupportedConversion
+            }
+            
+            guard let data = outputData else {
+                throw ConversionError.conversionFailed
+            }
+            
+            // Save converted file to documents directory
+            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let fileURL = documentsPath.appendingPathComponent(filename)
+            try data.write(to: fileURL)
+            
+            return ConversionResult(
+                success: true,
+                outputData: data,
+                filename: filename,
+                message: "Successfully converted to \(targetFormat.rawValue)"
+            )
+            
+        } catch {
+            return ConversionResult(
+                success: false,
+                outputData: nil,
+                filename: filename,
+                message: "Conversion failed: \(error.localizedDescription)"
+            )
+        }
+    }
+    
+    enum ConversionError: Error {
+        case unsupportedConversion
+        case conversionFailed
+        
+        var localizedDescription: String {
+            switch self {
+            case .unsupportedConversion:
+                return "This conversion is not supported yet"
+            case .conversionFailed:
+                return "Failed to convert document"
+            }
+        }
+    }
+    
+    // MARK: - Conversion Helper Functions
+    
+    private func convertToPDF(content: String, title: String) -> Data? {
+        let pdfData = NSMutableData()
+        
+        guard let pdfConsumer = CGDataConsumer(data: pdfData),
+              let pdfContext = CGContext(consumer: pdfConsumer, mediaBox: nil, nil) else {
+            return nil
+        }
+        
+        let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // Standard letter size
+        let margin: CGFloat = 50
+        let contentRect = CGRect(x: margin, y: margin, width: pageRect.width - 2 * margin, height: pageRect.height - 2 * margin)
+        
+        pdfContext.beginPDFPage(nil)
+        
+        // Set up fonts and colors
+        let titleFont = UIFont.systemFont(ofSize: 18, weight: .bold)
+        let bodyFont = UIFont.systemFont(ofSize: 12)
+        
+        // Draw title
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: UIColor.black
+        ]
+        
+        let titleRect = CGRect(x: contentRect.minX, y: contentRect.maxY - 30, width: contentRect.width, height: 30)
+        title.draw(in: titleRect, withAttributes: titleAttributes)
+        
+        // Draw content
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .foregroundColor: UIColor.black
+        ]
+        
+        let bodyRect = CGRect(x: contentRect.minX, y: contentRect.minY, width: contentRect.width, height: contentRect.height - 40)
+        content.draw(in: bodyRect, withAttributes: bodyAttributes)
+        
+        pdfContext.endPDFPage()
+        pdfContext.closePDF()
+        
+        return pdfData as Data
+    }
+    
+    private func convertToDocx(content: String, title: String) -> Data? {
+        // Create a simple Word-compatible document using HTML format
+        // This creates a .docx file that Word can open
+        let htmlContent = """
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>\(title)</title>
+        </head>
+        <body>
+            <h1>\(title)</h1>
+            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+                \(content.replacingOccurrences(of: "\n", with: "<br>"))
+            </div>
+        </body>
+        </html>
+        """
+        return htmlContent.data(using: .utf8)
+    }
+    
+    private func convertToHTML(content: String, title: String) -> Data? {
+        let htmlContent = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>\(title)</title>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+                h1 { color: #333; }
+            </style>
+        </head>
+        <body>
+            <h1>\(title)</h1>
+            <div>\(content.replacingOccurrences(of: "\n", with: "<br>"))</div>
+        </body>
+        </html>
+        """
+        return htmlContent.data(using: .utf8)
+    }
+    
+    private func convertToRTF(content: String) -> Data? {
+        let rtfContent = "{\\\\rtf1\\\\ansi\\\\deff0 {\\\\fonttbl {\\\\f0 Times New Roman;}} \\\\f0\\\\fs24 \\(content.replacingOccurrences(of: \"\\n\", with: \"\\\\par \"))}"
+        return rtfContent.data(using: .utf8)
+    }
+    
+    private func convertToImage(content: String) -> Data? {
+        let size = CGSize(width: 600, height: 800)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        
+        let image = renderer.image { context in
+            // White background
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            
+            // Draw text
+            let textRect = CGRect(x: 20, y: 20, width: size.width - 40, height: size.height - 40)
+            let font = UIFont.systemFont(ofSize: 14)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor.black
+            ]
+            
+            content.draw(in: textRect, withAttributes: attributes)
+        }
+        
+        return image.jpegData(compressionQuality: 0.8)
+    }
+}
+
+// MARK: - Conversion View Components
+
+struct DocumentSelectionCard: View {
+    let document: Document
+    let onRemove: () -> Void
+    
+    var body: some View {
+        HStack {
+            Image(systemName: document.type == .pdf ? "doc.fill" : "doc.text.fill")
+                .font(.title2)
+                .foregroundColor(.blue)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(document.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(document.type.rawValue.uppercased())
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+    }
+}
+
+struct FormatSelectionRow: View {
+    let title: String
+    @Binding var selectedFormat: ConversionView.DocumentFormat
+    let isEnabled: Bool
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+            
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(ConversionView.DocumentFormat.allCases, id: \.self) { format in
+                        FormatButton(
+                            format: format,
+                            isSelected: selectedFormat == format,
+                            isEnabled: isEnabled
+                        ) {
+                            selectedFormat = format
+                        }
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+}
+
+struct FormatButton: View {
+    let format: ConversionView.DocumentFormat
+    let isSelected: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: format.systemImage)
+                    .font(.title2)
+                Text(format.rawValue)
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .frame(width: 80, height: 70)
+            .background(isSelected ? Color.blue.opacity(0.2) : Color(.tertiarySystemBackground))
+            .foregroundColor(isSelected ? .blue : (isEnabled ? .primary : .secondary))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+            )
+        }
+        .disabled(!isEnabled)
+    }
+}
+
+struct DocumentPickerSheet: View {
+    @Binding var selectedDocument: Document?
+    let documentManager: DocumentManager
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(documentManager.documents) { document in
+                    Button(action: {
+                        selectedDocument = document
+                        dismiss()
+                    }) {
+                        HStack {
+                            Image(systemName: document.type == .pdf ? "doc.fill" : "doc.text.fill")
+                                .foregroundColor(.blue)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(document.title)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text(document.type.rawValue.uppercased())
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Text(formattedSize(for: document))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+            .navigationTitle("Select Document")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func formattedSize(for document: Document) -> String {
+        let bytes: Int = {
+            if let d = document.originalFileData { return d.count }
+            if let d = document.pdfData { return d.count }
+            if let imgs = document.imageData { return imgs.reduce(0) { $0 + $1.count } }
+            return document.content.utf8.count
+        }()
+        
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes))
+    }
+}
+
+struct ConversionResultSheet: View {
+    let result: ConversionView.ConversionResult
+    let documentManager: DocumentManager
+    let onDismiss: () -> Void
+    @State private var showingShareSheet = false
+    @State private var isSaving = false
+    @State private var saveSuccess = false
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                // Result Icon
+                Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .font(.system(size: 60))
+                    .foregroundColor(result.success ? .green : .red)
+                
+                // Result Message
+                VStack(spacing: 8) {
+                    Text(result.success ? "Conversion Complete" : "Conversion Failed")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    
+                    Text(result.message)
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                
+                if result.success {
+                    VStack(spacing: 16) {
+                        // File Info
+                        VStack(spacing: 8) {
+                            Text("Generated File")
+                                .font(.headline)
+                            Text(result.filename)
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                        
+                        // Success message for save
+                        if saveSuccess {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("Saved to Documents")
+                                    .foregroundColor(.green)
+                                    .fontWeight(.medium)
+                            }
+                            .padding()
+                            .background(Color.green.opacity(0.1))
+                            .cornerRadius(8)
+                        }
+                        
+                        // Action Buttons
+                        VStack(spacing: 12) {
+                            // Save to Documents button
+                            Button(action: saveToDocuments) {
+                                HStack {
+                                    if isSaving {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: saveSuccess ? "checkmark.circle.fill" : "folder.badge.plus")
+                                    }
+                                    Text(saveSuccess ? "Saved to Documents" : "Save in Documents")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(saveSuccess ? Color.green : Color.orange)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                            }
+                            .disabled(isSaving || saveSuccess)
+                            
+                            Button(action: {
+                                showingShareSheet = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "square.and.arrow.up")
+                                    Text("Share File")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                            }
+                            
+                            Button(action: onDismiss) {
+                                Text("Done")
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(Color(.secondarySystemBackground))
+                                    .foregroundColor(.primary)
+                                    .cornerRadius(12)
+                            }
+                        }
+                    }
+                } else {
+                    Button(action: onDismiss) {
+                        Text("OK")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(.secondarySystemBackground))
+                            .foregroundColor(.primary)
+                            .cornerRadius(12)
+                    }
+                }
+                
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Conversion Result")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        onDismiss()
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            if let data = result.outputData {
+                ShareSheet(items: [data])
+            }
+        }
+    }
+    
+    private func saveToDocuments() {
+        guard let outputData = result.outputData else { return }
+        
+        isSaving = true
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Determine document type from file extension
+            let documentType = self.getDocumentType(from: self.result.filename)
+            
+            // Extract content based on type
+            let content = self.extractContent(from: outputData, type: documentType)
+            
+            // Create the document
+            let document = Document(
+                title: self.result.filename.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "\\.[^.]*$", with: "", options: .regularExpression).capitalized,
+                content: content,
+                summary: "Converted document - Processing summary...",
+                category: .general,
+                keywordsResume: "",
+                dateCreated: Date(),
+                type: documentType,
+                imageData: documentType == .image ? [outputData] : nil,
+                pdfData: documentType == .pdf ? outputData : nil,
+                originalFileData: outputData
+            )
+            
+            DispatchQueue.main.async {
+                // Add to document manager and force UI update
+                self.documentManager.addDocument(document)
+                
+                // Force refresh of the documents list
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.documentManager.objectWillChange.send()
+                }
+                
+                self.isSaving = false
+                self.saveSuccess = true
+                
+                // Auto dismiss after 2 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    self.onDismiss()
+                }
+            }
+        }
+    }
+    
+    private func getDocumentType(from filename: String) -> Document.DocumentType {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return .pdf
+        case "docx", "doc": return .docx
+        case "txt": return .text
+        case "jpg", "jpeg", "png": return .image
+        default: return .text
+        }
+    }
+    
+    private func extractContent(from data: Data, type: Document.DocumentType) -> String {
+        switch type {
+        case .text:
+            return String(data: data, encoding: .utf8) ?? "Converted text document"
+        case .docx:
+            // For HTML-based DOCX files, extract basic text content
+            if let htmlString = String(data: data, encoding: .utf8) {
+                // Simple HTML text extraction - remove HTML tags
+                let cleanText = htmlString
+                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                    .replacingOccurrences(of: "&nbsp;", with: " ")
+                    .replacingOccurrences(of: "&amp;", with: "&")
+                    .replacingOccurrences(of: "&lt;", with: "<")
+                    .replacingOccurrences(of: "&gt;", with: ">")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return cleanText.isEmpty ? "Converted Word document" : cleanText
+            }
+            return "Converted Word document"
+        case .pdf:
+            return "Converted PDF document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+        case .image:
+            return "Converted image document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+        default:
+            return "Converted document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+        }
+    }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
