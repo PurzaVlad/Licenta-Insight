@@ -414,17 +414,17 @@ class DocumentManager: ObservableObject {
         return ltCount > 20 && s.count > 200
     }
     
-    func generateSummary(for document: Document) {
+    func generateSummary(for document: Document, force: Bool = false) {
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
-        let prompt = "<<<SUMMARY_REQUEST>>>Summarize the document content only. No introduction, no commentary, no suggestions, no feedback. Do not write the word \"Summary\":\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Summarize the document content at a high level. Use short bullet points only when helpful. Avoid listing line items, prices, or long enumerations; instead label the document type (e.g., \"price list\", \"invoice\", \"contract\"). Bold key terms (names, dates, totals) using **bold**. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word \"Summary\". Keep the response concise:\n\n\(document.content)"
         
         print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
         // Send to EdgeAI for processing
         NotificationCenter.default.post(
             name: NSNotification.Name("GenerateDocumentSummary"),
             object: nil,
-            userInfo: ["documentId": document.id.uuidString, "prompt": prompt]
+            userInfo: ["documentId": document.id.uuidString, "prompt": prompt, "force": force]
         )
     }
     

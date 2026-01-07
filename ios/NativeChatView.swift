@@ -224,12 +224,13 @@ struct TabContainerView: View {
                   let docId = UUID(uuidString: idString) else {
                 return
             }
+            let force = (userInfo["force"] as? Bool) ?? false
 
             // Skip if we already generated (or are generating) a summary.
             if summaryRequestsInFlight.contains(docId) {
                 return
             }
-            if let doc = documentManager.getDocument(by: docId),
+            if !force, let doc = documentManager.getDocument(by: docId),
                !isSummaryPlaceholder(doc.summary) {
                 return
             }
@@ -4368,9 +4369,9 @@ struct DocumentSummaryView: View {
                             if isGeneratingSummary {
                                 Button("Cancel") { cancelSummary() }
                             } else if hasUsableSummary {
-                                Button("Regenerate") { generateAISummary() }
+                                Button("Regenerate") { generateAISummary(force: true) }
                             } else {
-                                Button("Generate") { generateAISummary() }
+                                Button("Generate") { generateAISummary(force: false) }
                             }
                         }
                         
@@ -4477,10 +4478,10 @@ struct DocumentSummaryView: View {
         return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
     }
     
-    private func generateAISummary() {
+    private func generateAISummary(force: Bool) {
         print("🧠 DocumentSummaryView: Requesting AI summary for '\(document.title)'")
         isGeneratingSummary = true
-        documentManager.generateSummary(for: currentDoc)
+        documentManager.generateSummary(for: currentDoc, force: force)
     }
 
     private func cancelSummary() {

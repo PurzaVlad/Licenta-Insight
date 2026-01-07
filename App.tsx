@@ -13,12 +13,12 @@ type Message = {
   timestamp: number;
 };
 
-const MODEL_FILENAME = 'gemma-2-2b-it-Q3_K_S.gguf';
+const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
 const MODEL_URL =
-  'https://huggingface.co/medmekk/gemma-2-2b-it.GGUF/resolve/main/gemma-2-2b-it-Q3_K_S.gguf';
+  'https://huggingface.co/QuantFactory/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
 
 const SUMMARY_SYSTEM_PROMPT =
-  'Summarize the document content only. Output factual summary sentences only. No introduction, no commentary, no suggestions, no feedback. Do not write the word "Summary".';
+  'Summarize the document content at a high level. Use short bullet points only when helpful. Avoid listing line items, prices, or long enumerations; instead label the document type (e.g., "price list", "invoice", "contract"). Bold key terms (names, dates, totals) using **bold**. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Keep the response concise.';
 
 const CHAT_SYSTEM_PROMPT =
   'You are a document analysis assistant specializing in file extraction. Provide any information you can find in the already uploaded documents and help improve them however you are asked to. Be concise';
@@ -112,7 +112,6 @@ useEffect(() => {
 
   const emitter = new NativeEventEmitter(EdgeAI);
 
-  // Proper Gemma2 formatting with correct conversation structure
   const formatGemmaPrompt = (messages: Message[]): string => {
     const system = messages
       .filter(m => m.role === 'system')
@@ -151,6 +150,24 @@ useEffect(() => {
     return prompt;
   };
 
+  const formatQwenPrompt = (messages: Message[]): string => {
+    let prompt = '';
+    for (const m of messages) {
+      const role = m.role === 'assistant' ? 'assistant' : m.role;
+      prompt += `<|im_start|>${role}\n${m.content.trim()}\n<|im_end|>\n`;
+    }
+    prompt += `<|im_start|>assistant\n`;
+    return prompt;
+  };
+
+  const formatPrompt = (messages: Message[]): string => {
+    const lower = MODEL_FILENAME.toLowerCase();
+    if (lower.includes('qwen')) {
+      return formatQwenPrompt(messages);
+    }
+    return formatGemmaPrompt(messages);
+  };
+
   const processQueue = async () => {
     console.log('[EdgeAI] processQueue called, isRunning:', isRunningRef.current, 'queue length:', queueRef.current.length);
     if (isRunningRef.current) {
@@ -186,39 +203,57 @@ useEffect(() => {
             throw new Error('Model context is not initialized');
           }
           
-          const promptText = formatGemmaPrompt(messagesForAI);
+          const promptText = formatPrompt(messagesForAI);
           console.log('[EdgeAI] Generated prompt length:', promptText.length);
           console.log('[EdgeAI] Prompt preview:', promptText.substring(0, 200) + '...');
           
-          let text = "";
-          if (isSummary) {
+          const runSummary = async (summaryText: string, nPredict: number): Promise<string> => {
             const summaryMessages: Message[] = [
               { role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() },
-              { role: 'user', content: userContent, timestamp: Date.now() }
+              { role: 'user', content: summaryText, timestamp: Date.now() }
             ];
-            const summaryPrompt = formatGemmaPrompt(summaryMessages);
+            const summaryPrompt = formatPrompt(summaryMessages);
             const summaryResult = await context.completion(
               {
                 prompt: summaryPrompt,
-                n_predict: 220,
-                temperature: 0.2,
+                n_predict: nPredict,
+                temperature: 0.1,
                 top_p: 0.8,
-                repeat_penalty: 1.15,
+                repeat_penalty: 1.25,
                 stop: ["<end_of_turn>", "</s>"]
               },
               () => {}
             );
 
-            text = (summaryResult?.text ?? '').trim();
-            const candidates = [
-              text.lastIndexOf('\n'),
-              text.lastIndexOf('.'),
-              text.lastIndexOf('!'),
-              text.lastIndexOf('?')
-            ];
-            const cut = Math.max(...candidates);
-            if (cut > 0 && cut < text.length - 2) {
-              text = text.slice(0, cut + 1).trim();
+            let out = (summaryResult?.text ?? '').trim();
+            out = out.replace(/\b(\w+)\b(?:\s+\1){5,}/gi, '$1');
+            return out;
+          };
+
+          let text = "";
+          if (isSummary) {
+            const chunkSize = 4000;
+            const chunks: string[] = [];
+            for (let i = 0; i < userContent.length; i += chunkSize) {
+              chunks.push(userContent.slice(i, i + chunkSize));
+            }
+
+            if (chunks.length <= 1) {
+              text = await runSummary(userContent, 300);
+            } else {
+              const chunkSummaries: string[] = [];
+              for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                const header = `Chunk ${i + 1} of ${chunks.length}:\n`;
+                const chunkSummary = await runSummary(header + chunk, 160);
+                if (chunkSummary) {
+                  chunkSummaries.push(chunkSummary);
+                }
+              }
+
+              const combined = chunkSummaries.join("\n");
+              const finalPrompt = `Combine the following chunk summaries into concise bullet points:\n\n${combined}`;
+              text = await runSummary(finalPrompt, 300);
             }
           } else {
             const completionParams = {
