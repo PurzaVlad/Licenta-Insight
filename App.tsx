@@ -41,6 +41,8 @@ function App(): React.JSX.Element {
   // Serialize AI requests to avoid "context is busy" errors
   const queueRef = useRef<Array<{ requestId: string; prompt: string }>>([]);
   const isRunningRef = useRef(false);
+  const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'chat' } | null>(null);
+  const abortCurrentRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -184,18 +186,31 @@ useEffect(() => {
     
     try {
       while (queueRef.current.length > 0) {
-        const { requestId, prompt } = queueRef.current[0];
+        const job = queueRef.current.shift();
+        if (!job) break;
+        const { requestId, prompt } = job;
         console.log('[EdgeAI] Processing request:', requestId, 'prompt length:', prompt.length);
         
         const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
+        const NAME_MARKER = '<<<NAME_REQUEST>>>';
         const isSummary = prompt.startsWith(SUMMARY_MARKER);
-        const userContent = isSummary ? prompt.slice(SUMMARY_MARKER.length).trim() : prompt;
-        console.log('[EdgeAI] Mode:', isSummary ? 'summary' : 'chat', 'content length:', userContent.length);
+        const isName = prompt.startsWith(NAME_MARKER);
+        const userContent = isSummary
+          ? prompt.slice(SUMMARY_MARKER.length).trim()
+          : isName
+          ? prompt.slice(NAME_MARKER.length).trim()
+          : prompt;
+        const modeLabel: 'summary' | 'name' | 'chat' = isSummary ? 'summary' : isName ? 'name' : 'chat';
+        console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
+        currentJobRef.current = { requestId, prompt, type: modeLabel };
+        abortCurrentRef.current = false;
         
         const userMessage: Message = { role: 'user', content: userContent, timestamp: Date.now() };
 
         const messagesForAI: Message[] = isSummary
           ? [{ role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
+          : isName
+          ? [userMessage]
           : [...conversationRef.current, userMessage];
 
         try {
@@ -255,6 +270,20 @@ useEffect(() => {
               const finalPrompt = `Combine the following chunk summaries into concise bullet points:\n\n${combined}`;
               text = await runSummary(finalPrompt, 300);
             }
+          } else if (isName) {
+            const namePrompt = formatPrompt(messagesForAI);
+            const nameResult = await context.completion(
+              {
+                prompt: namePrompt,
+                n_predict: 50,
+                temperature: 0.3,
+                top_p: 0.8,
+                repeat_penalty: 1.1,
+                stop: ["<end_of_turn>", "</s>"]
+              },
+              () => {}
+            );
+            text = (nameResult?.text ?? '').trim();
           } else {
             const completionParams = {
               prompt: promptText,
@@ -286,9 +315,15 @@ useEffect(() => {
             .replace(/^\s*model\s*\n/i, '')
             .trim();
 
+          if (abortCurrentRef.current && isSummary) {
+            abortCurrentRef.current = false;
+            queueRef.current.push({ requestId, prompt });
+            continue;
+          }
+
           if (!text) text = "(No output)";
 
-          if (!isSummary) {
+          if (!isSummary && !isName) {
             if (text.length > 0) {
               const assistantMessage: Message = { role: 'assistant', content: text, timestamp: Date.now() };
               conversationRef.current = [...messagesForAI, assistantMessage];
@@ -302,9 +337,14 @@ useEffect(() => {
         } catch (e: any) {
           console.error('[EdgeAI] Generation error:', e);
           const errorMsg = e?.message ?? 'Unknown error';
-          EdgeAI.rejectRequest(requestId, 'GEN_ERR', errorMsg);
+          if (abortCurrentRef.current && isSummary) {
+            abortCurrentRef.current = false;
+            queueRef.current.push({ requestId, prompt });
+          } else {
+            EdgeAI.rejectRequest(requestId, 'GEN_ERR', errorMsg);
+          }
         } finally {
-          queueRef.current.shift();
+          currentJobRef.current = null;
           console.log('[EdgeAI] Request processed, remaining queue:', queueRef.current.length);
         }
       }
@@ -324,8 +364,20 @@ useEffect(() => {
       return;
     }
     console.log('[EdgeAI] Adding to queue. Current queue length:', queueRef.current.length);
-    queueRef.current.push({ requestId, prompt });
-    processQueue().catch(err => {
+    const NAME_MARKER = '<<<NAME_REQUEST>>>';
+    const isName = prompt.startsWith(NAME_MARKER);
+    if (isName && isRunningRef.current && currentJobRef.current?.type === 'summary') {
+      abortCurrentRef.current = true;
+      context?.stopCompletion().catch((err: any) => {
+        console.warn('[EdgeAI] Failed to stop summary completion:', err);
+      });
+      queueRef.current.unshift({ requestId, prompt });
+    } else if (isName) {
+      queueRef.current.unshift({ requestId, prompt });
+    } else {
+      queueRef.current.push({ requestId, prompt });
+    }
+    processQueue().catch((err: any) => {
       console.error('[EdgeAI] Queue processing error:', err);
       EdgeAI.rejectRequest(requestId, 'QUEUE_ERR', err?.message ?? 'Unknown queue error');
     });

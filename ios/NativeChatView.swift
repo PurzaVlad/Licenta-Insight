@@ -1037,72 +1037,29 @@ struct DocumentsView: View {
             showingNamingDialog = true
         }
     }
-    
+
     private func generateAIDocumentName(from text: String) {
-        func sanitizeTitle(_ s: String) -> String {
-            var name = s
-                .replacingOccurrences(of: "\"", with: "")
-                .replacingOccurrences(of: "'", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // Replace any non-letter/digit with space to keep readable words
-            name = name.replacingOccurrences(of: "[^A-Za-z0-9]+", with: " ", options: .regularExpression)
-            // Collapse whitespace and trim
-            name = name.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            return name.isEmpty ? "Scanned Document" : name
-        }
-        func titleCase(_ s: String) -> String {
-            return s.split(separator: " ").map { w in
-                let lw = w.lowercased()
-                return lw.prefix(1).uppercased() + lw.dropFirst()
-            }.joined(separator: " ")
-        }
-        func heuristicName(from text: String) -> String {
-            let stop: Set<String> = ["the","a","an","and","or","of","to","for","in","on","by","with","from","at","as","is","are","was","were","be","been","being"]
-
-            let rawTokens = text
-                .replacingOccurrences(of: "[^A-Za-z0-9 ]+", with: " ", options: .regularExpression)
-                .split(separator: " ")
-                .map(String.init)
-
-            let filtered = rawTokens
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty && $0.count > 2 && !stop.contains($0.lowercased()) }
-
-            let specificWord = filtered.first { token in
-                let first = token.prefix(1)
-                return first.rangeOfCharacter(from: CharacterSet.uppercaseLetters) != nil
-            } ?? filtered.first
-
-            let typeWord = filtered.first { token in
-                guard token != specificWord else { return false }
-                return token.lowercased() != (specificWord?.lowercased() ?? "")
-            }
-
-            let specific = specificWord.map { titleCase(sanitizeTitle($0)) } ?? "Scan"
-            let type = typeWord.map { titleCase(sanitizeTitle($0)) } ?? "Notes"
-            return "\(specific) \(type)"
-        }
-        // Prompt: ONLY use the first 150 OCR chars for naming.
         let prompt = """
-        <<<NAME_REQUEST>>>Create a short document title using ONLY the provided OCR snippet (do not guess beyond it).
-        
+        <<<NAME_REQUEST>>>Create a short document title using the context from the provided OCR snippet (do not guess beyond it).
+
         STRICT REQUIREMENTS:
-        - Exactly 2-3 words maximum
+        - 2-3 words maximum
         - Use Title Case (First Letter Of Each Word Capitalized)
-        - MUST include a document type word (e.g., Analysis, Results, Report, Invoice, Contract, Agreement, Summary, Notes)
-        - Prefer proper nouns in the snippet (clinic/company/person) if present
-        - No generic words like "Document", "Text", "File"
+        - Prefer specific words from the snippet (company, clinic, person, product, location)
+        - Be specific (e.g., "Mercy Hospital Bill", not just "Hospital Bill")
+        - Avoid broad words (e.g., country names like "Romania") unless the document is explicitly about that place
+        - Avoid generic words like "Document", "Text", "File"
         - No file extensions
-        
+
         Examples of good names:
         - "UPS Contract"
         - "Google Analysis"
         - "Xcode Folder"
-        - "Clinic Invoice"
-        
-        OCR Snippet (first 150 chars):
-        \(text.prefix(150))
-        
+        - "MedLife Invoice"
+
+        OCR Snippet (first 250 chars):
+        \(text.prefix(250))
+
         Response format: Just the title, nothing else.
         """
         
@@ -1111,11 +1068,14 @@ struct DocumentsView: View {
             print("🏷️ DocumentsView: Got name suggestion result: \(String(describing: result))")
             DispatchQueue.main.async {
                 if let result = result as? String, !result.isEmpty {
-                    // Clean up the AI response, keep up to 3 words, then sanitize for filesystem
+                    // Clean up the AI response, keep up to 4 words, then sanitize for filesystem
                     let cleanResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let words = cleanResult.components(separatedBy: .whitespacesAndNewlines)
+                    var words = cleanResult.components(separatedBy: .whitespacesAndNewlines)
                         .filter { !$0.isEmpty }
-                        .prefix(3)
+                    if let last = words.last, last.count < 3 {
+                        words.removeLast()
+                    }
+                    words = Array(words.prefix(4))
                     let joined = words.joined(separator: " ")
                     let friendly = titleCase(sanitizeTitle(joined))
                     self.suggestedName = friendly.isEmpty ? heuristicName(from: text) : friendly
@@ -1136,6 +1096,52 @@ struct DocumentsView: View {
                 self.showingNamingDialog = true
             }
         })
+    }
+
+    private func sanitizeTitle(_ s: String) -> String {
+        var name = s
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "'", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Replace any non-letter/digit with space to keep readable words
+        name = name.replacingOccurrences(of: "[^A-Za-z0-9]+", with: " ", options: .regularExpression)
+        // Collapse whitespace and trim
+        name = name.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return name.isEmpty ? "Scanned Document" : name
+    }
+
+    private func titleCase(_ s: String) -> String {
+        return s.split(separator: " ").map { w in
+            let lw = w.lowercased()
+            return lw.prefix(1).uppercased() + lw.dropFirst()
+        }.joined(separator: " ")
+    }
+
+    private func heuristicName(from text: String) -> String {
+        let stop: Set<String> = ["the","a","an","and","or","of","to","for","in","on","by","with","from","at","as","is","are","was","were","be","been","being"]
+
+        let rawTokens = text
+            .replacingOccurrences(of: "[^A-Za-z0-9 ]+", with: " ", options: .regularExpression)
+            .split(separator: " ")
+            .map(String.init)
+
+        let filtered = rawTokens
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count > 2 && !stop.contains($0.lowercased()) }
+
+        let specificWord = filtered.first { token in
+            let first = token.prefix(1)
+            return first.rangeOfCharacter(from: CharacterSet.uppercaseLetters) != nil
+        } ?? filtered.first
+
+        let typeWord = filtered.first { token in
+            guard token != specificWord else { return false }
+            return token.lowercased() != (specificWord?.lowercased() ?? "")
+        }
+
+        let specific = specificWord.map { titleCase(sanitizeTitle($0)) } ?? "Scan"
+        let type = typeWord.map { titleCase(sanitizeTitle($0)) } ?? "Notes"
+        return "\(specific) \(type)"
     }
     
     private func finalizeDocument(with name: String) {
