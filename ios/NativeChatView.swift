@@ -14,6 +14,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let title: String
     let content: String
     let summary: String
+    let ocrPages: [OCRPage]?
     let category: DocumentCategory
     let keywordsResume: String
     let dateCreated: Date
@@ -52,6 +53,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         title: String,
         content: String,
         summary: String,
+        ocrPages: [OCRPage]? = nil,
         category: DocumentCategory = .general,
         keywordsResume: String = "",
         dateCreated: Date = Date(),
@@ -66,6 +68,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.title = title
         self.content = content
         self.summary = summary
+        self.ocrPages = ocrPages
         self.category = category
         self.keywordsResume = keywordsResume
         self.dateCreated = dateCreated
@@ -76,6 +79,25 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.pdfData = pdfData
         self.originalFileData = originalFileData
     }
+}
+
+struct OCRBoundingBox: Codable, Hashable, Equatable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
+struct OCRBlock: Codable, Hashable, Equatable {
+    let text: String
+    let confidence: Double
+    let bbox: OCRBoundingBox
+    let order: Int
+}
+
+struct OCRPage: Codable, Hashable, Equatable {
+    let pageIndex: Int
+    let blocks: [OCRBlock]
 }
 
 struct DocumentFolder: Identifiable, Codable, Hashable, Equatable {
@@ -227,7 +249,7 @@ struct TabContainerView: View {
             let force = (userInfo["force"] as? Bool) ?? false
 
             // Skip if we already generated (or are generating) a summary.
-            if summaryRequestsInFlight.contains(docId) {
+            if !force && summaryRequestsInFlight.contains(docId) {
                 return
             }
             if !force, let doc = documentManager.getDocument(by: docId),
@@ -235,10 +257,10 @@ struct TabContainerView: View {
                 return
             }
 
+            // Ensure we re-queue for regenerate.
+            summaryQueue.removeAll { $0.documentId == docId }
             let job = SummaryJob(documentId: docId, prompt: prompt)
-            if !summaryQueue.contains(where: { $0.documentId == docId }) {
-                summaryQueue.append(job)
-            }
+            summaryQueue.append(job)
             processNextSummaryIfNeeded()
         }
     }
@@ -314,6 +336,7 @@ struct DocumentsView: View {
     @State private var customName = ""
     @State private var scannedImages: [UIImage] = []
     @State private var extractedText = ""
+    @State private var pendingOCRPages: [OCRPage] = []
     @State private var pendingCategory: Document.DocumentCategory = .general
     @State private var pendingKeywordsResume: String = ""
     @State private var showingDocumentPreview = false
@@ -736,6 +759,7 @@ struct DocumentsView: View {
                 customName = ""
                 pendingCategory = .general
                 pendingKeywordsResume = ""
+                pendingOCRPages = []
                 isProcessing = false
             }
         } message: {
@@ -768,6 +792,7 @@ struct DocumentsView: View {
                         title: newTitle,
                         content: old.content,
                         summary: old.summary,
+                        ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
                         dateCreated: old.dateCreated,
@@ -796,11 +821,16 @@ struct DocumentsView: View {
         }
         .fullScreenCover(isPresented: $showingDocumentPreview, onDismiss: { isOpeningPreview = false }) {
             if let url = previewDocumentURL, let document = currentDocument {
-                DocumentPreviewContainerView(url: url, document: document, onAISummary: {
-                    showingDocumentPreview = false
-                    showingAISummary = true
-                    isOpeningPreview = false
-                })
+                let shouldShowSummary = document.type != .image
+                DocumentPreviewContainerView(
+                    url: url,
+                    document: document,
+                    onAISummary: shouldShowSummary ? {
+                        showingDocumentPreview = false
+                        showingAISummary = true
+                        isOpeningPreview = false
+                    } : nil
+                )
             }
         }
         .sheet(isPresented: $showingAISummary, onDismiss: { isOpeningPreview = false }) {
@@ -893,6 +923,7 @@ struct DocumentsView: View {
                             title: document.title, // Keep original name
                             content: document.content,
                             summary: document.summary,
+                            ocrPages: document.ocrPages,
                             category: cat,
                             keywordsResume: kw,
                             dateCreated: document.dateCreated,
@@ -962,18 +993,22 @@ struct DocumentsView: View {
         
         // Extract text from first image to get content for AI naming
         print("Starting OCR extraction for AI naming...")
-        let firstPageText = performOCR(on: firstImage)
+        let firstPage = performOCRDetailed(on: firstImage, pageIndex: 0)
+        let firstPageText = firstPage.text
         print("First page OCR result: \(firstPageText.prefix(100))...") // Log first 100 chars
         
         // Process all images for full content
         var allText = ""
+        var ocrPages: [OCRPage] = []
         for (index, image) in images.enumerated() {
             print("Processing page \(index + 1) for OCR...")
-            let pageText = performOCR(on: image)
-            allText += "Page \(index + 1):\n\(pageText)\n\n"
-            print("Page \(index + 1) OCR completed: \(pageText.count) characters")
+            let page = performOCRDetailed(on: image, pageIndex: index)
+            allText += "Page \(index + 1):\n\(page.text)\n\n"
+            ocrPages.append(page.page)
+            print("Page \(index + 1) OCR completed: \(page.text.count) characters")
         }
-        extractedText = allText.trimmingCharacters(in: .whitespacesAndNewlines)
+        extractedText = buildStructuredText(from: ocrPages, includePageLabels: true)
+        pendingOCRPages = ocrPages
         
         print("Total extracted text: \(extractedText.count) characters")
         
@@ -1122,6 +1157,7 @@ struct DocumentsView: View {
             title: name,
             content: extractedText,
             summary: "Processing summary...",
+            ocrPages: pendingOCRPages.isEmpty ? nil : pendingOCRPages,
             category: pendingCategory,
             keywordsResume: pendingKeywordsResume,
             dateCreated: Date(),
@@ -1141,6 +1177,7 @@ struct DocumentsView: View {
             customName = ""
             pendingCategory = .general
             pendingKeywordsResume = ""
+            pendingOCRPages = []
         }
     }
     
@@ -1149,10 +1186,12 @@ struct DocumentsView: View {
         
         var allText = ""
         var imageDataArray: [Data] = []
+        var ocrPages: [OCRPage] = []
         
         for (index, image) in images.enumerated() {
-            let text = performOCR(on: image)
-            allText += "Page \(index + 1):\n\(text)\n\n"
+            let page = performOCRDetailed(on: image, pageIndex: index)
+            allText += "Page \(index + 1):\n\(page.text)\n\n"
+            ocrPages.append(page.page)
             
             // Save image data with high quality
             if let imageData = image.jpegData(compressionQuality: 0.95) {
@@ -1165,8 +1204,9 @@ struct DocumentsView: View {
         
         let document = Document(
             title: "Scanned Document \(documentManager.documents.count + 1)",
-            content: allText.trimmingCharacters(in: .whitespacesAndNewlines),
+            content: buildStructuredText(from: ocrPages, includePageLabels: true),
             summary: "Processing summary...",
+            ocrPages: ocrPages.isEmpty ? nil : ocrPages,
             dateCreated: Date(),
             type: .scanned,
             imageData: imageDataArray,
@@ -1225,51 +1265,54 @@ struct DocumentsView: View {
         return pdfData as Data
     }
     
-    private func performOCR(on image: UIImage) -> String {
-        // Ensure image is properly oriented and processed
+    private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
         guard let processedImage = preprocessImageForOCR(image),
               let cgImage = processedImage.cgImage else {
             print("OCR: Failed to process image")
-            return "Could not process image"
+            return ("Could not process image", OCRPage(pageIndex: pageIndex, blocks: []))
         }
         
         let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
-        
-        // Set supported languages (add more if needed)
         request.recognitionLanguages = ["en-US"]
         
+        var blocks: [OCRBlock] = []
         var recognizedText = ""
-        let semaphore = DispatchSemaphore(value: 0)
         
         do {
             try requestHandler.perform([request])
             
             if let results = request.results {
-                // Get all text observations and sort by position
-                let textObservations = results.compactMap { observation -> (String, CGRect)? in
+                let observations = results.compactMap { observation -> (String, CGRect, Double)? in
                     guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                    return (topCandidate.string, observation.boundingBox)
+                    return (topCandidate.string, observation.boundingBox, Double(topCandidate.confidence))
                 }
                 
-                // Sort by Y position (top to bottom) then X position (left to right)
-                let sortedObservations = textObservations.sorted { first, second in
+                let sorted = observations.sorted { first, second in
                     let yDiff = abs(first.1.minY - second.1.minY)
-                    if yDiff < 0.02 { // Same line threshold
+                    if yDiff < 0.02 {
                         return first.1.minX < second.1.minX
                     }
-                    return first.1.minY > second.1.minY // Flip Y because Vision uses bottom-left origin
+                    return first.1.minY > second.1.minY
                 }
                 
-                recognizedText = sortedObservations.map { $0.0 }.joined(separator: " ")
+                for (idx, item) in sorted.enumerated() {
+                    let bbox = OCRBoundingBox(
+                        x: Double(item.1.origin.x),
+                        y: Double(item.1.origin.y),
+                        width: Double(item.1.size.width),
+                        height: Double(item.1.size.height)
+                    )
+                    blocks.append(OCRBlock(text: item.0, confidence: item.2, bbox: bbox, order: idx))
+                }
                 
-                // Clean up the text
+                recognizedText = sorted.map { $0.0 }.joined(separator: " ")
                 recognizedText = recognizedText
                     .replacingOccurrences(of: "\n\n+", with: "\n", options: .regularExpression)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                    
+                
                 print("OCR: Successfully extracted \(recognizedText.count) characters")
             } else {
                 print("OCR: No results returned")
@@ -1279,7 +1322,51 @@ struct DocumentsView: View {
             recognizedText = "OCR failed: \(error.localizedDescription)"
         }
         
-        return recognizedText.isEmpty ? "No text found in image" : recognizedText
+        let page = OCRPage(pageIndex: pageIndex, blocks: blocks)
+        return (recognizedText.isEmpty ? "No text found in image" : recognizedText, page)
+    }
+
+    private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
+        guard !pages.isEmpty else { return "" }
+
+        func paragraphize(_ lines: [(text: String, y: Double)]) -> String {
+            var output: [String] = []
+            var lastY: Double? = nil
+
+            for line in lines {
+                if let last = lastY, abs(line.y - last) > 0.04 {
+                    output.append("") // paragraph break
+                }
+                output.append(line.text)
+                lastY = line.y
+            }
+
+            return output.joined(separator: "\n").replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+        }
+
+        var result: [String] = []
+        for page in pages {
+            let sorted = page.blocks.sorted { $0.order < $1.order }
+            var lines: [(text: String, y: Double)] = []
+
+            for block in sorted {
+                if let last = lines.last, abs(block.bbox.y - last.y) < 0.02 {
+                    let combined = last.text.isEmpty ? block.text : "\(last.text) \(block.text)"
+                    lines[lines.count - 1] = (combined, last.y)
+                } else {
+                    lines.append((block.text, block.bbox.y))
+                }
+            }
+
+            let body = paragraphize(lines)
+            if includePageLabels {
+                result.append("Page \(page.pageIndex + 1):\n\(body)")
+            } else {
+                result.append(body)
+            }
+        }
+
+        return result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func preprocessImageForOCR(_ image: UIImage) -> UIImage? {
@@ -1395,28 +1482,25 @@ struct DocumentRowView: View {
         let parts = splitDisplayTitle(document.title)
 
         ZStack(alignment: .trailing) {
-            Button(action: onOpen) {
-                HStack(spacing: 10) {
-                    Image(systemName: iconForDocumentType(document.type))
-                        .foregroundColor(.blue)
-                        .frame(width: 24)
+            HStack(spacing: 10) {
+                Image(systemName: iconForDocumentType(document.type))
+                    .foregroundColor(.blue)
+                    .frame(width: 24)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(parts.base)
-                            .font(.headline)
-                            .lineLimit(2)
-                        Text("\(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .none)) • \(fileTypeLabel(documentType: document.type, titleParts: parts))")
-                            .font(.caption)
-                            .foregroundColor(Color(.tertiaryLabel))
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(parts.base)
+                        .font(.headline)
+                        .lineLimit(2)
+                    Text("\(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .none)) • \(fileTypeLabel(documentType: document.type, titleParts: parts))")
+                        .font(.caption)
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 34)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(PlainButtonStyle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 34)
 
             Menu {
                 Button(action: onRename) { Label("Rename", systemImage: "pencil") }
@@ -1432,6 +1516,10 @@ struct DocumentRowView: View {
             .buttonStyle(PlainButtonStyle())
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onOpen()
+        }
     }
     
     private func generateAISummary() {
@@ -1497,68 +1585,70 @@ struct DocumentGridItemView: View {
 
     var body: some View {
         let parts = splitDisplayTitle(document.title)
+        let previewHeight: CGFloat = 120
 
-        Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.clear)
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(.tertiarySystemBackground))
 
-                    Group {
-                        if let pdfData = document.pdfData {
-                            PDFThumbnailView(data: pdfData)
-                        } else if let imageDataArray = document.imageData,
-                                  !imageDataArray.isEmpty,
-                                  let firstImageData = imageDataArray.first,
-                                  let uiImage = UIImage(data: firstImageData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } else {
-                            Image(systemName: iconForDocumentType(document.type))
-                                .font(.system(size: 34))
-                                .foregroundColor(.blue)
-                        }
+                Group {
+                    if let pdfData = document.pdfData {
+                        PDFThumbnailView(data: pdfData)
+                    } else if let imageDataArray = document.imageData,
+                              !imageDataArray.isEmpty,
+                              let firstImageData = imageDataArray.first,
+                              let uiImage = UIImage(data: firstImageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Image(systemName: iconForDocumentType(document.type))
+                            .font(.system(size: 34))
+                            .foregroundColor(.blue)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
                 }
-                .aspectRatio(0.75, contentMode: .fit)
-                .cornerRadius(10)
-                .frame(maxWidth: .infinity, alignment: .topTrailing)
-                .overlay(alignment: .topTrailing) {
-                    Menu {
-                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                        Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                        Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .padding(.top, 6)
-                    .padding(.trailing, 6)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(parts.base)
-                        .font(.subheadline)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                    Text("\(fileTypeLabel(documentType: document.type, titleParts: parts))")
-                        .font(.caption2)
-                        .foregroundColor(Color(.tertiaryLabel))
-                        .lineLimit(1)
-                }
-                .padding(.trailing, 18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: previewHeight)
+            .cornerRadius(10)
+            .frame(maxWidth: .infinity, alignment: .topTrailing)
+            .overlay(alignment: .topTrailing) {
+                Menu {
+                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                    Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+                    Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
+                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 24, height: 24)
+                        .foregroundColor(.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+                .padding(.top, 6)
+                .padding(.trailing, 6)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(parts.base)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Text("\(fileTypeLabel(documentType: document.type, titleParts: parts))")
+                    .font(.caption2)
+                    .foregroundColor(Color(.tertiaryLabel))
+                    .lineLimit(1)
+            }
+            .padding(.trailing, 8)
         }
-        .buttonStyle(PlainButtonStyle())
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onOpen()
+        }
     }
 }
 
@@ -1616,47 +1706,54 @@ struct FolderGridItemView: View {
     let onDelete: () -> Void
 
     var body: some View {
-        Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.clear)
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 34))
-                        .foregroundColor(.blue)
-                }
-                .aspectRatio(0.75, contentMode: .fit)
-                .cornerRadius(10)
-                .frame(maxWidth: .infinity, alignment: .topTrailing)
-                .overlay(alignment: .topTrailing) {
-                    Menu {
-                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                        Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .padding(.top, 6)
-                    .padding(.trailing, 6)
-                }
+        let previewHeight: CGFloat = 120
+        let parts = splitDisplayTitle(folder.name)
 
-                Text(folder.name)
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(.tertiarySystemBackground))
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 28))
+                    .foregroundColor(.blue)
+            }
+            .frame(height: previewHeight)
+            .cornerRadius(10)
+            .frame(maxWidth: .infinity, alignment: .topTrailing)
+            .overlay(alignment: .topTrailing) {
+                Menu {
+                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                    Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 24, height: 24)
+                        .foregroundColor(.secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+                .padding(.top, 6)
+                .padding(.trailing, 6)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(parts.base)
                     .font(.subheadline)
                     .foregroundColor(.primary)
                     .lineLimit(1)
                 Text("\(docCount) item\(docCount == 1 ? "" : "s")")
                     .font(.caption2)
                     .foregroundColor(Color(.tertiaryLabel))
+                    .lineLimit(1)
             }
-            .padding(.trailing, 18)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.trailing, 8)
         }
-        .buttonStyle(PlainButtonStyle())
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onOpen()
+        }
     }
 }
 
@@ -1875,6 +1972,7 @@ struct FolderDocumentsView: View {
                         title: newTitle,
                         content: old.content,
                         summary: old.summary,
+                        ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
                         dateCreated: old.dateCreated,
@@ -2286,27 +2384,29 @@ struct DocumentDetailView: View {
                 }
                 
                 // AI Summary Button
-                Button(action: {
-                    generateAISummary()
-                }) {
-                    HStack {
-                        if isGeneratingSummary {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                                .tint(.white)
-                        } else {
-                            Image(systemName: "brain.head.profile")
+                if document.type != .image {
+                    Button(action: {
+                        generateAISummary()
+                    }) {
+                        HStack {
+                            if isGeneratingSummary {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "brain.head.profile")
+                            }
+                            Text(isGeneratingSummary ? "Generating..." : "AI Summary")
+                                .font(.caption.weight(.medium))
                         }
-                        Text(isGeneratingSummary ? "Generating..." : "AI Summary")
-                            .font(.caption.weight(.medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.blue)
+                        .clipShape(Capsule())
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.blue)
-                    .clipShape(Capsule())
+                    .disabled(isGeneratingSummary)
                 }
-                .disabled(isGeneratingSummary)
             }
             .padding()
         }
@@ -2567,8 +2667,10 @@ struct OldDocumentPreviewView: View {
                         showingDocumentInfo = true
                     }
                     
-                    Button("Generate AI Summary") {
-                        generateAISummary()
+                    if document.type != .image {
+                        Button("Generate AI Summary") {
+                            generateAISummary()
+                        }
                     }
                     
                     if document.imageData != nil || document.pdfData != nil {
@@ -2636,29 +2738,33 @@ struct OldDocumentPreviewView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            // AI Summary Button
-            Button(action: {
-                generateAISummary()
-            }) {
-                HStack {
-                    if isGeneratingSummary {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "brain.head.profile")
+            Group {
+                // AI Summary Button
+                if document.type != .image {
+                    Button(action: {
+                        generateAISummary()
+                    }) {
+                        HStack {
+                            if isGeneratingSummary {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "brain.head.profile")
+                            }
+                            Text(isGeneratingSummary ? "Generating..." : "AI Summary")
+                                .font(.caption.weight(.medium))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.blue)
+                        .clipShape(Capsule())
                     }
-                    Text(isGeneratingSummary ? "Generating..." : "AI Summary")
-                        .font(.caption.weight(.medium))
+                    .disabled(isGeneratingSummary)
                 }
-                .foregroundColor(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.blue)
-                .clipShape(Capsule())
             }
             .padding()
-            .disabled(isGeneratingSummary)
         }
     }
     
@@ -2949,6 +3055,9 @@ struct NativeChatView: View {
     @State private var showSummaryLoadingWarning = false
     @State private var hasShownSummaryLoadingWarning = false
     @State private var isSummaryGenerationActive = false
+    @State private var showingScopePicker = false
+    @State private var selectedDocIds: [UUID] = []
+    @State private var selectedFolderId: UUID? = nil
     @FocusState private var isFocused: Bool
     @EnvironmentObject private var documentManager: DocumentManager
 
@@ -3038,6 +3147,11 @@ struct NativeChatView: View {
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(scopeLabel) {
+                        showingScopePicker = true
+                    }
+                }
             }
         }
         .alert("Some documents are still preparing", isPresented: $showSummaryLoadingWarning) {
@@ -3045,9 +3159,27 @@ struct NativeChatView: View {
         } message: {
             Text("You can keep chatting now. I’ll answer using the documents that are ready.")
         }
+        .sheet(isPresented: $showingScopePicker) {
+            ChatScopePickerView(
+                selectedDocIds: $selectedDocIds,
+                selectedFolderId: $selectedFolderId,
+                folders: documentManager.folders,
+                documents: documentManager.documents
+            )
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SummaryGenerationStatus"))) { notification in
             guard let active = notification.userInfo?["isActive"] as? Bool else { return }
             isSummaryGenerationActive = active
+        }
+        .onChange(of: selectedDocIds) { _ in
+            activeDocsForChat = []
+            pendingDocConfirmation = nil
+            lastDocScopedQuestion = ""
+        }
+        .onChange(of: selectedFolderId) { _ in
+            activeDocsForChat = []
+            pendingDocConfirmation = nil
+            lastDocScopedQuestion = ""
         }
     }
 
@@ -3102,8 +3234,9 @@ struct NativeChatView: View {
             return
         }
 
-        let readyDocs = documentsWithReadySummaries()
-        if readyDocs.count < documentManager.documents.count {
+        let scopedDocs = scopedDocuments()
+        let readyDocs = documentsWithReadySummaries(from: scopedDocs)
+        if readyDocs.count < scopedDocs.count {
             if !hasShownSummaryLoadingWarning {
                 showSummaryLoadingWarning = true
                 hasShownSummaryLoadingWarning = true
@@ -3195,7 +3328,7 @@ struct NativeChatView: View {
 
         // If we had no candidates, treat the reply as a document name hint.
         if pending.candidates.isEmpty {
-            let matches = bestTitleMatches(for: lower, within: documentsWithReadySummaries())
+            let matches = bestTitleMatches(for: lower, within: documentsWithReadySummaries(from: scopedDocuments()))
             if matches.isEmpty {
                 return false
             }
@@ -3222,7 +3355,7 @@ struct NativeChatView: View {
             runLLMAnswer(question: pending.question, docsToSearch: [doc])
             return true
         }
-        if let doc = bestTitleMatches(for: lower, within: documentsWithReadySummaries()).first {
+        if let doc = bestTitleMatches(for: lower, within: documentsWithReadySummaries(from: scopedDocuments())).first {
             pendingDocConfirmation = nil
             activeDocsForChat = [doc]
             lastDocScopedQuestion = pending.question
@@ -3265,7 +3398,7 @@ struct NativeChatView: View {
             return true
         }
 
-        if bestTitleMatches(for: lower, within: documentsWithReadySummaries()).first != nil {
+        if bestTitleMatches(for: lower, within: documentsWithReadySummaries(from: scopedDocuments())).first != nil {
             // If they name a document, treat it as an explicit target (i.e., can switch).
             return true
         }
@@ -3651,11 +3784,40 @@ struct NativeChatView: View {
         return Array(scored.prefix(maxDocs))
     }
 
-    private func documentsWithReadySummaries() -> [Document] {
-        documentManager.documents.filter { doc in
+    private func documentsWithReadySummaries(from docs: [Document]) -> [Document] {
+        docs.filter { doc in
             let trimmed = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             return !(trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary...")
         }
+    }
+
+    private func scopedDocuments() -> [Document] {
+        if let folderId = selectedFolderId {
+            let descendantIds = documentManager.descendantFolderIds(of: folderId)
+            let folderIds = descendantIds.union([folderId])
+            return documentManager.documents.filter { doc in
+                guard let docFolderId = doc.folderId else { return false }
+                return folderIds.contains(docFolderId)
+            }
+        }
+
+        if !selectedDocIds.isEmpty {
+            let idSet = Set(selectedDocIds)
+            return documentManager.documents.filter { idSet.contains($0.id) }
+        }
+
+        return documentManager.documents
+    }
+
+    private var scopeLabel: String {
+        if let folderId = selectedFolderId {
+            return documentManager.folderName(for: folderId) ?? "Folder"
+        }
+        if !selectedDocIds.isEmpty {
+            let count = selectedDocIds.count
+            return count == 1 ? "1 Doc" : "\(count) Docs"
+        }
+        return "Scope"
     }
 
     private func buildDocumentContextBlock(for docs: [Document], detailed: Bool) -> String {
@@ -3758,6 +3920,153 @@ struct NativeChatView: View {
         ]
         
         return detailedKeywords.contains { lowercaseQuery.contains($0) }
+    }
+}
+
+struct ChatScopePickerView: View {
+    @Binding var selectedDocIds: [UUID]
+    @Binding var selectedFolderId: UUID?
+    let folders: [DocumentFolder]
+    let documents: [Document]
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showDocLimitAlert = false
+    private struct FolderRowItem: Identifiable {
+        let id: UUID
+        let folder: DocumentFolder
+        let level: Int
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section("Scope") {
+                    Button {
+                        selectedFolderId = nil
+                        selectedDocIds = []
+                    } label: {
+                        HStack {
+                            Text("All Documents")
+                            Spacer()
+                            if selectedFolderId == nil && selectedDocIds.isEmpty {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.accentColor)
+                            }
+                        }
+                    }
+                }
+
+                Section("Folder") {
+                    let flattened = flattenedFolders()
+                    if flattened.isEmpty {
+                        Text("No folders")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(flattened) { row in
+                            Button {
+                                selectedFolderId = row.folder.id
+                                selectedDocIds = []
+                            } label: {
+                                HStack {
+                                    Text(row.folder.name)
+                                        .padding(.leading, CGFloat(row.level) * 12)
+                                    Spacer()
+                                    if selectedFolderId == row.folder.id {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.accentColor)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("Documents (up to 3)") {
+                    if documents.isEmpty {
+                        Text("No documents")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(documents) { doc in
+                            Button {
+                                toggleDocSelection(doc.id)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(doc.title)
+                                        if let folderName = folderName(for: doc.folderId) {
+                                            Text(folderName)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    if selectedDocIds.contains(doc.id) {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.accentColor)
+                                    }
+                                }
+                            }
+                            .disabled(selectedFolderId != nil)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Chat Scope")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .alert("Up to 3 documents", isPresented: $showDocLimitAlert) {
+                Button("OK") {}
+            } message: {
+                Text("Select up to three documents or choose a folder.")
+            }
+        }
+    }
+
+    private func sortedFolders(in parentId: UUID?) -> [DocumentFolder] {
+        folders
+            .filter { $0.parentId == parentId }
+            .sorted { a, b in
+                if a.sortOrder != b.sortOrder { return a.sortOrder < b.sortOrder }
+                return a.dateCreated < b.dateCreated
+            }
+    }
+
+    private func flattenedFolders() -> [FolderRowItem] {
+        var out: [FolderRowItem] = []
+        func walk(parentId: UUID?, level: Int) {
+            for folder in sortedFolders(in: parentId) {
+                out.append(FolderRowItem(id: folder.id, folder: folder, level: level))
+                walk(parentId: folder.id, level: level + 1)
+            }
+        }
+        walk(parentId: nil, level: 0)
+        return out
+    }
+
+    private func folderName(for folderId: UUID?) -> String? {
+        guard let folderId else { return nil }
+        return folders.first(where: { $0.id == folderId })?.name
+    }
+
+    private func toggleDocSelection(_ docId: UUID) {
+        if let idx = selectedDocIds.firstIndex(of: docId) {
+            selectedDocIds.remove(at: idx)
+            return
+        }
+
+        if selectedDocIds.count >= 3 {
+            showDocLimitAlert = true
+            return
+        }
+
+        selectedFolderId = nil
+        selectedDocIds.append(docId)
     }
 }
 
@@ -4353,6 +4662,10 @@ struct DocumentSummaryView: View {
     private var currentDoc: Document {
         documentManager.getDocument(by: document.id) ?? document
     }
+
+    private var supportsAISummary: Bool {
+        document.type != .image
+    }
     
     var body: some View {
         NavigationView {
@@ -4366,16 +4679,22 @@ struct DocumentSummaryView: View {
                             Text("Summary")
                                 .font(.headline)
                             Spacer()
-                            if isGeneratingSummary {
-                                Button("Cancel") { cancelSummary() }
-                            } else if hasUsableSummary {
-                                Button("Regenerate") { generateAISummary(force: true) }
-                            } else {
-                                Button("Generate") { generateAISummary(force: false) }
+                            if supportsAISummary {
+                                if isGeneratingSummary {
+                                    Button("Cancel") { cancelSummary() }
+                                } else if hasUsableSummary {
+                                    Button("Regenerate") { generateAISummary(force: true) }
+                                } else {
+                                    Button("Generate") { generateAISummary(force: false) }
+                                }
                             }
                         }
                         
-                        if isGeneratingSummary {
+                        if !supportsAISummary {
+                            Text("Summaries are unavailable for image files.")
+                                .foregroundColor(.secondary)
+                                .padding(.vertical)
+                        } else if isGeneratingSummary {
                             HStack {
                                 ProgressView()
                                     .scaleEffect(0.8)
@@ -4394,25 +4713,6 @@ struct DocumentSummaryView: View {
                                 .background(Color(.tertiarySystemBackground))
                                 .cornerRadius(8)
                         }
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemBackground))
-                    .cornerRadius(10)
-                    
-                    // OCR
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("OCR")
-                            .font(.headline)
-                        
-                        ScrollView {
-                            Text(currentDoc.content)
-                                .font(.system(size: 14, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding()
-                                .background(Color(.tertiarySystemBackground))
-                                .cornerRadius(8)
-                        }
-                        .frame(height: 200)
                     }
                     .padding()
                     .background(Color(.secondarySystemBackground))
@@ -4437,7 +4737,7 @@ struct DocumentSummaryView: View {
             documentManager.refreshContentIfNeeded(for: document.id)
             // Use saved summary if available; avoid regenerating every time
             self.summary = currentDoc.summary
-            self.isGeneratingSummary = isSummaryPlaceholder(self.summary)
+            self.isGeneratingSummary = supportsAISummary && isSummaryPlaceholder(self.summary)
         }
         .onChange(of: currentDoc.summary) { newValue in
             if summary != newValue {

@@ -63,6 +63,7 @@ class DocumentManager: ObservableObject {
                 title: updated.title,
                 content: updated.content,
                 summary: updated.summary,
+                ocrPages: updated.ocrPages,
                 category: updated.category,
                 keywordsResume: updated.keywordsResume,
                 dateCreated: updated.dateCreated,
@@ -97,6 +98,7 @@ class DocumentManager: ObservableObject {
                 title: old.title,
                 content: old.content,
                 summary: newSummary,
+                ocrPages: old.ocrPages,
                 category: old.category,
                 keywordsResume: old.keywordsResume,
                 dateCreated: old.dateCreated,
@@ -120,6 +122,7 @@ class DocumentManager: ObservableObject {
                 title: old.title,
                 content: newContent,
                 summary: old.summary,
+                ocrPages: old.ocrPages,
                 category: old.category,
                 keywordsResume: old.keywordsResume,
                 dateCreated: old.dateCreated,
@@ -286,6 +289,7 @@ class DocumentManager: ObservableObject {
             title: old.title,
             content: old.content,
             summary: old.summary,
+            ocrPages: old.ocrPages,
             category: old.category,
             keywordsResume: old.keywordsResume,
             dateCreated: old.dateCreated,
@@ -324,6 +328,7 @@ class DocumentManager: ObservableObject {
                     title: old.title,
                     content: old.content,
                     summary: old.summary,
+                    ocrPages: old.ocrPages,
                     category: old.category,
                     keywordsResume: old.keywordsResume,
                     dateCreated: old.dateCreated,
@@ -365,6 +370,7 @@ class DocumentManager: ObservableObject {
                         title: old.title,
                         content: old.content,
                         summary: old.summary,
+                        ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
                         dateCreated: old.dateCreated,
@@ -417,9 +423,12 @@ class DocumentManager: ObservableObject {
     func generateSummary(for document: Document, force: Bool = false) {
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
-        let prompt = "<<<SUMMARY_REQUEST>>>Summarize the document content at a high level. Use short bullet points only when helpful. Avoid listing line items, prices, or long enumerations; instead label the document type (e.g., \"price list\", \"invoice\", \"contract\"). Bold key terms (names, dates, totals) using **bold**. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word \"Summary\". Keep the response concise:\n\n\(document.content)"
-        
+        let prompt = "<<<SUMMARY_REQUEST>>>Write a short summary in 2-4 sentences. The summary should read like: \"The document is about ... . It also touches on ... . Then, it talks about ... .\" Focus on the main themes and ideas, not every detail. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word \"Summary\". Do not talk about age or current year.:\n\n\(document.content)"
+
         print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
+        if force {
+            updateSummary(for: document.id, to: "Processing summary...")
+        }
         // Send to EdgeAI for processing
         NotificationCenter.default.post(
             name: NSNotification.Name("GenerateDocumentSummary"),
@@ -506,6 +515,7 @@ class DocumentManager: ObservableObject {
         print("📄 DocumentManager: File type detected: \\(fileExtension)")
         
         var content = ""
+        var ocrPages: [OCRPage]? = nil
         var documentType: Document.DocumentType = .text
         
         switch fileExtension {
@@ -516,7 +526,9 @@ class DocumentManager: ObservableObject {
             content = extractTextFromTXT(url: url)
             documentType = .text
         case "jpg", "jpeg", "png", "heic":
-            content = extractTextFromImage(url: url)
+            let result = extractTextFromImageDetailed(url: url)
+            content = result.text
+            ocrPages = result.pages
             documentType = .image
         case "docx", "doc":
             content = extractTextFromWordDocument(url: url)
@@ -578,6 +590,7 @@ class DocumentManager: ObservableObject {
             title: fileName,
             content: content,
             summary: "Processing...",
+            ocrPages: ocrPages,
             category: .general,
             keywordsResume: "",
             dateCreated: Date(),
@@ -624,36 +637,103 @@ class DocumentManager: ObservableObject {
         }
     }
     
-    private func extractTextFromImage(url: URL) -> String {
+    private func extractTextFromImageDetailed(url: URL) -> (text: String, pages: [OCRPage]?) {
         guard let image = UIImage(contentsOfFile: url.path) else {
-            return "Could not load image"
+            return ("Could not load image", nil)
         }
-        
-        return performOCR(on: image)
+        let result = performOCRDetailed(on: image, pageIndex: 0)
+        let structured = buildStructuredText(from: [result.page], includePageLabels: false)
+        return (structured.isEmpty ? result.text : structured, [result.page])
     }
     
-    private func performOCR(on image: UIImage) -> String {
+    private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
         guard let cgImage = image.cgImage else {
-            return "Could not process image"
+            return ("Could not process image", OCRPage(pageIndex: pageIndex, blocks: []))
         }
-        
+
         let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let request = VNRecognizeTextRequest()
-        
+
+        var blocks: [OCRBlock] = []
         var recognizedText = ""
-        
+
         do {
             try requestHandler.perform([request])
             if let results = request.results {
-                recognizedText = results.compactMap { result in
-                    result.topCandidates(1).first?.string
-                }.joined(separator: "\n")
+                let observations = results.compactMap { result -> (String, CGRect, Double)? in
+                    guard let top = result.topCandidates(1).first else { return nil }
+                    return (top.string, result.boundingBox, Double(top.confidence))
+                }
+
+                let sorted = observations.sorted { first, second in
+                    let yDiff = abs(first.1.minY - second.1.minY)
+                    if yDiff < 0.02 {
+                        return first.1.minX < second.1.minX
+                    }
+                    return first.1.minY > second.1.minY
+                }
+
+                for (idx, item) in sorted.enumerated() {
+                    let bbox = OCRBoundingBox(
+                        x: Double(item.1.origin.x),
+                        y: Double(item.1.origin.y),
+                        width: Double(item.1.size.width),
+                        height: Double(item.1.size.height)
+                    )
+                    blocks.append(OCRBlock(text: item.0, confidence: item.2, bbox: bbox, order: idx))
+                }
+
+                recognizedText = sorted.map { $0.0 }.joined(separator: " ")
             }
         } catch {
             recognizedText = "OCR failed: \(error.localizedDescription)"
         }
-        
-        return recognizedText.isEmpty ? "No text found in image" : recognizedText
+
+        let cleaned = recognizedText.isEmpty ? "No text found in image" : recognizedText
+        return (cleaned, OCRPage(pageIndex: pageIndex, blocks: blocks))
+    }
+
+    private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
+        guard !pages.isEmpty else { return "" }
+
+        func paragraphize(_ lines: [(text: String, y: Double)]) -> String {
+            var output: [String] = []
+            var lastY: Double? = nil
+
+            for line in lines {
+                if let last = lastY, abs(line.y - last) > 0.04 {
+                    output.append("")
+                }
+                output.append(line.text)
+                lastY = line.y
+            }
+
+            return output.joined(separator: "\n").replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+        }
+
+        var result: [String] = []
+        for page in pages {
+            let sorted = page.blocks.sorted { $0.order < $1.order }
+            var lines: [(text: String, y: Double)] = []
+
+            for block in sorted {
+                if let last = lines.last, abs(block.bbox.y - last.y) < 0.02 {
+                    let combined = last.text.isEmpty ? block.text : "\(last.text) \(block.text)"
+                    lines[lines.count - 1] = (combined, last.y)
+                } else {
+                    lines.append((block.text, block.bbox.y))
+                }
+            }
+
+            let body = paragraphize(lines)
+            if includePageLabels {
+                result.append("Page \(page.pageIndex + 1):\n\(body)")
+            } else {
+                result.append(body)
+            }
+        }
+
+        return result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func extractTextFromWordDocument(url: URL) -> String {
@@ -705,7 +785,8 @@ class DocumentManager: ObservableObject {
     private func extractTextFromDOCXViaOCR(url: URL) -> String? {
         if #available(iOS 13.0, *) {
             if let img = generateDOCXThumbnail(url: url) {
-                return performOCR(on: img)
+                let result = performOCRDetailed(on: img, pageIndex: 0)
+                return result.text
             }
         }
         return nil
@@ -714,9 +795,9 @@ class DocumentManager: ObservableObject {
     private func extractTextFromSpreadsheetViaOCR(url: URL) -> String {
         if #available(iOS 13.0, *) {
             if let img = generateDOCXThumbnail(url: url) {
-                let text = performOCR(on: img)
-                if !text.isEmpty && !text.contains("OCR failed") {
-                    return formatExtractedText(text)
+                let result = performOCRDetailed(on: img, pageIndex: 0)
+                if !result.text.isEmpty && !result.text.contains("OCR failed") {
+                    return formatExtractedText(result.text)
                 }
             }
         }
@@ -967,6 +1048,7 @@ class DocumentManager: ObservableObject {
                         title: old.title,
                         content: old.content,
                         summary: old.summary,
+                        ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
                         dateCreated: old.dateCreated,
@@ -1035,6 +1117,7 @@ class DocumentManager: ObservableObject {
             title: doc.title,
             content: doc.content,
             summary: doc.summary,
+            ocrPages: doc.ocrPages,
             category: inferredCategory,
             keywordsResume: inferredKeywords,
             dateCreated: doc.dateCreated,

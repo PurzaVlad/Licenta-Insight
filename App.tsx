@@ -18,7 +18,7 @@ const MODEL_URL =
   'https://huggingface.co/QuantFactory/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
 
 const SUMMARY_SYSTEM_PROMPT =
-  'Summarize the document content at a high level. Use short bullet points only when helpful. Avoid listing line items, prices, or long enumerations; instead label the document type (e.g., "price list", "invoice", "contract"). Bold key terms (names, dates, totals) using **bold**. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Keep the response concise.';
+  'Write a short summary in 2-4 sentences. The summary should read like: "The document is about ... . It also touches on ... . Then, it talks about ... ." Focus on the main themes and ideas, not every detail. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Do not talk about age or current year.';
 
 const CHAT_SYSTEM_PROMPT =
   'You are a document analysis assistant specializing in file extraction. Provide any information you can find in the already uploaded documents and help improve them however you are asked to. Be concise';
@@ -281,6 +281,8 @@ useEffect(() => {
           text = text
             .replace(/<start_of_turn>/g, '')
             .replace(/<end_of_turn>/g, '')
+            .replace(/<\|im_start\|>/g, '')
+            .replace(/<\|im_end\|>/g, '')
             .replace(/^\s*model\s*\n/i, '')
             .trim();
 
