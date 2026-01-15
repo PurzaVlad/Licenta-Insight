@@ -6,6 +6,8 @@ import VisionKit
 import UniformTypeIdentifiers
 import PDFKit
 import QuickLook
+import CoreText
+import WebKit
 
 // No need for TempDocumentManager - using DocumentManager.swift
 
@@ -1043,7 +1045,7 @@ struct DocumentsView: View {
         <<<NAME_REQUEST>>>Create a short document title using the context from the provided OCR snippet (do not guess beyond it).
 
         STRICT REQUIREMENTS:
-        - 2-3 words maximum
+        - Exactly 2-3 words
         - Use Title Case (First Letter Of Each Word Capitalized)
         - Prefer specific words from the snippet (company, clinic, person, product, location)
         - Be specific (e.g., "Mercy Hospital Bill", not just "Hospital Bill")
@@ -5043,8 +5045,11 @@ struct ConversionView: View {
             case (.pdf, .txt), (.docx, .txt), (.image, .txt):
                 outputData = document.content.data(using: .utf8)
                 
-            case (.txt, .pdf), (.docx, .pdf), (.image, .pdf):
+            case (.txt, .pdf), (.image, .pdf):
                 outputData = convertToPDF(content: document.content, title: document.title)
+
+            case (.docx, .pdf):
+                outputData = convertDocxToPDF(document: document) ?? convertToPDF(content: document.content, title: document.title)
                 
             case (.pdf, .docx), (.txt, .docx):
                 outputData = convertToDocx(content: document.content, title: document.title)
@@ -5102,45 +5107,51 @@ struct ConversionView: View {
     // MARK: - Conversion Helper Functions
     
     private func convertToPDF(content: String, title: String) -> Data? {
-        let pdfData = NSMutableData()
-        
-        guard let pdfConsumer = CGDataConsumer(data: pdfData),
-              let pdfContext = CGContext(consumer: pdfConsumer, mediaBox: nil, nil) else {
-            return nil
-        }
-        
-        let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // Standard letter size
-        let margin: CGFloat = 50
-        let contentRect = CGRect(x: margin, y: margin, width: pageRect.width - 2 * margin, height: pageRect.height - 2 * margin)
-        
-        pdfContext.beginPDFPage(nil)
-        
-        // Set up fonts and colors
+        let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // Letter size
+        let margin: CGFloat = 54
+        let contentRect = pageRect.insetBy(dx: margin, dy: margin)
+
+        let titleText = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bodyText = content.trimmingCharacters(in: .whitespacesAndNewlines)
+
         let titleFont = UIFont.systemFont(ofSize: 18, weight: .bold)
         let bodyFont = UIFont.systemFont(ofSize: 12)
-        
-        // Draw title
-        let titleAttributes: [NSAttributedString.Key: Any] = [
-            .font: titleFont,
-            .foregroundColor: UIColor.black
-        ]
-        
-        let titleRect = CGRect(x: contentRect.minX, y: contentRect.maxY - 30, width: contentRect.width, height: 30)
-        title.draw(in: titleRect, withAttributes: titleAttributes)
-        
-        // Draw content
-        let bodyAttributes: [NSAttributedString.Key: Any] = [
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        paragraph.paragraphSpacing = 8
+
+        let attributed = NSMutableAttributedString()
+        if !titleText.isEmpty {
+            attributed.append(NSAttributedString(string: "\(titleText)\n\n", attributes: [
+                .font: titleFont,
+                .foregroundColor: UIColor.black
+            ]))
+        }
+        attributed.append(NSAttributedString(string: bodyText, attributes: [
             .font: bodyFont,
-            .foregroundColor: UIColor.black
-        ]
-        
-        let bodyRect = CGRect(x: contentRect.minX, y: contentRect.minY, width: contentRect.width, height: contentRect.height - 40)
-        content.draw(in: bodyRect, withAttributes: bodyAttributes)
-        
-        pdfContext.endPDFPage()
-        pdfContext.closePDF()
-        
-        return pdfData as Data
+            .foregroundColor: UIColor.black,
+            .paragraphStyle: paragraph
+        ]))
+
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        var currentRange = CFRange(location: 0, length: 0)
+
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+        let data = renderer.pdfData { context in
+            while currentRange.location < attributed.length {
+                context.beginPage()
+                let path = CGMutablePath()
+                path.addRect(contentRect)
+                let frame = CTFramesetterCreateFrame(framesetter, currentRange, path, nil)
+                CTFrameDraw(frame, context.cgContext)
+                let visibleRange = CTFrameGetVisibleStringRange(frame)
+                if visibleRange.length == 0 { break }
+                currentRange.location += visibleRange.length
+                currentRange.length = 0
+            }
+        }
+
+        return data
     }
     
     private func convertToDocx(content: String, title: String) -> Data? {
@@ -5161,6 +5172,38 @@ struct ConversionView: View {
         </html>
         """
         return htmlContent.data(using: .utf8)
+    }
+
+    private func convertDocxToPDF(document: Document) -> Data? {
+        guard document.type == .docx else { return nil }
+        guard let data = document.originalFileData else { return nil }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("docx_render_\(UUID().uuidString).docx")
+        do {
+            try data.write(to: tempURL)
+        } catch {
+            print("📄 Conversion: Failed to write temp docx: \(error.localizedDescription)")
+            return nil
+        }
+
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var renderedData: Data?
+        var renderer: DocxPDFRenderer?
+
+        DispatchQueue.main.async {
+            renderer = DocxPDFRenderer(fileURL: tempURL) { data in
+                renderedData = data
+                semaphore.signal()
+                renderer = nil
+            }
+            renderer?.start()
+        }
+
+        _ = semaphore.wait(timeout: .now() + 20)
+        return renderedData
     }
     
     private func convertToHTML(content: String, title: String) -> Data? {
@@ -5593,4 +5636,40 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+final class DocxPDFRenderer: NSObject, WKNavigationDelegate {
+    private let fileURL: URL
+    private let completion: (Data?) -> Void
+    private var webView: WKWebView?
+
+    init(fileURL: URL, completion: @escaping (Data?) -> Void) {
+        self.fileURL = fileURL
+        self.completion = completion
+    }
+
+    func start() {
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        self.webView = webView
+        webView.navigationDelegate = self
+        webView.isHidden = true
+        webView.loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let contentSize = webView.scrollView.contentSize
+        let rect = CGRect(origin: .zero, size: contentSize == .zero ? webView.bounds.size : contentSize)
+        let config = WKPDFConfiguration()
+        config.rect = rect
+
+        webView.createPDF(configuration: config) { result in
+            switch result {
+            case .success(let data):
+                self.completion(data)
+            case .failure(let error):
+                print("📄 Conversion: WKWebView PDF render failed: \(error.localizedDescription)")
+                self.completion(nil)
+            }
+        }
+    }
 }
