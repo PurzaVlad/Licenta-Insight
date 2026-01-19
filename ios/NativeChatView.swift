@@ -4808,7 +4808,7 @@ struct ConversionView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @State private var selectedDocument: Document? = nil
     @State private var sourceFormat: DocumentFormat = .pdf
-    @State private var targetFormat: DocumentFormat = .docx
+    @State private var selectedTargetFormat: DocumentFormat? = nil
     @State private var isConverting = false
     @State private var conversionProgress: Double = 0.0
     @State private var showingResult = false
@@ -4852,85 +4852,75 @@ struct ConversionView: View {
     
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(spacing: 24) {
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 24) {
                     // Header
-                    VStack(spacing: 8) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 40))
-                            .foregroundColor(.blue)
-                        Text("Document Converter")
-                            .font(.largeTitle)
-                            .fontWeight(.bold)
-                        Text("Convert documents between different formats")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top)
-                    
-                    // Document Selection
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Select Document")
-                            .font(.headline)
-                        
-                        if let document = selectedDocument {
-                            DocumentSelectionCard(document: document) {
-                                selectedDocument = nil
-                            }
-                        } else {
-                            Button(action: { showingDocumentPicker = true }) {
-                                HStack {
-                                    Image(systemName: "doc.badge.plus")
-                                        .font(.title2)
-                                    Text("Choose Document")
-                                        .font(.headline)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundColor(.secondary)
+
+                    let panelHeight: CGFloat = 220
+
+                    HStack(alignment: .center, spacing: 16) {
+                        // Document Selection
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Select Document")
+                                .font(.headline)
+                            
+                            if let document = selectedDocument {
+                                DocumentSelectionCard(document: document) {
+                                    selectedDocument = nil
                                 }
-                                .padding()
-                                .background(Color(.secondarySystemBackground))
-                                .cornerRadius(12)
+                            } else {
+                                Button(action: { showingDocumentPicker = true }) {
+                                    HStack {
+                                        Image(systemName: "doc.badge.plus")
+                                            .font(.system(size: 28, weight: .semibold))
+                                        Image(systemName: "chevron.right")
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding()
+                                    .background(Color(.secondarySystemBackground))
+                                    .cornerRadius(12)
+                                    .frame(minHeight: 72)
+                                }
+                                .frame(maxWidth:.infinity, alignment: .center)
+                                .foregroundColor(.primary)
                             }
-                            .foregroundColor(.primary)
+                        }
+                        .frame(height: panelHeight, alignment: .center)
+                        
+                        // Conversion Icon
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .padding(.top,24)
+                            .font(.title2)
+                            .foregroundColor(.blue)
+                            .frame(height: panelHeight)
+                        
+                        // Target Format (only)
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Convert To")
+                                .font(.headline)
+                            
+                            ScrollView {
+                                VStack(spacing: 10) {
+                                    ForEach(DocumentFormat.allCases, id: \.self) { format in
+                                        let isDisabled = selectedDocument != nil && format == sourceFormat
+                                        FormatSelectionChip(
+                                            format: format,
+                                            isSelected: selectedTargetFormat == format,
+                                            isDisabled: isDisabled
+                                        ) {
+                                            if !isDisabled {
+                                                selectedTargetFormat = format
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            .frame(height: panelHeight - 32)
                         }
                     }
                     .padding(.horizontal)
-                    
-                    // Format Selection
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Conversion Settings")
-                            .font(.headline)
-                            .padding(.horizontal)
-                        
-                        VStack(spacing: 12) {
-                            // Source Format
-                            FormatSelectionRow(
-                                title: "From",
-                                selectedFormat: $sourceFormat,
-                                isEnabled: selectedDocument != nil
-                            )
-                            
-                            // Conversion Arrow
-                            HStack {
-                                Spacer()
-                                Image(systemName: "arrow.down")
-                                    .font(.title2)
-                                    .foregroundColor(.blue)
-                                Spacer()
-                            }
-                            .padding(.vertical, 8)
-                            
-                            // Target Format
-                            FormatSelectionRow(
-                                title: "To",
-                                selectedFormat: $targetFormat,
-                                isEnabled: true
-                            )
-                        }
-                        .padding(.horizontal)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
                     
                     // Conversion Button
                     VStack(spacing: 16) {
@@ -4961,7 +4951,10 @@ struct ConversionView: View {
                         }
                     }
                     
-                    Spacer()
+                    Spacer(minLength: 12)
+                    }
+                    .frame(minHeight: proxy.size.height, alignment: .center)
+                    .frame(maxWidth: .infinity)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -4987,13 +4980,22 @@ struct ConversionView: View {
         }
         .onChange(of: selectedDocument) { document in
             if let document = document {
+                if document.type == .docx {
+                    documentManager.refreshContentIfNeeded(for: document.id)
+                }
                 sourceFormat = formatFromDocumentType(document.type)
+                selectedTargetFormat = nil
+            } else {
+                selectedTargetFormat = nil
             }
         }
     }
     
     private var canConvert: Bool {
-        selectedDocument != nil && sourceFormat != targetFormat && !isConverting
+        selectedDocument != nil &&
+            selectedTargetFormat != nil &&
+            sourceFormat != selectedTargetFormat &&
+            !isConverting
     }
     
     private func formatFromDocumentType(_ type: Document.DocumentType) -> DocumentFormat {
@@ -5008,7 +5010,8 @@ struct ConversionView: View {
     
     private func performConversion() {
         guard let document = selectedDocument else { return }
-        
+        guard let target = selectedTargetFormat else { return }
+
         isConverting = true
         conversionProgress = 0.0
         
@@ -5020,7 +5023,7 @@ struct ConversionView: View {
         }
         
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = convertDocument(document, from: sourceFormat, to: targetFormat)
+            let result = convertDocument(document, from: sourceFormat, to: target)
             
             DispatchQueue.main.async {
                 timer.invalidate()
@@ -5036,29 +5039,31 @@ struct ConversionView: View {
     }
     
     private func convertDocument(_ document: Document, from sourceFormat: DocumentFormat, to targetFormat: DocumentFormat) -> ConversionResult {
-        let filename = "\(document.title.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
+        let latestDocument = documentManager.getDocument(by: document.id) ?? document
+        let baseName = normalizedBaseName(latestDocument.title)
+        let filename = "\(baseName.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
         
         do {
             let outputData: Data?
             
             switch (sourceFormat, targetFormat) {
             case (.pdf, .txt), (.docx, .txt), (.image, .txt):
-                outputData = document.content.data(using: .utf8)
+                outputData = latestDocument.content.data(using: .utf8)
                 
             case (.txt, .pdf), (.image, .pdf):
-                outputData = convertToPDF(content: document.content, title: document.title)
+                outputData = convertToPDF(content: latestDocument.content, title: latestDocument.title)
 
             case (.docx, .pdf):
-                outputData = convertDocxToPDF(document: document) ?? convertToPDF(content: document.content, title: document.title)
+                outputData = convertDocxToPDF(document: latestDocument) ?? convertToPDF(content: latestDocument.content, title: latestDocument.title)
                 
             case (.pdf, .docx), (.txt, .docx):
-                outputData = convertToDocx(content: document.content, title: document.title)
+                outputData = convertToDocx(content: latestDocument.content, title: latestDocument.title)
                 
             case (.pdf, .html), (.docx, .html), (.txt, .html):
-                outputData = convertToHTML(content: document.content, title: document.title)
+                outputData = convertToHTML(content: latestDocument.content, title: latestDocument.title)
                 
             case (.pdf, .image), (.docx, .image), (.txt, .image):
-                outputData = convertToImage(content: document.content)
+                outputData = convertToImage(content: latestDocument.content)
                 
             default:
                 throw ConversionError.unsupportedConversion
@@ -5105,6 +5110,18 @@ struct ConversionView: View {
     }
     
     // MARK: - Conversion Helper Functions
+
+    private func normalizedBaseName(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Converted_Document" }
+        let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
+        var base = (trimmed as NSString).deletingPathExtension
+        let ext = (trimmed as NSString).pathExtension.lowercased()
+        if !ext.isEmpty && !knownExts.contains(ext) {
+            base = trimmed
+        }
+        return base.isEmpty ? "Converted_Document" : base
+    }
     
     private func convertToPDF(content: String, title: String) -> Data? {
         let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // Letter size
@@ -5265,7 +5282,7 @@ struct DocumentSelectionCard: View {
     var body: some View {
         HStack {
             Image(systemName: document.type == .pdf ? "doc.fill" : "doc.text.fill")
-                .font(.title2)
+                .font(.system(size: 32, weight: .semibold))
                 .foregroundColor(.blue)
             
             VStack(alignment: .leading, spacing: 4) {
@@ -5287,6 +5304,7 @@ struct DocumentSelectionCard: View {
         .padding()
         .background(Color(.secondarySystemBackground))
         .cornerRadius(12)
+        .frame(minHeight: 72)
     }
 }
 
@@ -5345,6 +5363,42 @@ struct FormatButton: View {
             )
         }
         .disabled(!isEnabled)
+    }
+}
+
+struct FormatSelectionChip: View {
+    let format: ConversionView.DocumentFormat
+    let isSelected: Bool
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: format.systemImage)
+                    .font(.headline)
+                Text(format.rawValue)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.blue)
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .background(isSelected ? Color.blue.opacity(0.15) : Color(.tertiarySystemBackground))
+            .foregroundColor(isDisabled ? .secondary : .primary)
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+        .disabled(isDisabled)
+        .frame(height: 44)
     }
 }
 
@@ -5556,8 +5610,9 @@ struct ConversionResultSheet: View {
             let content = self.extractContent(from: outputData, type: documentType)
             
             // Create the document
+            let cleanedTitle = normalizedTitle(from: self.result.filename)
             let document = Document(
-                title: self.result.filename.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "\\.[^.]*$", with: "", options: .regularExpression).capitalized,
+                title: cleanedTitle,
                 content: content,
                 summary: "Converted document - Processing summary...",
                 category: .general,
@@ -5598,6 +5653,14 @@ struct ConversionResultSheet: View {
         case "jpg", "jpeg", "png": return .image
         default: return .text
         }
+    }
+
+    private func normalizedTitle(from filename: String) -> String {
+        let base = (filename as NSString).deletingPathExtension
+        let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
+        let ext = (base as NSString).pathExtension.lowercased()
+        let cleaned = knownExts.contains(ext) ? (base as NSString).deletingPathExtension : base
+        return cleaned.replacingOccurrences(of: "_", with: " ").capitalized
     }
     
     private func extractContent(from data: Data, type: Document.DocumentType) -> String {
