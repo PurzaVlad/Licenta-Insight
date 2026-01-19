@@ -3427,11 +3427,22 @@ struct NativeChatView: View {
         return false
     }
 
-    private func shouldReuseLastDocs(for question: String) -> Bool {
-        if isSmallTalk(question) { return false }
-        if lastResolvedDocsForChat.isEmpty { return false }
-        if mentionsExplicitDifferentDocument(question) { return false }
-        return looksLikeFollowUpQuestion(question)
+    private func shouldReuseLastDocsViaLLM(edgeAI: EdgeAI, question: String) async throws -> Bool {
+        guard !lastResolvedDocsForChat.isEmpty else { return false }
+        guard !lastResolvedDocContext.isEmpty else { return false }
+
+        let prompt = """
+        Decide if the user's message is about the same document context or a different document.
+        Reply with exactly one word: SAME or NEW.
+        Be strict: reply SAME only if it clearly refers to the cached document context.
+
+        Cached document context:
+        \(lastResolvedDocContext)
+
+        User message: \(question)
+        """
+        let reply = try await callLLM(edgeAI: edgeAI, prompt: prompt)
+        return reply.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("s")
     }
 
     private func buildDocContextSnippet(for doc: Document, maxChars: Int) -> String {
@@ -3480,7 +3491,12 @@ struct NativeChatView: View {
                     return
                 }
 
-                let reuseDocs = shouldReuseLastDocs(for: question)
+                let reuseDocs = try await shouldReuseLastDocsViaLLM(edgeAI: edgeAI, question: question)
+                if !reuseDocs {
+                    lastResolvedDocsForChat = []
+                    lastResolvedDocId = nil
+                    lastResolvedDocContext = ""
+                }
                 let cachedDocs = reuseDocs ? lastResolvedDocsForChat : docsToSearch
                 let cacheKey = makeCacheKey(question: question, docs: cachedDocs)
                 if let cached = responseCache[cacheKey] {
@@ -3611,15 +3627,59 @@ struct NativeChatView: View {
                     }
                     return
                 }
+                let ocrText = buildDocumentOCRBlock(for: finalDoc)
+                let chunks = chunkTextForRetrieval(ocrText, maxChars: 4200, overlap: 800)
+                let chunkPreview = buildChunkPreview(chunks: chunks, maxChunks: 12, maxChars: 600)
 
-                let ocrBlock = buildDocumentOCRBlock(for: finalDoc)
+                let selectionPrompt = """
+                Role: Retrieval selector.
+                Return JSON only with keys "relevant" (array of integers) and "confidence" (number 0-1).
+                Select up to 3 chunk indices that best answer the question.
+                If none are relevant, return {"relevant":[],"confidence":0}.
+                
+                Chunks (truncated previews):
+                \(chunkPreview)
+                
+                Question: \(question)
+                """
+                if activeChatGenerationId != generationId { return }
+                let selection = try await callLLMJSON(edgeAI: edgeAI, prompt: selectionPrompt)
+                let indices = parseChunkIndices(selection, maxIndex: chunks.count - 1)
+                let selected = selectChunks(chunks: chunks, indices: indices, fallbackCount: 2)
+
+                let summarySnippet = finalDoc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                let typeContext = summarySnippet.isEmpty ? String(ocrText.prefix(800)) : summarySnippet
+                let typePrompt = """
+                Role: Document analyst.
+                Return JSON only: {"doc_type":"<type>","fields":["field1","field2"]}.
+                Use only the provided context. If unknown, use "unknown" and [].
+                
+                Context:
+                \(typeContext)
+                
+                Question: \(question)
+                """
+                if activeChatGenerationId != generationId { return }
+                let typeInfo = try await callLLMJSON(edgeAI: edgeAI, prompt: typePrompt)
+                let docType = (typeInfo["doc_type"] as? String) ?? "unknown"
+                let fields = (typeInfo["fields"] as? [String]) ?? []
+                let fieldsLine = fields.isEmpty ? "none" : fields.joined(separator: ", ")
+
+                let selectedBlock = selected.enumerated().map { idx, chunk in
+                    "Chunk \(idx + 1):\n\(chunk)"
+                }.joined(separator: "\n\n")
+
                 let stage4Prompt = """
-                OCR (full text):
-                \(ocrBlock)
-
-                Previous stage output:
-                \(stage3Reply.trimmingCharacters(in: .whitespacesAndNewlines))
-
+                Role: Document QA.
+                Use only the text in the chunks. If the answer is not in the chunks, say "Not found in document."
+                Do not guess or use external knowledge.
+                
+                Document type: \(docType)
+                Relevant fields: \(fieldsLine)
+                
+                Chunks:
+                \(selectedBlock)
+                
                 Question: \(question)
                 """
                 if activeChatGenerationId != generationId { return }
@@ -3655,6 +3715,81 @@ struct NativeChatView: View {
                 continuation.resume(throwing: NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: message ?? "Unknown error"]))
             })
         }
+    }
+
+    private func callLLMJSON(edgeAI: EdgeAI, prompt: String, maxAttempts: Int = 2) async throws -> [String: Any] {
+        var attempt = 0
+        var lastError: Error?
+        var currentPrompt = prompt
+        while attempt < maxAttempts {
+            let reply = try await callLLM(edgeAI: edgeAI, prompt: currentPrompt)
+            if let dict = parseJSONDict(reply) {
+                return dict
+            }
+            attempt += 1
+            currentPrompt = prompt + "\n\nThe previous response was invalid JSON. Reply with JSON only."
+            lastError = NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON response"])
+        }
+        throw lastError ?? NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON response"])
+    }
+
+    private func parseJSONDict(_ reply: String) -> [String: Any]? {
+        let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8) else { return nil }
+        if let obj = try? JSONSerialization.jsonObject(with: data, options: []),
+           let dict = obj as? [String: Any] {
+            return dict
+        }
+        return nil
+    }
+
+    private func chunkTextForRetrieval(_ text: String, maxChars: Int, overlap: Int) -> [String] {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return [] }
+        if cleaned.count <= maxChars { return [cleaned] }
+
+        var chunks: [String] = []
+        var start = cleaned.startIndex
+        while start < cleaned.endIndex {
+            let end = cleaned.index(start, offsetBy: maxChars, limitedBy: cleaned.endIndex) ?? cleaned.endIndex
+            let chunk = String(cleaned[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunk.isEmpty { chunks.append(chunk) }
+            if end == cleaned.endIndex { break }
+            let overlapStart = cleaned.index(end, offsetBy: -overlap, limitedBy: cleaned.startIndex) ?? cleaned.startIndex
+            start = overlapStart
+        }
+        return chunks
+    }
+
+    private func buildChunkPreview(chunks: [String], maxChunks: Int, maxChars: Int) -> String {
+        let preview = chunks.prefix(maxChunks).enumerated().map { idx, chunk in
+            let snippet = String(chunk.prefix(maxChars)).replacingOccurrences(of: "\n", with: " ")
+            return "[\(idx)] \(snippet)"
+        }
+        return preview.isEmpty ? "(No chunks)" : preview.joined(separator: "\n")
+    }
+
+    private func parseChunkIndices(_ dict: [String: Any], maxIndex: Int) -> [Int] {
+        guard maxIndex >= 0 else { return [] }
+        let raw = dict["relevant"]
+        let array: [Int]
+        if let nums = raw as? [Int] {
+            array = nums
+        } else if let nums = raw as? [NSNumber] {
+            array = nums.map { $0.intValue }
+        } else {
+            array = []
+        }
+        return array
+            .filter { $0 >= 0 && $0 <= maxIndex }
+            .prefix(3)
+            .map { $0 }
+    }
+
+    private func selectChunks(chunks: [String], indices: [Int], fallbackCount: Int) -> [String] {
+        let picked = indices.map { chunks[$0] }
+        if !picked.isEmpty { return picked }
+        return Array(chunks.prefix(fallbackCount))
     }
 
     private func makeCacheKey(question: String, docs: [Document]) -> String {
@@ -4753,6 +4888,7 @@ struct DocumentInfoView: View {
     let document: Document
     let fileURL: URL
     @Environment(\.dismiss) private var dismiss
+    @State private var showingOCR = false
 
     var body: some View {
         NavigationView {
@@ -4766,10 +4902,17 @@ struct DocumentInfoView: View {
             .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("OCR") { showingOCR = true }
+                        .disabled(document.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+        .sheet(isPresented: $showingOCR) {
+            DocumentOCRView(document: document)
         }
     }
 
@@ -4821,6 +4964,43 @@ struct DocumentInfoView: View {
 
     private var dateAdded: String {
         DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .short)
+    }
+}
+
+struct DocumentOCRView: View {
+    let document: Document
+    @Environment(\.dismiss) private var dismiss
+    @State private var didCopy = false
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                if document.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("No OCR text available.")
+                        .foregroundColor(.secondary)
+                        .padding()
+                } else {
+                    Text(document.content)
+                        .font(.body)
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .navigationTitle("OCR Text")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(didCopy ? "Copied" : "Copy") {
+                        UIPasteboard.general.string = document.content
+                        didCopy = true
+                    }
+                    .disabled(document.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 
