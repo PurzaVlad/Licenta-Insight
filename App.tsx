@@ -297,9 +297,9 @@ useEffect(() => {
           } else {
             const completionParams = {
               prompt: promptText,
-              n_predict: 350,
-              temperature: 0.2,
-              top_p: 0.7,
+              n_predict: 600,
+              temperature: 0.4,
+              top_p: 0.8,
               repeat_penalty: 1.1,
               stop: ["<end_of_turn>", "</s>"]
             };

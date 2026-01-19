@@ -617,15 +617,15 @@ class DocumentManager: ObservableObject {
             return "Could not read PDF file"
         }
         
-        var pages: [String] = []
+        var text = ""
         for pageIndex in 0..<pdfDocument.pageCount {
             if let page = pdfDocument.page(at: pageIndex) {
-                pages.append(page.string ?? "")
+                text += page.string ?? ""
+                text += "\n\n"
             }
         }
         
-        let cleaned = cleanOCRPages(pages)
-        return cleaned.isEmpty ? "No text found in PDF" : cleaned
+        return text.isEmpty ? "No text found in PDF" : text
     }
     
     private func extractTextFromTXT(url: URL) -> String {
@@ -643,9 +643,7 @@ class DocumentManager: ObservableObject {
         }
         let result = performOCRDetailed(on: image, pageIndex: 0)
         let structured = buildStructuredText(from: [result.page], includePageLabels: false)
-        let base = structured.isEmpty ? result.text : structured
-        let cleaned = cleanOCRText(base)
-        return (cleaned.isEmpty ? base : cleaned, [result.page])
+        return (structured.isEmpty ? result.text : structured, [result.page])
     }
     
     private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
@@ -735,80 +733,7 @@ class DocumentManager: ObservableObject {
             }
         }
 
-        let combined = result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleaned = cleanOCRText(combined)
-        return cleaned.isEmpty ? combined : cleaned
-    }
-
-    private func cleanOCRPages(_ pages: [String]) -> String {
-        guard !pages.isEmpty else { return "" }
-        let threshold = max(2, pages.count / 2)
-        var headerCounts: [String: Int] = [:]
-        var footerCounts: [String: Int] = [:]
-
-        func collect(lines: [String], isHeader: Bool) {
-            for line in lines {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, trimmed.count <= 120 else { continue }
-                if isHeader {
-                    headerCounts[trimmed, default: 0] += 1
-                } else {
-                    footerCounts[trimmed, default: 0] += 1
-                }
-            }
-        }
-
-        for page in pages {
-            let lines = page.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n").map(String.init)
-            let nonEmpty = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            let headerLines = Array(nonEmpty.prefix(2))
-            let footerLines = Array(nonEmpty.suffix(2))
-            collect(lines: headerLines, isHeader: true)
-            collect(lines: footerLines, isHeader: false)
-        }
-
-        let headersToDrop = Set(headerCounts.filter { $0.value >= threshold }.map { $0.key })
-        let footersToDrop = Set(footerCounts.filter { $0.value >= threshold }.map { $0.key })
-
-        var cleanedPages: [String] = []
-        for page in pages {
-            var lines = page.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n").map(String.init)
-            if !headersToDrop.isEmpty {
-                lines = dropRepeatedLines(lines, dropSet: headersToDrop, fromTop: true)
-            }
-            if !footersToDrop.isEmpty {
-                lines = dropRepeatedLines(lines, dropSet: footersToDrop, fromTop: false)
-            }
-            let cleaned = cleanOCRText(lines.joined(separator: "\n"))
-            cleanedPages.append(cleaned.isEmpty ? lines.joined(separator: "\n") : cleaned)
-        }
-
-        return cleanedPages.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func dropRepeatedLines(_ lines: [String], dropSet: Set<String>, fromTop: Bool) -> [String] {
-        var mutable = lines
-        let scanLimit = min(3, mutable.count)
-        if fromTop {
-            for _ in 0..<scanLimit {
-                guard let first = mutable.first else { break }
-                if dropSet.contains(first.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    mutable.removeFirst()
-                } else {
-                    break
-                }
-            }
-        } else {
-            for _ in 0..<scanLimit {
-                guard let last = mutable.last else { break }
-                if dropSet.contains(last.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    mutable.removeLast()
-                } else {
-                    break
-                }
-            }
-        }
-        return mutable
+        return result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func extractTextFromWordDocument(url: URL) -> String {
@@ -1005,14 +930,6 @@ class DocumentManager: ObservableObject {
             // Collapse all whitespace (including newlines) to single spaces
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func cleanOCRText(_ text: String) -> String {
-        var s = text.replacingOccurrences(of: "\r\n", with: "\n")
-        s = s.replacingOccurrences(of: "-\n(?=[a-z])", with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
-        s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func extractTextFromJSON(url: URL) -> String {
