@@ -15,7 +15,7 @@ class EdgeAI: RCTEventEmitter {
     override static func requiresMainQueueSetup() -> Bool { true }
 
     override func supportedEvents() -> [String]! {
-        return ["EdgeAIRequest"]
+        return ["EdgeAIRequest", "EdgeAICancel"]
     }
 
     // SwiftUI calls this:
@@ -55,6 +55,13 @@ class EdgeAI: RCTEventEmitter {
     @objc func rejectRequest(_ requestId: String, code: String, message: String) {
         print("[EdgeAI] Rejecting request \(requestId) with code: \(code), message: \(message)")
         EdgeAI.sharedRequests.reject(requestId: requestId, code: code, message: message)
+    }
+
+    @objc func cancelCurrentGeneration() {
+        print("[EdgeAI] Cancel current generation requested")
+        DispatchQueue.main.async { [weak self] in
+            self?.sendEvent(withName: "EdgeAICancel", body: [:])
+        }
     }
 }
 

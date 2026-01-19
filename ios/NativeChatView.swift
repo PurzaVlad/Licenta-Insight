@@ -1046,7 +1046,7 @@ struct DocumentsView: View {
         let firstPage = performOCRDetailed(on: firstImage, pageIndex: 0)
         let firstPageText = firstPage.text
         print("First page OCR result: \(firstPageText.prefix(100))...") // Log first 100 chars
-        
+
         // Process all images for full content
         var allText = ""
         var ocrPages: [OCRPage] = []
@@ -1074,14 +1074,13 @@ struct DocumentsView: View {
             }
         }
 
-        // Use AI to suggest document name based on page 1 OCR
+        // Use AI to suggest document name based on first 200 OCR chars
         if !firstPageText.isEmpty && firstPageText != "No text found in image" && !firstPageText.contains("OCR failed") {
             print("Using AI to generate document name from OCR text")
             generateAIDocumentName(from: firstPageText)
         } else {
             print("OCR extraction failed or returned no text, using default name")
-            // Fallback to default name
-            suggestedName = "Scanned Document"
+            suggestedName = "ScannedDocument"
             customName = suggestedName
             isProcessing = false
             showingNamingDialog = true
@@ -1090,37 +1089,29 @@ struct DocumentsView: View {
 
     private func generateAIDocumentName(from text: String) {
         let prompt = """
-        <<<NAME_REQUEST>>>Describe the OCR in exactly 3 words as specific as possible.
+        <<<NAME_REQUEST>>>Generate a given OCR specific 2-3 word title that differentiates this document.
 
         STRICT OUTPUT:
-        - English only
-        - Exactly 2 or 3 words (no more, no less)
-        - Avoid field labels or placeholders
-        - No punctuation, no quotes, no file extensions, no spaces
-        - All words with capital letters at start
+        - Exactly 2 or 3 words
+        - Title Case
+        - No punctuation, no numbers, no file extensions
 
-        OCR Snippet (first 300 chars):
-        \(text.prefix(300))
+        OCR Snippet (first 200 chars):
+        \(text.prefix(200))
 
         Response format: Just the title, nothing else.
         """
-        
+
         print("🏷️ DocumentsView: Generating AI document name from OCR text")
         EdgeAI.shared?.generate(prompt, resolver: { result in
             print("🏷️ DocumentsView: Got name suggestion result: \(String(describing: result))")
             DispatchQueue.main.async {
                 if let result = result as? String, !result.isEmpty {
-                    let cleanResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let normalized = normalizeSuggestedTitle(cleanResult, fallbackText: text)
-                    let compacted = compactName(normalized)
-                    if compacted.isEmpty {
-                        self.suggestedName = compactName(heuristicName(from: text))
-                    } else {
-                        self.suggestedName = compacted
-                    }
+                    let clean = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let normalized = normalizeSuggestedTitle(clean)
+                    self.suggestedName = normalized.isEmpty ? "ScannedDocument" : normalized
                 } else {
-                    print("❌ DocumentsView: Empty or nil name suggestion result")
-                    self.suggestedName = compactName(deriveTitleFromOCR(text))
+                    self.suggestedName = "ScannedDocument"
                 }
                 self.customName = self.suggestedName
                 self.isProcessing = false
@@ -1129,7 +1120,7 @@ struct DocumentsView: View {
         }, rejecter: { code, message, error in
             print("❌ DocumentsView: Name generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
-                self.suggestedName = heuristicName(from: text)
+                self.suggestedName = "ScannedDocument"
                 self.customName = self.suggestedName
                 self.isProcessing = false
                 self.showingNamingDialog = true
@@ -1137,204 +1128,22 @@ struct DocumentsView: View {
         })
     }
 
-    private func sanitizeTitle(_ s: String) -> String {
-        var name = s
-            .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "'", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Replace any non-letter/digit with space to keep readable words
-        name = name.replacingOccurrences(of: "[^A-Za-z0-9]+", with: " ", options: .regularExpression)
-        // Collapse whitespace and trim
-        name = name.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        return name.isEmpty ? "Scanned Document" : name
-    }
-
-    private func titleCase(_ s: String) -> String {
-        return s.split(separator: " ").map { w in
-            let lw = w.lowercased()
-            return lw.prefix(1).uppercased() + lw.dropFirst()
-        }.joined(separator: " ")
-    }
-
-    private func normalizeSuggestedTitle(_ raw: String, fallbackText: String) -> String {
-        let cleaned = sanitizeTitle(raw)
-        let tokens = cleaned.split(separator: " ").map(String.init)
-        let filtered = filterMeaningfulTokens(tokens)
-        let limited = Array(filtered.prefix(3))
-        if limited.count == 3 {
-            return compactName(formatTitleWords(limited))
-        }
-
-        let fallback = deriveTitleFromOCR(fallbackText)
-        let normalizedFallback = fallback.isEmpty ? heuristicName(from: fallbackText) : fallback
-        return compactName(normalizedFallback)
-    }
-
-    private func deriveTitleFromOCR(_ text: String) -> String {
-        let ranked = rankedTokens(from: text, ocrFallback: text)
-        let base = buildTitle(from: ranked)
-        let normalized = base.isEmpty ? heuristicName(from: text) : base
-        return compactName(normalized)
-    }
-
-    private func compactName(_ s: String) -> String {
-        let noDigits = s.replacingOccurrences(of: "[0-9]+", with: "", options: .regularExpression)
-        let noSpaces = noDigits.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
-        return noSpaces
-    }
-
-    private func filterMeaningfulTokens(_ tokens: [String]) -> [String] {
-        tokens
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count >= 3 }
-            .filter { !isBannedToken($0.lowercased()) }
-    }
-
-    private func buildTitle(from rankedTokens: [String]) -> String {
-        guard !rankedTokens.isEmpty else { return "" }
-
-        var words: [String] = []
-        for tok in rankedTokens {
-            if words.count >= 3 { break }
-            if words.contains(where: { $0.caseInsensitiveCompare(tok) == .orderedSame }) { continue }
-            words.append(tok)
-        }
-
-        let limited = Array(words.prefix(3))
-        if limited.count < 2 { return "" }
-        return formatTitleWords(limited)
-    }
-
-    private func tokenizeOCR(_ text: String) -> [(token: String, original: String)] {
-        let parts = text.split { !$0.isLetter && !$0.isNumber }
-        return parts.map { part in
-            let original = String(part)
-            let token = sanitizeTitle(original).lowercased()
-            return (token: token, original: original)
-        }
-    }
-
-    private func rankedTokens(from text: String, ocrFallback: String) -> [String] {
-        let combined = "\(text) \(ocrFallback)"
-        let snippet = String(combined.prefix(500))
-        let tokens = tokenizeOCR(snippet)
-
-        var frequency: [String: Int] = [:]
-        for t in tokens where !t.token.isEmpty {
-            frequency[t.token, default: 0] += 1
-        }
-
-        let docTypes = docTypeTokenSet()
-
-        func score(token: String, original: String) -> Int {
-            let lower = token.lowercased()
-            if lower.isEmpty || isBannedToken(lower) { return -100 }
-
-            var s = 0
-            if isAcronym(original) { s += 6 }
-            if isCapitalized(original) { s += 5 }
-            if docTypes.contains(lower) { s += 4 }
-            if (4...14).contains(lower.count) { s += 2 }
-            if let f = frequency[lower] { s += min(f, 4) }
-
-            // Penalize vague lowercase-only tokens unless they are a known doc type.
-            if original == original.lowercased() && !docTypes.contains(lower) {
-                s -= 3
-            }
-            return s
-        }
-
-        let scored = tokens.map { (original: $0.original, token: $0.token, score: score(token: $0.token, original: $0.original)) }
-            .filter { $0.score > 0 }
-            .sorted { a, b in
-                if a.score != b.score { return a.score > b.score }
-                return a.token.count > b.token.count
-            }
-
-        let unique = scored.reduce(into: [String]()) { acc, item in
-            if acc.contains(where: { $0.caseInsensitiveCompare(item.original) == .orderedSame }) { return }
-            acc.append(item.original)
-        }
-
-        return unique
-    }
-
-    private func docTypeTokenSet() -> Set<String> {
-        return Set([
-            "receipt","invoice","results","report","contract","statement","bill","summary","analysis","certificate",
-            "license","passport","agreement","order","shipment","delivery","medical","lab","test","prescription",
-            "diagnosis","policy","cover","resume","cv"
-        ])
-    }
-
-    private func formatTitleWords(_ words: [String]) -> String {
-        let cleaned = words
-            .map { sanitizeTitle($0) }
-            .filter { !$0.isEmpty }
-
-        let formatted = cleaned.map { w -> String in
-            if isAcronym(w) {
-                return w.uppercased()
-            }
-            let lower = w.lowercased()
-            return lower.prefix(1).uppercased() + lower.dropFirst()
-        }
-
-        return formatted.joined(separator: " ")
-    }
-
-    private func isCapitalized(_ word: String) -> Bool {
-        guard let first = word.unicodeScalars.first else { return false }
-        let isUpper = CharacterSet.uppercaseLetters.contains(first)
-        return isUpper && word.count >= 3
-    }
-
-    private func isAcronym(_ word: String) -> Bool {
-        let letters = word.filter { $0.isLetter }
-        if letters.count < 2 || letters.count > 5 { return false }
-        return letters == letters.uppercased()
-    }
-
-    private func isBannedToken(_ token: String) -> Bool {
-        let banned: Set<String> = [
-            "document","documents","file","files","scan","scanned","page","pages","image","images","photo","photos",
-            "text","data","content","copy","unknown","untitled","sample","example","draft"
-        ]
-        let stop: Set<String> = [
-            "the","and","for","with","that","this","from","are","was","were","have","has","had",
-            "you","your","they","their","them","not","but","can","will","would","should","could",
-            "a","an","to","of","in","on","at","as","by","or","be","is","it","we","i"
-        ]
-        return banned.contains(token) || stop.contains(token)
-    }
-
-    private func heuristicName(from text: String) -> String {
-        let stop: Set<String> = ["the","a","an","and","or","of","to","for","in","on","by","with","from","at","as","is","are","was","were","be","been","being"]
-
-        let rawTokens = text
-            .replacingOccurrences(of: "[^A-Za-z0-9 ]+", with: " ", options: .regularExpression)
+    private func normalizeSuggestedTitle(_ raw: String) -> String {
+        let stripped = raw.replacingOccurrences(of: "[^A-Za-z ]+", with: " ", options: .regularExpression)
+        let words = stripped
             .split(separator: " ")
             .map(String.init)
+            .filter { !$0.isEmpty }
 
-        let filtered = rawTokens
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count > 2 && !stop.contains($0.lowercased()) }
-
-        let specificWord = filtered.first { token in
-            let first = token.prefix(1)
-            return first.rangeOfCharacter(from: CharacterSet.uppercaseLetters) != nil
-        } ?? filtered.first
-
-        let typeWord = filtered.first { token in
-            guard token != specificWord else { return false }
-            return token.lowercased() != (specificWord?.lowercased() ?? "")
+        guard words.count >= 2 else { return "" }
+        let limited = Array(words.prefix(3))
+        let titleCased = limited.map { word -> String in
+            let lower = word.lowercased()
+            return lower.prefix(1).uppercased() + lower.dropFirst()
         }
-
-        let specific = specificWord.map { titleCase(sanitizeTitle($0)) } ?? "Scan"
-        let type = typeWord.map { titleCase(sanitizeTitle($0)) } ?? "Notes"
-        return "\(specific) \(type)"
+        return titleCased.joined(separator: "")
     }
-    
+
     private func finalizeDocument(with name: String) {
         guard !scannedImages.isEmpty else { return }
         
@@ -3256,6 +3065,12 @@ struct NativeChatView: View {
     @State private var showingScopePicker = false
     @State private var selectedDocIds: [UUID] = []
     @State private var selectedFolderId: UUID? = nil
+    @State private var responseCache: [String: String] = [:]
+    @State private var responseCacheOrder: [String] = []
+    @State private var activeChatGenerationId: UUID? = nil
+    @State private var lastResolvedDocsForChat: [Document] = []
+    @State private var lastResolvedDocContext: String = ""
+    @State private var lastResolvedDocId: UUID? = nil
     @FocusState private var isFocused: Bool
     @EnvironmentObject private var documentManager: DocumentManager
 
@@ -3373,15 +3188,25 @@ struct NativeChatView: View {
             activeDocsForChat = []
             pendingDocConfirmation = nil
             lastDocScopedQuestion = ""
+            lastResolvedDocsForChat = []
+            lastResolvedDocContext = ""
+            lastResolvedDocId = nil
         }
         .onChange(of: selectedFolderId) { _ in
             activeDocsForChat = []
             pendingDocConfirmation = nil
             lastDocScopedQuestion = ""
+            lastResolvedDocsForChat = []
+            lastResolvedDocContext = ""
+            lastResolvedDocId = nil
         }
     }
 
     private func send() {
+        if isGenerating {
+            stopGeneration()
+            return
+        }
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -3401,104 +3226,25 @@ struct NativeChatView: View {
         input = ""
         isGenerating = true
 
-        // If we previously asked the user to confirm a document, only treat this message as the
-        // selection when it matches a selection pattern (number/name/all/cancel). Otherwise allow
-        // the user to keep chatting and answer later.
-        if let pending = pendingDocConfirmation {
-            if tryConsumeDocConfirmationReply(trimmed, pending: pending) {
-                return
-            }
-        }
-
-        // Allow basic/small-talk chat without forcing document selection.
-        if isSmallTalk(trimmed) {
-            runLLMAnswer(question: trimmed, docsToSearch: [])
-            return
-        }
-
-        // Step 1: retrieve relevant docs and ask for confirmation only if needed.
-        // Only proceed to the model once we know which document(s) to search.
-        if documentManager.documents.isEmpty {
-            print("💬 NativeChatView: No documents available for context")
-            pendingDocConfirmation = nil
-            // Fall back to sending question as-is.
-            runLLMAnswer(question: trimmed, docsToSearch: [])
-            return
-        }
-
-        // If this doesn't look like a document question, treat it as normal chat.
-        if !isDocumentQuery(trimmed) {
-            runLLMAnswer(question: trimmed, docsToSearch: [])
-            return
-        }
-
         let scopedDocs = scopedDocuments()
-        let readyDocs = documentsWithReadySummaries(from: scopedDocs)
-        if readyDocs.count < scopedDocs.count {
-            if !hasShownSummaryLoadingWarning {
-                showSummaryLoadingWarning = true
-                hasShownSummaryLoadingWarning = true
-            }
-        }
-
-        // If the user is asking a follow-up and we already have an active document scope,
-        // keep using the same document(s) unless they explicitly mention a different one.
-        if !activeDocsForChat.isEmpty,
-           !mentionsExplicitDifferentDocument(trimmed),
-           looksLikeFollowUpQuestion(trimmed) {
-            print("💬 NativeChatView: Using active document scope for follow-up")
-            lastDocScopedQuestion = trimmed
-            runLLMAnswer(question: trimmed, docsToSearch: activeDocsForChat)
-            return
-        }
-
-        // Step A (fast): rank using only the first 100 chars of each summary.
-        if readyDocs.isEmpty {
-            print("💬 NativeChatView: No summaries ready yet; proceeding without document context")
-            runLLMAnswer(question: trimmed, docsToSearch: [])
-            return
-        }
-
-        let ranked = selectRelevantDocumentsBySummaryPrefix(for: trimmed, in: readyDocs, maxDocs: 5)
-        let candidates = ranked.map { $0.doc }
-
-        if candidates.isEmpty {
-            messages.append(ChatMessage(
-                role: "assistant",
-                text: "I couldn't find a relevant document based on your summaries. Tell me the document name (or paste a unique phrase) and I can check it directly.",
-                date: Date()
-            ))
-            pendingDocConfirmation = PendingDocConfirmation(question: trimmed, candidates: [])
-            isGenerating = false
-            return
-        }
-
-        // Step B: if top match is clearly better, search full OCR for that document.
-        let topScore = ranked.first?.score ?? 0
-        let secondScore = ranked.dropFirst().first?.score ?? 0
-        let confident = candidates.count == 1 || (topScore >= 6 && topScore >= (secondScore + 3))
-
-        if confident, let topDoc = ranked.first?.doc {
-            print("💬 NativeChatView: Auto-selected by summary prefix: \(topDoc.title) (score \(topScore), second \(secondScore))")
-            activeDocsForChat = [topDoc]
-            lastDocScopedQuestion = trimmed
-            runLLMAnswer(question: trimmed, docsToSearch: [topDoc])
-        } else {
-            // Step C: suggest a few documents and ask the user to pick.
-            let preview = buildCandidatePreview(candidates)
-            if !preview.isEmpty {
-                messages.append(ChatMessage(role: "assistant", text: preview, date: Date()))
-            }
-            messages.append(ChatMessage(
-                role: "assistant",
-                text: "Which document should I use? Reply with a number (1-\(candidates.count)), the document name, or 'all'.",
-                date: Date()
-            ))
-            pendingDocConfirmation = PendingDocConfirmation(question: trimmed, candidates: candidates)
-            isGenerating = false
-        }
+        activeDocsForChat = scopedDocs
+        lastDocScopedQuestion = trimmed
+        startGeneration(question: trimmed, docsToSearch: scopedDocs)
 
         // Model call is triggered by runLLMAnswer(...)
+    }
+
+    private func stopGeneration() {
+        guard isGenerating else { return }
+        isGenerating = false
+        activeChatGenerationId = nil
+        EdgeAI.shared?.cancelCurrentGeneration()
+    }
+
+    private func startGeneration(question: String, docsToSearch: [Document]) {
+        let generationId = UUID()
+        activeChatGenerationId = generationId
+        runLLMAnswer(question: question, docsToSearch: docsToSearch, generationId: generationId)
     }
 
     private func tryConsumeDocConfirmationReply(_ reply: String, pending: PendingDocConfirmation) -> Bool {
@@ -3512,6 +3258,27 @@ struct NativeChatView: View {
             return true
         }
 
+        if pending.candidates.count == 1 {
+            if lower == "yes" || lower == "y" || lower == "correct" {
+                let doc = pending.candidates[0]
+                pendingDocConfirmation = nil
+                activeDocsForChat = [doc]
+                lastDocScopedQuestion = pending.question
+                startGeneration(question: pending.question, docsToSearch: [doc])
+                return true
+            }
+            if lower == "no" || lower == "n" {
+                pendingDocConfirmation = nil
+                isGenerating = false
+                messages.append(ChatMessage(
+                    role: "assistant",
+                    text: "Got it. Tell me the document name (or paste a unique phrase) and I’ll check it.",
+                    date: Date()
+                ))
+                return true
+            }
+        }
+
         // Accept "doc 1" / "#1" / "1" etc.
         if let idx = extractFirstInt(from: lower) {
             if !pending.candidates.isEmpty, idx >= 1, idx <= pending.candidates.count {
@@ -3519,7 +3286,7 @@ struct NativeChatView: View {
                 pendingDocConfirmation = nil
                 activeDocsForChat = [doc]
                 lastDocScopedQuestion = pending.question
-                runLLMAnswer(question: pending.question, docsToSearch: [doc])
+                startGeneration(question: pending.question, docsToSearch: [doc])
                 return true
             }
         }
@@ -3533,7 +3300,7 @@ struct NativeChatView: View {
             pendingDocConfirmation = nil
             activeDocsForChat = Array(matches.prefix(3))
             lastDocScopedQuestion = pending.question
-            runLLMAnswer(question: pending.question, docsToSearch: Array(matches.prefix(3)))
+            startGeneration(question: pending.question, docsToSearch: Array(matches.prefix(3)))
             return true
         }
 
@@ -3541,7 +3308,7 @@ struct NativeChatView: View {
             pendingDocConfirmation = nil
             activeDocsForChat = pending.candidates
             lastDocScopedQuestion = pending.question
-            runLLMAnswer(question: pending.question, docsToSearch: pending.candidates)
+            startGeneration(question: pending.question, docsToSearch: pending.candidates)
             return true
         }
 
@@ -3550,14 +3317,14 @@ struct NativeChatView: View {
             pendingDocConfirmation = nil
             activeDocsForChat = [doc]
             lastDocScopedQuestion = pending.question
-            runLLMAnswer(question: pending.question, docsToSearch: [doc])
+            startGeneration(question: pending.question, docsToSearch: [doc])
             return true
         }
         if let doc = bestTitleMatches(for: lower, within: documentsWithReadySummaries(from: scopedDocuments())).first {
             pendingDocConfirmation = nil
             activeDocsForChat = [doc]
             lastDocScopedQuestion = pending.question
-            runLLMAnswer(question: pending.question, docsToSearch: [doc])
+            startGeneration(question: pending.question, docsToSearch: [doc])
             return true
         }
         return false
@@ -3640,92 +3407,6 @@ struct NativeChatView: View {
         return scored.map { $0.doc }
     }
 
-    private func pickDocumentBySnippetEvidence(question: String, docs: [Document]) -> Document? {
-        // If we can find actual snippet hits in a document, that's strong evidence.
-        // This avoids asking the user "which document" for obvious cases like CV/experience.
-        guard !docs.isEmpty else { return nil }
-
-        let q = question.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let tokens = q
-            .split { !$0.isLetter && !$0.isNumber }
-            .map(String.init)
-            .filter { $0.count >= 3 }
-
-        if tokens.isEmpty { return nil }
-
-        func containsAny(_ haystack: String, _ needles: [String]) -> Bool {
-            for n in needles where haystack.contains(n) {
-                return true
-            }
-            return false
-        }
-
-        let cvTitleTokens = ["cv", "resume", "résumé", "curriculum", "vitae"]
-        let cvQuestionTokens = ["experience", "work", "employment", "skills", "education", "projects", "profile", "summary"]
-
-        func countOccurrences(_ token: String, in text: String, maxCount: Int) -> Int {
-            guard !token.isEmpty else { return 0 }
-            var count = 0
-            var searchStart = text.startIndex
-            while count < maxCount, let r = text.range(of: token, range: searchStart..<text.endIndex) {
-                count += 1
-                searchStart = r.upperBound
-            }
-            return count
-        }
-
-        var bestDoc: Document?
-        var bestScore = 0
-        var secondBestScore = 0
-
-        for doc in docs {
-            let title = doc.title.lowercased()
-            let summary = doc.summary.lowercased()
-            let contentPrefix = String(doc.content.prefix(12_000)).lowercased()
-
-            var score = 0
-
-            // Strong boosts for CV/resume flows.
-            if containsAny(q, cvQuestionTokens) && containsAny(title, cvTitleTokens) {
-                score += 40
-            }
-            if containsAny(q, cvTitleTokens) && containsAny(title, cvTitleTokens) {
-                score += 30
-            }
-
-            // Lightweight evidence from title/summary token matches.
-            for t in tokens.prefix(8) {
-                if title.contains(t) { score += 10 }
-                if summary.contains(t) { score += 6 }
-            }
-
-            // Evidence from content (prefix only for speed). Cap per-token counts.
-            for t in tokens.prefix(6) {
-                let c = countOccurrences(t, in: contentPrefix, maxCount: 6)
-                if c > 0 { score += min(c, 6) }
-            }
-
-            // If local snippet extraction finds something, that's extra confirmation.
-            let snippetBlocks = localSearchSnippets(question: question, docs: [doc], maxSnippetsPerDoc: 3, window: 120)
-            if !snippetBlocks.isEmpty { score += 12 }
-
-            if score > bestScore {
-                secondBestScore = bestScore
-                bestScore = score
-                bestDoc = doc
-            } else if score > secondBestScore {
-                secondBestScore = score
-            }
-        }
-
-        // Require both minimum evidence and a margin over the runner-up to avoid wrong auto-picks.
-        guard let picked = bestDoc else { return nil }
-        if bestScore >= 18 && bestScore >= secondBestScore + 4 {
-            return picked
-        }
-        return nil
-    }
-
     private func isSmallTalk(_ query: String) -> Bool {
         let s = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if s.isEmpty { return false }
@@ -3746,6 +3427,24 @@ struct NativeChatView: View {
         return false
     }
 
+    private func shouldReuseLastDocs(for question: String) -> Bool {
+        if isSmallTalk(question) { return false }
+        if lastResolvedDocsForChat.isEmpty { return false }
+        if mentionsExplicitDifferentDocument(question) { return false }
+        return looksLikeFollowUpQuestion(question)
+    }
+
+    private func buildDocContextSnippet(for doc: Document, maxChars: Int) -> String {
+        let summary = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSummary = !summary.isEmpty && summary != "Processing..." && summary != "Processing summary..."
+        let ocr = doc.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ocrPrefix = String(ocr.prefix(maxChars))
+        if hasSummary {
+            return "Summary:\n\(summary)\n\nOCR excerpt:\n\(ocrPrefix)"
+        }
+        return "OCR excerpt:\n\(ocrPrefix)"
+    }
+
     private func buildCandidatePreview(_ docs: [Document]) -> String {
         // Only show document names (no OCR/summary previews) unless the user explicitly asks.
         let lines: [String] = docs.prefix(5).enumerated().map { (offset, doc) in
@@ -3755,32 +3454,12 @@ struct NativeChatView: View {
         return lines.isEmpty ? "" : ("Possible matches:\n" + lines.joined(separator: "\n"))
     }
 
-    private func runLLMAnswer(question: String, docsToSearch: [Document]) {
+    private func runLLMAnswer(question: String, docsToSearch: [Document], generationId: UUID) {
         isGenerating = true
-
-        let prompt: String
-        if docsToSearch.isEmpty {
-            prompt = question
-        } else {
-            // Step 2: locally search full OCR/content and send only matched snippets.
-            let snippets = localSearchSnippets(question: question, docs: docsToSearch, maxSnippetsPerDoc: 4, window: 220)
-            let snippetsBlock = snippets.isEmpty
-                ? buildDocumentContextBlock(for: docsToSearch, detailed: false)
-                : snippets.joined(separator: "\n\n")
-
-            prompt = """
-            Answer using the user's documents below. If the answer isn't in the excerpts, say you can't find it.
-
-            \(snippetsBlock)
-
-            Question: \(question)
-            """
-        }
-
-        print("💬 NativeChatView: Final prompt length: \(prompt.count)")
 
         Task {
             do {
+                if activeChatGenerationId != generationId { return }
                 guard let edgeAI = EdgeAI.shared else {
                     DispatchQueue.main.async {
                         self.isGenerating = false
@@ -3789,78 +3468,344 @@ struct NativeChatView: View {
                     return
                 }
 
-                let reply = try await withCheckedThrowingContinuation { continuation in
-                    edgeAI.generate(prompt, resolver: { result in
-                        continuation.resume(returning: result as? String ?? "")
-                    }, rejecter: { _, message, _ in
-                        continuation.resume(throwing: NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: message ?? "Unknown error"]))
-                    })
+                if isSmallTalk(question) {
+                    if activeChatGenerationId != generationId { return }
+                    let reply = try await callLLM(edgeAI: edgeAI, prompt: question)
+                    DispatchQueue.main.async {
+                        if self.activeChatGenerationId != generationId { return }
+                        self.isGenerating = false
+                        let text = reply.isEmpty ? "(No response)" : reply
+                        self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
+                    }
+                    return
                 }
 
+                let reuseDocs = shouldReuseLastDocs(for: question)
+                let cachedDocs = reuseDocs ? lastResolvedDocsForChat : docsToSearch
+                let cacheKey = makeCacheKey(question: question, docs: cachedDocs)
+                if let cached = responseCache[cacheKey] {
+                    DispatchQueue.main.async {
+                        self.isGenerating = false
+                        let text = cached.isEmpty ? "(No response)" : cached
+                        self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
+                    }
+                    return
+                }
+
+                if docsToSearch.isEmpty {
+                    if activeChatGenerationId != generationId { return }
+                    let reply = try await callLLM(edgeAI: edgeAI, prompt: question)
+                    DispatchQueue.main.async {
+                        if self.activeChatGenerationId != generationId { return }
+                        self.isGenerating = false
+                        let text = reply.isEmpty ? "(No response)" : reply
+                        self.storeResponseCache(key: cacheKey, value: text)
+                        self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
+                    }
+                    return
+                }
+
+                if reuseDocs,
+                   let finalDoc = lastResolvedDocsForChat.first,
+                   let lastId = lastResolvedDocId,
+                   lastId == finalDoc.id,
+                   !lastResolvedDocContext.isEmpty {
+                    let followUpPrompt = """
+                    Cached document context:
+                    \(lastResolvedDocContext)
+
+                    Question: \(question)
+                    """
+                    if activeChatGenerationId != generationId { return }
+                    let finalReply = try await callLLM(edgeAI: edgeAI, prompt: followUpPrompt)
+                    DispatchQueue.main.async {
+                        if self.activeChatGenerationId != generationId { return }
+                        self.isGenerating = false
+                        let text = finalReply.isEmpty ? "(No response)" : finalReply
+                        self.storeResponseCache(key: cacheKey, value: text)
+                        self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
+                    }
+                    return
+                }
+
+                // Stage 1: titles only -> keep only titles that might match.
+                let titlesBlock = buildDocumentTitlesBlock(for: docsToSearch, maxDocs: 60)
+                let stage1Prompt = """
+                Document Titles:
+                \(titlesBlock)
+
+                Question: \(question)
+
+                Return only the titles that might contain the answer.
+                Reply with:
+                TITLES:
+                - <title>
+                or:
+                NONE
+                """
+                if activeChatGenerationId != generationId { return }
+                let stage1Reply = try await callLLM(edgeAI: edgeAI, prompt: stage1Prompt)
+
+                var stageDocs = parseTitleListReply(stage1Reply, allDocs: docsToSearch)
+                // If the model couldn't match titles, fall back to the full set and continue.
+                if stageDocs.isEmpty { stageDocs = docsToSearch }
+
+                // Stage 2: summary prefixes for selected (or all if none).
+                let summaryPrefixBlock = buildDocumentSummaryPrefixBlock(for: stageDocs, maxDocs: 60, maxChars: 100)
+                let stage2Prompt = """
+                Summary Prefixes (first 100 chars each):
+                \(summaryPrefixBlock)
+
+                Previous stage output:
+                \(stage1Reply.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                Question: \(question)
+
+                Return only the titles that still look relevant.
+                Reply with:
+                TITLES:
+                - <title>
+                or:
+                NONE
+                """
+                if activeChatGenerationId != generationId { return }
+                let stage2Reply = try await callLLM(edgeAI: edgeAI, prompt: stage2Prompt)
+
+                var remainingDocs = parseTitleListReply(stage2Reply, allDocs: stageDocs)
+                // If summaries didn't match, keep the previous set and continue.
+                if remainingDocs.isEmpty { remainingDocs = stageDocs }
+
+                // Stage 3: full summary if multiple remain, else full OCR for the only doc.
+                var stage3Reply = ""
+                if remainingDocs.count > 1 {
+                    let fullSummaries = buildDocumentFullSummariesBlock(for: remainingDocs, maxDocs: 12)
+                    let stage3Prompt = """
+                    Full Summaries:
+                    \(fullSummaries)
+
+                    Previous stage output:
+                    \(stage2Reply.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                    Question: \(question)
+
+                    Return only the titles that still look relevant.
+                    Reply with:
+                    TITLE: <title>
+                    or:
+                    NONE
+                    """
+                    if activeChatGenerationId != generationId { return }
+                    stage3Reply = try await callLLM(edgeAI: edgeAI, prompt: stage3Prompt)
+                    if let picked = parseSingleTitleReply(stage3Reply, allDocs: remainingDocs) {
+                        remainingDocs = [picked]
+                    } else if let picked = remainingDocs.first {
+                        // If the model can't pick from summaries, default to the first candidate.
+                        remainingDocs = [picked]
+                    }
+                }
+
+                guard let finalDoc = remainingDocs.first else {
+                    DispatchQueue.main.async {
+                        self.isGenerating = false
+                        self.messages.append(ChatMessage(role: "assistant", text: "I couldn't find a relevant document.", date: Date()))
+                    }
+                    return
+                }
+
+                let ocrBlock = buildDocumentOCRBlock(for: finalDoc)
+                let stage4Prompt = """
+                OCR (full text):
+                \(ocrBlock)
+
+                Previous stage output:
+                \(stage3Reply.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                Question: \(question)
+                """
+                if activeChatGenerationId != generationId { return }
+                let finalReply = try await callLLM(edgeAI: edgeAI, prompt: stage4Prompt)
+
                 DispatchQueue.main.async {
+                    if self.activeChatGenerationId != generationId { return }
                     self.isGenerating = false
-                    let text = reply.isEmpty ? "(No response)" : reply
+                    let text = finalReply.isEmpty ? "(No response)" : finalReply
+                    self.lastResolvedDocsForChat = [finalDoc]
+                    self.lastResolvedDocId = finalDoc.id
+                    self.lastResolvedDocContext = self.buildDocContextSnippet(for: finalDoc, maxChars: 1800)
+                    self.storeResponseCache(key: cacheKey, value: text)
                     self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
                 }
             } catch {
                 DispatchQueue.main.async {
+                    if self.activeChatGenerationId != generationId { return }
                     self.isGenerating = false
-                    self.messages.append(ChatMessage(role: "assistant", text: "Error: \(error.localizedDescription)", date: Date()))
+                    if error.localizedDescription != "CANCELLED" {
+                        self.messages.append(ChatMessage(role: "assistant", text: "Error: \(error.localizedDescription)", date: Date()))
+                    }
                 }
             }
         }
     }
 
-    private func localSearchSnippets(question: String, docs: [Document], maxSnippetsPerDoc: Int, window: Int) -> [String] {
+    private func callLLM(edgeAI: EdgeAI, prompt: String) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            edgeAI.generate("<<<NO_HISTORY>>>" + prompt, resolver: { result in
+                continuation.resume(returning: result as? String ?? "")
+            }, rejecter: { _, message, _ in
+                continuation.resume(throwing: NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: message ?? "Unknown error"]))
+            })
+        }
+    }
+
+    private func makeCacheKey(question: String, docs: [Document]) -> String {
+        let docIds = docs.map { $0.id.uuidString }.sorted().joined(separator: "|")
+        let normalizedQ = question.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(normalizedQ)|\(docIds)"
+    }
+
+    private func storeResponseCache(key: String, value: String) {
+        let maxItems = 12
+        responseCache[key] = value
+        responseCacheOrder.removeAll { $0 == key }
+        responseCacheOrder.append(key)
+        if responseCacheOrder.count > maxItems {
+            let overflow = responseCacheOrder.count - maxItems
+            for _ in 0..<overflow {
+                if let oldest = responseCacheOrder.first {
+                    responseCacheOrder.removeFirst()
+                    responseCache.removeValue(forKey: oldest)
+                }
+            }
+        }
+    }
+
+    private func parseTitleListReply(_ reply: String, allDocs: [Document]) -> [Document] {
+        let lower = reply.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower == "none" {
+            return []
+        }
+        let lines = reply
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let titles = lines.compactMap { line -> String? in
+            if line.lowercased().hasPrefix("titles:") {
+                return nil
+            }
+            if line.hasPrefix("-") {
+                return line.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return nil
+        }
+
+        let matched = matchTitles(titles, allDocs: allDocs)
+        if !matched.isEmpty { return matched }
+        return matchTitles([reply], allDocs: allDocs)
+    }
+
+    private func buildNoDocumentPrompt(question: String) -> String {
+        """
+        You could not find a relevant document for the user's question. Respond briefly and ask the user to clarify or choose a document.
+
+        Question: \(question)
+        """
+    }
+
+    private func parseSingleTitleReply(_ reply: String, allDocs: [Document]) -> Document? {
+        if let match = reply.range(of: "(?i)^title:\\s*", options: .regularExpression) {
+            let picked = reply[match.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return matchTitles([picked], allDocs: allDocs).first
+        }
+        return matchTitles([reply], allDocs: allDocs).first
+    }
+
+    private func matchTitles(_ titles: [String], allDocs: [Document]) -> [Document] {
+        let lowered = titles.map { $0.lowercased() }
+        return allDocs.filter { doc in
+            lowered.contains(where: { doc.title.lowercased() == $0 })
+        }
+    }
+
+
+
+    private func buildDocumentTitlesBlock(for docs: [Document], maxDocs: Int) -> String {
+        let list = docs.prefix(maxDocs).map { "- \($0.title)" }
+        return list.isEmpty ? "(No documents)" : list.joined(separator: "\n")
+    }
+
+    private func buildDocumentSummaryPrefixBlock(for docs: [Document], maxDocs: Int, maxChars: Int) -> String {
+        let lines = docs.prefix(maxDocs).map { doc -> String in
+            let summary = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasSummary = !summary.isEmpty && summary != "Processing..." && summary != "Processing summary..."
+            let prefixSource = hasSummary ? summary : doc.content
+            let prefix = String(prefixSource.prefix(maxChars)).replacingOccurrences(of: "\n", with: " ")
+            return "\(doc.title): \(prefix)"
+        }
+        return lines.isEmpty ? "(No summaries)" : lines.joined(separator: "\n")
+    }
+
+    private func buildDocumentFullSummariesBlock(for docs: [Document], maxDocs: Int) -> String {
+        let lines = docs.prefix(maxDocs).map { doc -> String in
+            let summary = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = summary.isEmpty ? "(No summary)" : summary
+            return "\(doc.title):\n\(body)"
+        }
+        return lines.isEmpty ? "(No summaries)" : lines.joined(separator: "\n\n")
+    }
+
+    private func buildDocumentOCRBlock(for doc: Document) -> String {
+        let body = doc.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.isEmpty ? "(No OCR text)" : body
+    }
+
+    private func filterDocumentsByTitleMatch(question: String, docs: [Document]) -> [Document] {
+        let tokens = question
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 2 }
+
+        guard !tokens.isEmpty else { return [] }
+
+        func score(_ doc: Document) -> Int {
+            let title = doc.title.lowercased()
+            var s = 0
+            for t in tokens {
+                if title.contains(t) { s += 1 }
+            }
+            return s
+        }
+
+        let scored = docs
+            .map { (doc: $0, score: score($0)) }
+            .filter { $0.score > 0 }
+            .sorted { a, b in a.score > b.score }
+
+        return scored.map { $0.doc }
+    }
+
+    private func selectBestDocumentBySummary(question: String, docs: [Document]) -> Document? {
         let tokens = question
             .lowercased()
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
             .filter { $0.count >= 3 }
 
-        guard !tokens.isEmpty else { return [] }
+        guard !tokens.isEmpty else { return docs.first }
 
-        func extractWindows(in text: String, token: String) -> [String] {
-            let lower = text.lowercased()
-            var results: [String] = []
-            var searchStart = lower.startIndex
-
-            while results.count < maxSnippetsPerDoc {
-                guard let range = lower.range(of: token, range: searchStart..<lower.endIndex) else { break }
-                let matchStart = range.lowerBound
-                let matchEnd = range.upperBound
-
-                let start = lower.index(matchStart, offsetBy: -window, limitedBy: lower.startIndex) ?? lower.startIndex
-                let end = lower.index(matchEnd, offsetBy: window, limitedBy: lower.endIndex) ?? lower.endIndex
-                let snippet = String(text[start..<end]).replacingOccurrences(of: "\n", with: " ")
-                results.append(snippet)
-
-                searchStart = matchEnd
+        func score(_ doc: Document) -> Int {
+            let summary = doc.summary.lowercased()
+            var s = 0
+            for t in tokens {
+                if summary.contains(t) { s += 1 }
             }
-
-            return results
+            return s
         }
 
-        var out: [String] = []
-        for doc in docs {
-            var snippets: [String] = []
-            for t in tokens.prefix(4) {
-                snippets.append(contentsOf: extractWindows(in: doc.content, token: t))
-                if snippets.count >= maxSnippetsPerDoc { break }
-            }
+        let scored = docs
+            .map { (doc: $0, score: score($0)) }
+            .sorted { a, b in a.score > b.score }
 
-            let unique = Array(NSOrderedSet(array: snippets)) as? [String] ?? snippets
-            let trimmedSnippets = Array(unique.prefix(maxSnippetsPerDoc))
-            if trimmedSnippets.isEmpty { continue }
-
-            let block = """
-            Document: \(doc.title)
-            Snippets:
-            \(trimmedSnippets.enumerated().map { "- \($0.element)…" }.joined(separator: "\n"))
-            """
-            out.append(block)
-        }
-        return out
+        return scored.first?.doc
     }
 
     private func selectRelevantDocumentsWithScores(for query: String, maxDocs: Int) -> [(doc: Document, score: Int)] {
@@ -3970,6 +3915,37 @@ struct NativeChatView: View {
             var s = 0
             for t in tokens.prefix(8) {
                 if prefix.contains(t) { s += 4 }
+            }
+            return s
+        }
+
+        let scored = docs
+            .map { (doc: $0, score: score($0)) }
+            .filter { $0.score > 0 }
+            .sorted { a, b in a.score > b.score }
+
+        return Array(scored.prefix(maxDocs))
+    }
+
+    private func selectRelevantDocumentsByFullSummary(for query: String, in docs: [Document], maxDocs: Int) -> [(doc: Document, score: Int)] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let tokens = trimmed
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 }
+
+        func score(_ doc: Document) -> Int {
+            let summary = doc.summary.lowercased()
+            if summary.isEmpty || summary == "processing..." || summary == "processing summary..." {
+                return 0
+            }
+            var s = 0
+            if summary.contains(trimmed.lowercased()) { s += 10 }
+            for t in tokens.prefix(8) {
+                if summary.contains(t) { s += 3 }
             }
             return s
         }

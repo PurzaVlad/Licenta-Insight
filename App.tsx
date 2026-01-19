@@ -21,7 +21,7 @@ const SUMMARY_SYSTEM_PROMPT =
   'Write a short summary in 2-4 sentences. The summary should read like: "The document is about ... . It also touches on ... . Then, it talks about ... ." Focus on the main themes and ideas, not every detail. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Do not talk about age or current year.';
 
 const CHAT_SYSTEM_PROMPT =
-  'You are a document analysis assistant specializing in file extraction. Provide any information you can find in the already uploaded documents and help improve them however you are asked to. Be concise';
+  'You have access to document titles, summaries, and OCR text provided in the prompt. Use that information when it is relevant to the user question. If the user is doing small talk or specifying to ignore the documents, respond based on your general knowledge.';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -43,6 +43,7 @@ function App(): React.JSX.Element {
   const isRunningRef = useRef(false);
   const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'chat' } | null>(null);
   const abortCurrentRef = useRef(false);
+  const canceledRequestIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -191,15 +192,22 @@ useEffect(() => {
         const { requestId, prompt } = job;
         console.log('[EdgeAI] Processing request:', requestId, 'prompt length:', prompt.length);
         
+        const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
         const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
         const NAME_MARKER = '<<<NAME_REQUEST>>>';
-        const isSummary = prompt.startsWith(SUMMARY_MARKER);
-        const isName = prompt.startsWith(NAME_MARKER);
+        let rawPrompt = prompt;
+        let noHistory = false;
+        if (rawPrompt.startsWith(NO_HISTORY_MARKER)) {
+          noHistory = true;
+          rawPrompt = rawPrompt.slice(NO_HISTORY_MARKER.length).trimStart();
+        }
+        const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
+        const isName = rawPrompt.startsWith(NAME_MARKER);
         const userContent = isSummary
-          ? prompt.slice(SUMMARY_MARKER.length).trim()
+          ? rawPrompt.slice(SUMMARY_MARKER.length).trim()
           : isName
-          ? prompt.slice(NAME_MARKER.length).trim()
-          : prompt;
+          ? rawPrompt.slice(NAME_MARKER.length).trim()
+          : rawPrompt;
         const modeLabel: 'summary' | 'name' | 'chat' = isSummary ? 'summary' : isName ? 'name' : 'chat';
         console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
         currentJobRef.current = { requestId, prompt, type: modeLabel };
@@ -210,6 +218,8 @@ useEffect(() => {
         const messagesForAI: Message[] = isSummary
           ? [{ role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
           : isName
+          ? [userMessage]
+          : noHistory
           ? [userMessage]
           : [...conversationRef.current, userMessage];
 
@@ -287,7 +297,7 @@ useEffect(() => {
           } else {
             const completionParams = {
               prompt: promptText,
-              n_predict: 180,
+              n_predict: 600,
               temperature: 0.4,
               top_p: 0.8,
               repeat_penalty: 1.1,
@@ -321,9 +331,15 @@ useEffect(() => {
             continue;
           }
 
+          if (canceledRequestIdsRef.current.has(requestId)) {
+            canceledRequestIdsRef.current.delete(requestId);
+            console.log('[EdgeAI] Skipping canceled request:', requestId);
+            continue;
+          }
+
           if (!text) text = "(No output)";
 
-          if (!isSummary && !isName) {
+          if (!isSummary && !isName && !noHistory) {
             if (text.length > 0) {
               const assistantMessage: Message = { role: 'assistant', content: text, timestamp: Date.now() };
               conversationRef.current = [...messagesForAI, assistantMessage];
@@ -383,7 +399,26 @@ useEffect(() => {
     });
   });
 
-  return () => sub.remove();
+  const cancelSub = emitter.addListener('EdgeAICancel', async () => {
+    const current = currentJobRef.current;
+    if (!current || current.type !== 'chat') {
+      console.log('[EdgeAI] Cancel requested but no active chat job');
+      return;
+    }
+    console.log('[EdgeAI] Cancel requested for job:', current.requestId);
+    canceledRequestIdsRef.current.add(current.requestId);
+    try {
+      await context?.stopCompletion();
+    } catch (err: any) {
+      console.warn('[EdgeAI] stopCompletion failed:', err);
+    }
+    EdgeAI.rejectRequest(current.requestId, 'CANCELLED', 'CANCELLED');
+  });
+
+  return () => {
+    sub.remove();
+    cancelSub.remove();
+  };
 }, [context]);
 
   if (isDownloading || !context) {
