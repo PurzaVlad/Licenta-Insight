@@ -21,7 +21,7 @@ const SUMMARY_SYSTEM_PROMPT =
   'Write a short summary in 2-4 sentences. The summary should read like: "The document is about ... . It also touches on ... . Then, it talks about ... ." Focus on the main themes and ideas, not every detail. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Do not talk about age or current year.';
 
 const CHAT_SYSTEM_PROMPT =
-  'You have access to document titles, summaries, and OCR text provided in the prompt. Use that information when it is relevant to the user question. If the user is doing small talk or specifying to ignore the documents, respond based on your general knowledge.';
+  'You have access to document titles, summaries, and OCR text provided in the prompt. Be analytical. Use that information when it is relevant to the user question. If the user is doing small talk or specifying to ignore the documents, respond based on your general knowledge.';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
