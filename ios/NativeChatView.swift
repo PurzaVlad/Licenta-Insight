@@ -8,6 +8,7 @@ import PDFKit
 import QuickLook
 import CoreText
 import WebKit
+import AVFoundation
 
 // No need for TempDocumentManager - using DocumentManager.swift
 
@@ -186,6 +187,11 @@ private enum DocumentLayoutMode {
     case grid
 }
 
+private enum ScannerMode {
+    case document
+    case simple
+}
+
 struct TabContainerView: View {
     @StateObject private var documentManager = DocumentManager()
     @State private var summaryRequestsInFlight: Set<UUID> = []
@@ -332,6 +338,8 @@ struct DocumentsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @State private var showingDocumentPicker = false
     @State private var showingScanner = false
+    @State private var scannerMode: ScannerMode = .document
+    @State private var showingCameraPermissionAlert = false
     @State private var isProcessing = false
     @State private var showingNamingDialog = false
     @State private var suggestedName = ""
@@ -389,7 +397,7 @@ struct DocumentsView: View {
 
             VStack(spacing: 12) {
                 Button("Scan Document") {
-                    showingScanner = true
+                    startScan()
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -635,7 +643,7 @@ struct DocumentsView: View {
                             }
 
                             Button("Scan Document") {
-                                showingScanner = true
+                                startScan()
                             }
                             Button("Import Files") {
                                 showingDocumentPicker = true
@@ -731,7 +739,7 @@ struct DocumentsView: View {
             documentManager.objectWillChange.send()
         }
         .sheet(isPresented: $showingScanner) {
-            if VNDocumentCameraViewController.isSupported {
+            if scannerMode == .document, VNDocumentCameraViewController.isSupported {
                 DocumentScannerView { scannedImages in
                     self.scannedImages = scannedImages
                     self.prepareNamingDialog(for: scannedImages)
@@ -741,6 +749,16 @@ struct DocumentsView: View {
                     processScannedText(scannedText)
                 }
             }
+        }
+        .alert("Camera Access Needed", isPresented: $showingCameraPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Allow camera access to scan documents.")
         }
         .alert("Name Document", isPresented: $showingNamingDialog) {
             TextField("Document name", text: $customName)
@@ -968,6 +986,36 @@ struct DocumentsView: View {
         // This function now only handles scanned documents since imported files keep original names
         finalizeDocument(with: safeName)
     }
+
+    private func startScan() {
+        if !VNDocumentCameraViewController.isSupported {
+            scannerMode = .simple
+            showingScanner = true
+            return
+        }
+
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            scannerMode = .document
+            showingScanner = true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        scannerMode = .document
+                        showingScanner = true
+                    } else {
+                        showingCameraPermissionAlert = true
+                    }
+                }
+            }
+        case .denied, .restricted:
+            showingCameraPermissionAlert = true
+        @unknown default:
+            showingCameraPermissionAlert = true
+        }
+    }
     
     private func processScannedText(_ text: String) {
         isProcessing = true
@@ -1026,7 +1074,7 @@ struct DocumentsView: View {
             }
         }
 
-        // Use AI to suggest document name (ONLY first 100 chars from page 1)
+        // Use AI to suggest document name based on page 1 OCR
         if !firstPageText.isEmpty && firstPageText != "No text found in image" && !firstPageText.contains("OCR failed") {
             print("Using AI to generate document name from OCR text")
             generateAIDocumentName(from: firstPageText)
@@ -1042,25 +1090,17 @@ struct DocumentsView: View {
 
     private func generateAIDocumentName(from text: String) {
         let prompt = """
-        <<<NAME_REQUEST>>>Create a short document title using the context from the provided OCR snippet (do not guess beyond it).
+        <<<NAME_REQUEST>>>Describe the OCR in exactly 3 words as specific as possible.
 
-        STRICT REQUIREMENTS:
-        - Exactly 2-3 words
-        - Use Title Case (First Letter Of Each Word Capitalized)
-        - Prefer specific words from the snippet (company, clinic, person, product, location)
-        - Be specific (e.g., "Mercy Hospital Bill", not just "Hospital Bill")
-        - Avoid broad words (e.g., country names like "Romania") unless the document is explicitly about that place
-        - Avoid generic words like "Document", "Text", "File"
-        - No file extensions
+        STRICT OUTPUT:
+        - English only
+        - Exactly 2 or 3 words (no more, no less)
+        - Avoid field labels or placeholders
+        - No punctuation, no quotes, no file extensions, no spaces
+        - All words with capital letters at start
 
-        Examples of good names:
-        - "UPS Contract"
-        - "Google Analysis"
-        - "Xcode Folder"
-        - "MedLife Invoice"
-
-        OCR Snippet (first 250 chars):
-        \(text.prefix(250))
+        OCR Snippet (first 300 chars):
+        \(text.prefix(300))
 
         Response format: Just the title, nothing else.
         """
@@ -1070,20 +1110,17 @@ struct DocumentsView: View {
             print("🏷️ DocumentsView: Got name suggestion result: \(String(describing: result))")
             DispatchQueue.main.async {
                 if let result = result as? String, !result.isEmpty {
-                    // Clean up the AI response, keep up to 4 words, then sanitize for filesystem
                     let cleanResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                    var words = cleanResult.components(separatedBy: .whitespacesAndNewlines)
-                        .filter { !$0.isEmpty }
-                    if let last = words.last, last.count < 3 {
-                        words.removeLast()
+                    let normalized = normalizeSuggestedTitle(cleanResult, fallbackText: text)
+                    let compacted = compactName(normalized)
+                    if compacted.isEmpty {
+                        self.suggestedName = compactName(heuristicName(from: text))
+                    } else {
+                        self.suggestedName = compacted
                     }
-                    words = Array(words.prefix(4))
-                    let joined = words.joined(separator: " ")
-                    let friendly = titleCase(sanitizeTitle(joined))
-                    self.suggestedName = friendly.isEmpty ? heuristicName(from: text) : friendly
                 } else {
                     print("❌ DocumentsView: Empty or nil name suggestion result")
-                    self.suggestedName = heuristicName(from: text)
+                    self.suggestedName = compactName(deriveTitleFromOCR(text))
                 }
                 self.customName = self.suggestedName
                 self.isProcessing = false
@@ -1117,6 +1154,158 @@ struct DocumentsView: View {
             let lw = w.lowercased()
             return lw.prefix(1).uppercased() + lw.dropFirst()
         }.joined(separator: " ")
+    }
+
+    private func normalizeSuggestedTitle(_ raw: String, fallbackText: String) -> String {
+        let cleaned = sanitizeTitle(raw)
+        let tokens = cleaned.split(separator: " ").map(String.init)
+        let filtered = filterMeaningfulTokens(tokens)
+        let limited = Array(filtered.prefix(3))
+        if limited.count == 3 {
+            return compactName(formatTitleWords(limited))
+        }
+
+        let fallback = deriveTitleFromOCR(fallbackText)
+        let normalizedFallback = fallback.isEmpty ? heuristicName(from: fallbackText) : fallback
+        return compactName(normalizedFallback)
+    }
+
+    private func deriveTitleFromOCR(_ text: String) -> String {
+        let ranked = rankedTokens(from: text, ocrFallback: text)
+        let base = buildTitle(from: ranked)
+        let normalized = base.isEmpty ? heuristicName(from: text) : base
+        return compactName(normalized)
+    }
+
+    private func compactName(_ s: String) -> String {
+        let noDigits = s.replacingOccurrences(of: "[0-9]+", with: "", options: .regularExpression)
+        let noSpaces = noDigits.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+        return noSpaces
+    }
+
+    private func filterMeaningfulTokens(_ tokens: [String]) -> [String] {
+        tokens
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count >= 3 }
+            .filter { !isBannedToken($0.lowercased()) }
+    }
+
+    private func buildTitle(from rankedTokens: [String]) -> String {
+        guard !rankedTokens.isEmpty else { return "" }
+
+        var words: [String] = []
+        for tok in rankedTokens {
+            if words.count >= 3 { break }
+            if words.contains(where: { $0.caseInsensitiveCompare(tok) == .orderedSame }) { continue }
+            words.append(tok)
+        }
+
+        let limited = Array(words.prefix(3))
+        if limited.count < 2 { return "" }
+        return formatTitleWords(limited)
+    }
+
+    private func tokenizeOCR(_ text: String) -> [(token: String, original: String)] {
+        let parts = text.split { !$0.isLetter && !$0.isNumber }
+        return parts.map { part in
+            let original = String(part)
+            let token = sanitizeTitle(original).lowercased()
+            return (token: token, original: original)
+        }
+    }
+
+    private func rankedTokens(from text: String, ocrFallback: String) -> [String] {
+        let combined = "\(text) \(ocrFallback)"
+        let snippet = String(combined.prefix(500))
+        let tokens = tokenizeOCR(snippet)
+
+        var frequency: [String: Int] = [:]
+        for t in tokens where !t.token.isEmpty {
+            frequency[t.token, default: 0] += 1
+        }
+
+        let docTypes = docTypeTokenSet()
+
+        func score(token: String, original: String) -> Int {
+            let lower = token.lowercased()
+            if lower.isEmpty || isBannedToken(lower) { return -100 }
+
+            var s = 0
+            if isAcronym(original) { s += 6 }
+            if isCapitalized(original) { s += 5 }
+            if docTypes.contains(lower) { s += 4 }
+            if (4...14).contains(lower.count) { s += 2 }
+            if let f = frequency[lower] { s += min(f, 4) }
+
+            // Penalize vague lowercase-only tokens unless they are a known doc type.
+            if original == original.lowercased() && !docTypes.contains(lower) {
+                s -= 3
+            }
+            return s
+        }
+
+        let scored = tokens.map { (original: $0.original, token: $0.token, score: score(token: $0.token, original: $0.original)) }
+            .filter { $0.score > 0 }
+            .sorted { a, b in
+                if a.score != b.score { return a.score > b.score }
+                return a.token.count > b.token.count
+            }
+
+        let unique = scored.reduce(into: [String]()) { acc, item in
+            if acc.contains(where: { $0.caseInsensitiveCompare(item.original) == .orderedSame }) { return }
+            acc.append(item.original)
+        }
+
+        return unique
+    }
+
+    private func docTypeTokenSet() -> Set<String> {
+        return Set([
+            "receipt","invoice","results","report","contract","statement","bill","summary","analysis","certificate",
+            "license","passport","agreement","order","shipment","delivery","medical","lab","test","prescription",
+            "diagnosis","policy","cover","resume","cv"
+        ])
+    }
+
+    private func formatTitleWords(_ words: [String]) -> String {
+        let cleaned = words
+            .map { sanitizeTitle($0) }
+            .filter { !$0.isEmpty }
+
+        let formatted = cleaned.map { w -> String in
+            if isAcronym(w) {
+                return w.uppercased()
+            }
+            let lower = w.lowercased()
+            return lower.prefix(1).uppercased() + lower.dropFirst()
+        }
+
+        return formatted.joined(separator: " ")
+    }
+
+    private func isCapitalized(_ word: String) -> Bool {
+        guard let first = word.unicodeScalars.first else { return false }
+        let isUpper = CharacterSet.uppercaseLetters.contains(first)
+        return isUpper && word.count >= 3
+    }
+
+    private func isAcronym(_ word: String) -> Bool {
+        let letters = word.filter { $0.isLetter }
+        if letters.count < 2 || letters.count > 5 { return false }
+        return letters == letters.uppercased()
+    }
+
+    private func isBannedToken(_ token: String) -> Bool {
+        let banned: Set<String> = [
+            "document","documents","file","files","scan","scanned","page","pages","image","images","photo","photos",
+            "text","data","content","copy","unknown","untitled","sample","example","draft"
+        ]
+        let stop: Set<String> = [
+            "the","and","for","with","that","this","from","are","was","were","have","has","had",
+            "you","your","they","their","them","not","but","can","will","would","should","could",
+            "a","an","to","of","in","on","at","as","by","or","be","is","it","we","i"
+        ]
+        return banned.contains(token) || stop.contains(token)
     }
 
     private func heuristicName(from text: String) -> String {
@@ -1284,7 +1473,7 @@ struct DocumentsView: View {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["en-US"]
+        request.recognitionLanguages = ["en-US", "en-GB"]
         
         var blocks: [OCRBlock] = []
         var recognizedText = ""
@@ -1381,7 +1570,7 @@ struct DocumentsView: View {
         // Ensure proper orientation and size for OCR
         guard let cgImage = image.cgImage else { return nil }
         
-        let targetSize: CGFloat = 2048 // Good balance between quality and performance
+        let targetSize: CGFloat = 2560 // Higher detail for OCR while keeping perf reasonable
         let imageSize = image.size
         let maxDimension = max(imageSize.width, imageSize.height)
         
@@ -2934,6 +3123,7 @@ struct DocumentScannerView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
         let scanner = VNDocumentCameraViewController()
         scanner.delegate = context.coordinator
+        scanner.modalPresentationStyle = .fullScreen
         return scanner
     }
     
