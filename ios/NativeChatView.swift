@@ -3546,36 +3546,15 @@ struct NativeChatView: View {
                     return
                 }
 
-                // Stage 1: titles only -> keep only titles that might match.
+                // Stage 1: summary prefixes first; still provide titles for explicit requests.
                 let titlesBlock = buildDocumentTitlesBlock(for: docsToSearch, maxDocs: 60)
-                let stage1Prompt = """
+                let summaryPrefixBlock = buildDocumentSummaryPrefixBlock(for: docsToSearch, maxDocs: 60, maxChars: 100)
+                let stage2Prompt = """
                 Document Titles:
                 \(titlesBlock)
 
-                Question: \(question)
-
-                Return only the titles that might contain the answer.
-                Reply with:
-                TITLES:
-                - <title>
-                or:
-                NONE
-                """
-                if activeChatGenerationId != generationId { return }
-                let stage1Reply = try await callLLM(edgeAI: edgeAI, prompt: stage1Prompt)
-
-                var stageDocs = parseTitleListReply(stage1Reply, allDocs: docsToSearch)
-                // If the model couldn't match titles, fall back to the full set and continue.
-                if stageDocs.isEmpty { stageDocs = docsToSearch }
-
-                // Stage 2: summary prefixes for selected (or all if none).
-                let summaryPrefixBlock = buildDocumentSummaryPrefixBlock(for: stageDocs, maxDocs: 60, maxChars: 100)
-                let stage2Prompt = """
                 Summary Prefixes (first 100 chars each):
                 \(summaryPrefixBlock)
-
-                Previous stage output:
-                \(stage1Reply.trimmingCharacters(in: .whitespacesAndNewlines))
 
                 Question: \(question)
 
@@ -3589,9 +3568,9 @@ struct NativeChatView: View {
                 if activeChatGenerationId != generationId { return }
                 let stage2Reply = try await callLLM(edgeAI: edgeAI, prompt: stage2Prompt)
 
-                var remainingDocs = parseTitleListReply(stage2Reply, allDocs: stageDocs)
-                // If summaries didn't match, keep the previous set and continue.
-                if remainingDocs.isEmpty { remainingDocs = stageDocs }
+                var remainingDocs = parseTitleListReply(stage2Reply, allDocs: docsToSearch)
+                // If summaries didn't match, keep the full set and continue.
+                if remainingDocs.isEmpty { remainingDocs = docsToSearch }
 
                 // Stage 3: full summary if multiple remain, else full OCR for the only doc.
                 var stage3Reply = ""
@@ -3754,11 +3733,8 @@ struct NativeChatView: View {
 
     private func buildDocumentSummaryPrefixBlock(for docs: [Document], maxDocs: Int, maxChars: Int) -> String {
         let lines = docs.prefix(maxDocs).map { doc -> String in
-            let summary = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            let hasSummary = !summary.isEmpty && summary != "Processing..." && summary != "Processing summary..."
-            let prefixSource = hasSummary ? summary : doc.content
-            let prefix = String(prefixSource.prefix(maxChars)).replacingOccurrences(of: "\n", with: " ")
-            return "\(doc.title): \(prefix)"
+            let ocrPrefix = String(doc.content.prefix(maxChars)).replacingOccurrences(of: "\n", with: " ")
+            return "Title - \"\(doc.title)\" Summary - \"\(ocrPrefix)\""
         }
         return lines.isEmpty ? "(No summaries)" : lines.joined(separator: "\n")
     }
@@ -3767,14 +3743,15 @@ struct NativeChatView: View {
         let lines = docs.prefix(maxDocs).map { doc -> String in
             let summary = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             let body = summary.isEmpty ? "(No summary)" : summary
-            return "\(doc.title):\n\(body)"
+            return "Title - \"\(doc.title)\"\nSummary - \"\(body)\""
         }
         return lines.isEmpty ? "(No summaries)" : lines.joined(separator: "\n\n")
     }
 
     private func buildDocumentOCRBlock(for doc: Document) -> String {
         let body = doc.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return body.isEmpty ? "(No OCR text)" : body
+        let ocrText = body.isEmpty ? "(No OCR text)" : body
+        return "Title - \"\(doc.title)\"\nOCR - \"\(ocrText)\""
     }
 
     private func filterDocumentsByTitleMatch(question: String, docs: [Document]) -> [Document] {
