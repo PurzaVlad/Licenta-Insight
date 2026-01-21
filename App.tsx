@@ -18,7 +18,7 @@ const MODEL_URL =
   'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q2_k.gguf';
 
 const SUMMARY_SYSTEM_PROMPT =
-  'Write a short summary in 2-4 sentences. The summary should read like: "The document is about ... . It also touches on ... . Then, it talks about ... ." Focus on the main themes and ideas, not every detail. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Do not talk about age or current year.';
+  'Write a medium-detail summary that covers the whole document, focusing on the main categories/topics rather than specifics. Keep it concise but flexible in length depending on document size (about 4-8 sentences). Mention the overall category if it is clear (e.g., legal, finance, medical, resume, notes). No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Do not talk about age or current year.';
 
 const CHAT_SYSTEM_PROMPT =
   'You have access to document titles, summaries, and OCR text provided in the prompt. Be analytical. Use that information when it is relevant to the user question. Do not default to quoting document content; if the user asks for titles, counts, lists, or high-level info and you are confident, answer without pulling full document content. If the user is doing small talk or specifying to ignore the documents, respond based on your general knowledge.';
@@ -171,6 +171,14 @@ useEffect(() => {
     return formatGemmaPrompt(messages);
   };
 
+  const stopTokensForModel = (): string[] => {
+    const lower = MODEL_FILENAME.toLowerCase();
+    if (lower.includes('qwen')) {
+      return ['<|im_end|>', '</s>'];
+    }
+    return ['<end_of_turn>', '</s>'];
+  };
+
   const processQueue = async () => {
     console.log('[EdgeAI] processQueue called, isRunning:', isRunningRef.current, 'queue length:', queueRef.current.length);
     if (isRunningRef.current) {
@@ -245,7 +253,7 @@ useEffect(() => {
                 temperature: 0.3,
                 top_p: 0.9,
                 repeat_penalty: 1.15,
-                stop: ["<end_of_turn>", "</s>"]
+                stop: stopTokensForModel()
               },
               () => {}
             );
@@ -289,7 +297,7 @@ useEffect(() => {
                 temperature: 0.4,
                 top_p: 0.9,
                 repeat_penalty: 1.1,
-                stop: ["<end_of_turn>", "</s>"]
+                stop: stopTokensForModel()
               },
               () => {}
             );
@@ -301,7 +309,7 @@ useEffect(() => {
               temperature: 0.35,
               top_p: 0.8,
               repeat_penalty: 1.25,
-              stop: ["<end_of_turn>", "</s>"]
+              stop: stopTokensForModel()
             };
 
             console.log('[EdgeAI] Calling context.completion with params:', Object.keys(completionParams));
@@ -316,6 +324,27 @@ useEffect(() => {
             text = (result?.text ?? '').trim();
           }
 
+          const dedupeRepeats = (input: string): string => {
+            const lines = input.split('\n');
+            const dedupedLines: string[] = [];
+            for (const line of lines) {
+              if (dedupedLines[dedupedLines.length - 1] !== line) {
+                dedupedLines.push(line);
+              }
+            }
+            const lineDeduped = dedupedLines.join('\n');
+            const sentences = lineDeduped.split(/(?<=[.!?])\s+/);
+            const dedupedSentences: string[] = [];
+            for (const sentence of sentences) {
+              const trimmed = sentence.trim();
+              if (!trimmed) continue;
+              if (dedupedSentences[dedupedSentences.length - 1] !== trimmed) {
+                dedupedSentences.push(trimmed);
+              }
+            }
+            return dedupedSentences.join(' ').trim();
+          };
+
           // strip only template artifacts
           text = text
             .replace(/<start_of_turn>/g, '')
@@ -324,6 +353,7 @@ useEffect(() => {
             .replace(/<\|im_end\|>/g, '')
             .replace(/^\s*model\s*\n/i, '')
             .trim();
+          text = dedupeRepeats(text);
 
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;

@@ -9,7 +9,6 @@ class DocumentManager: ObservableObject {
     @Published var documents: [Document] = []
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
-    @Published var activeFolderNavigationId: UUID? = nil
     private let documentsKey = "SavedDocuments_v2" // legacy (migration only)
     private let documentsFileName = "SavedDocuments_v2.json"
 
@@ -423,7 +422,7 @@ class DocumentManager: ObservableObject {
     func generateSummary(for document: Document, force: Bool = false) {
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
-        let prompt = "<<<SUMMARY_REQUEST>>>Write a short summary in 2-4 sentences. The summary should read like: \"The document is about ... . It also touches on ... . Then, it talks about ... .\" Focus on the main themes and ideas, not every detail. No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word \"Summary\". Do not talk about age or current year.:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>\(document.content)"
 
         print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
         if force {
