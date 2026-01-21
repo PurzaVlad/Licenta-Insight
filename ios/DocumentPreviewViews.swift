@@ -72,7 +72,7 @@ struct DocumentDetailView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         // Document type indicator
-                        HStack {
+                        HStack() {
                             Image(systemName: iconForDocumentType(document.type))
                                 .foregroundColor(.blue)
                             Text(document.type.rawValue)
@@ -198,7 +198,7 @@ struct DocumentDetailView: View {
                 Button(action: {
                     prepareDocumentForPreview()
                 }) {
-                    HStack {
+                    HStack(alignment: .top) {
                         Image(systemName: "doc.magnifyingglass")
                         Text("Preview")
                             .font(.caption.weight(.medium))
@@ -730,22 +730,55 @@ struct DocumentPreviewContainerView: View {
 
             // Top overlay with title and buttons
             VStack {
-                HStack {
-                    // Back button
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.black.opacity(0.6))
-                            .clipShape(Circle())
+                ZStack(alignment: .top) {
+                    HStack(alignment: .top) {
+                        // Back button
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Color.black.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                        .padding(.leading, 20)
+                        
+                        Spacer()
+                        
+                        // Search button
+                        VStack(spacing: 10) {
+                            Button {
+                                if document != nil {
+                                    showingSearchSheet = true
+                                } else {
+                                    // Fallback to QuickLook search when no document context exists.
+                                    triggerSearch()
+                                }
+                            } label: {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(Color.black.opacity(0.6))
+                                    .clipShape(Circle())
+                            }
+
+                            Button {
+                                shareCurrent()
+                            } label: {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(Color.black.opacity(0.6))
+                                    .clipShape(Circle())
+                            }
+                        }
+                        .padding(.trailing, 20)
                     }
-                    .padding(.leading, 20)
-                    
-                    Spacer()
-                    
+
                     // Document title
                     Text(document.map { splitDisplayTitle($0.title).base } ?? "Preview")
                         .font(.headline)
@@ -756,69 +789,46 @@ struct DocumentPreviewContainerView: View {
                         .background(Color.black.opacity(0.6))
                         .clipShape(RoundedRectangle(cornerRadius: 20))
                         .lineLimit(1)
-                    
-                    Spacer()
-                    
-                    // Search button
-                    Button {
-                        if document != nil {
-                            showingSearchSheet = true
-                        } else {
-                            // Fallback to QuickLook search when no document context exists.
-                            triggerSearch()
-                        }
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.black.opacity(0.6))
-                            .clipShape(Circle())
-                    }
-                    .padding(.trailing, 20)
+                        .frame(maxWidth: .infinity)
                 }
-                .padding(.top, 15)
+                .padding(.top, 10)
                 
                 Spacer()
             }
 
             // Bottom buttons
-            VStack {
-                Spacer()
-                HStack {
-                    // Info button bottom-left
-                    if document != nil {
-                        Button {
-                            showingInfo = true
-                        } label: {
-                            Image(systemName: "info.circle")
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundColor(.white)
-                                .frame(width: 54, height: 54)
-                                .background(Color(.systemGray))
-                                .clipShape(Circle())
-                        }
-                        .padding(.leading, 20)
+            ZStack {
+                if document != nil {
+                    Button {
+                        showingInfo = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 54, height: 54)
+                            .background(Color(.systemGray))
+                            .clipShape(Circle())
                     }
-                    
-                    Spacer()
-                    
-                    // AI button bottom-right
-                    if onAISummary != nil {
-                        Button {
-                            onAISummary?()
-                        } label: {
-                            Image(systemName: "brain.head.profile")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(.white)
-                                .frame(width: 50, height: 50)
-                                .background(Color(.systemBlue))
-                                .clipShape(Circle())
-                        }
-                        .padding(.trailing, 20)
-                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .padding(.leading, 20)
+                    .padding(.bottom, 8)
                 }
-                .padding(.bottom, 50)
+
+                if onAISummary != nil {
+                    Button {
+                        onAISummary?()
+                    } label: {
+                        Image(systemName: "brain.head.profile")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 50, height: 50)
+                            .background(Color(.systemBlue))
+                            .clipShape(Circle())
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 8)
+                }
             }
         }
         .sheet(isPresented: $showingInfo) {
@@ -836,6 +846,70 @@ struct DocumentPreviewContainerView: View {
     private func triggerSearch() {
         // Directly trigger search on the preview controller if available
         previewController?.triggerSearchDirectly()
+    }
+
+    private func shareCurrent() {
+        let item = shareURLForCurrent() ?? url
+        let activity = UIActivityViewController(activityItems: [item], applicationActivities: nil)
+        guard let root = topMostViewController() else { return }
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = root.view
+            popover.sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        root.present(activity, animated: true)
+    }
+
+    private func shareURLForCurrent() -> URL? {
+        guard let document else { return nil }
+        let parts = splitDisplayTitle(document.title)
+        let safeBase = parts.base.replacingOccurrences(of: "/", with: "-")
+        let base = safeBase.isEmpty ? "Document" : safeBase
+        let ext = parts.ext.isEmpty ? fallbackExtension(for: document) : parts.ext
+        let filename = parts.ext.isEmpty ? "\(base).\(ext)" : "\(base).\(parts.ext)"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+
+        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        if let data = try? Data(contentsOf: url) {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        if !document.content.isEmpty, let data = document.content.data(using: .utf8) {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        return nil
+    }
+
+    private func fallbackExtension(for document: Document) -> String {
+        switch document.type {
+        case .pdf: return "pdf"
+        case .docx: return "docx"
+        case .ppt: return "ppt"
+        case .pptx: return "pptx"
+        case .xls: return "xls"
+        case .xlsx: return "xlsx"
+        case .text: return "txt"
+        case .scanned: return "pdf"
+        case .image: return "jpg"
+        case .zip: return "zip"
+        }
+    }
+
+    private func topMostViewController() -> UIViewController? {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return nil }
+        guard let window = scene.windows.first(where: { $0.isKeyWindow }) else { return nil }
+        var controller = window.rootViewController
+        while let presented = controller?.presentedViewController {
+            controller = presented
+        }
+        return controller
     }
 
 }

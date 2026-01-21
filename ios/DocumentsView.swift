@@ -146,7 +146,8 @@ struct DocumentsView: View {
                             documentToMove = document
                         },
                         onDelete: { deleteDocument(document) },
-                        onConvert: { convertDocument(document) }
+                        onConvert: { convertDocument(document) },
+                        onShare: { shareDocuments([document]) }
                     )
                     .listRowBackground(Color.clear)
                 }
@@ -203,7 +204,8 @@ struct DocumentsView: View {
                             documentToMove = document
                         },
                             onDelete: { deleteDocument(document) },
-                            onConvert: { convertDocument(document) }
+                            onConvert: { convertDocument(document) },
+                            onShare: { shareDocuments([document]) }
                         )
                     }
                 }
@@ -316,6 +318,9 @@ struct DocumentsView: View {
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
                         if isSelectionMode {
                             Menu {
+                                Button("Share Selected") {
+                                    shareSelectedDocuments()
+                                }
                                 Button("Delete Selected", role: .destructive) {
                                     showingBulkDeleteDialog = true
                                 }
@@ -1260,6 +1265,52 @@ struct DocumentsView: View {
             return "zip"
         }
     }
+
+    private func shareSelectedDocuments() {
+        let docs = documentManager.documents.filter { selectedDocumentIds.contains($0.id) }
+        shareDocuments(docs)
+    }
+
+    private func shareDocuments(_ documents: [Document]) {
+        let urls = documents.compactMap { makeShareURL(for: $0) }
+        guard !urls.isEmpty else { return }
+        presentShare(urls: urls)
+    }
+
+    private func makeShareURL(for document: Document) -> URL? {
+        let parts = splitDisplayTitle(document.title)
+        let safeBase = parts.base.replacingOccurrences(of: "/", with: "-")
+        let base = safeBase.isEmpty ? "Document" : safeBase
+        let ext = parts.ext.isEmpty ? getFileExtension(for: document.type) : parts.ext
+        let filename = parts.ext.isEmpty ? "\(base).\(ext)" : "\(base).\(parts.ext)"
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(filename)
+
+        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        if !document.content.isEmpty, let data = document.content.data(using: .utf8) {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        return nil
+    }
+
+    private func presentShare(urls: [URL]) {
+        let activity = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first,
+              let root = window.rootViewController else { return }
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = window
+            popover.sourceRect = CGRect(x: window.bounds.midX, y: window.bounds.midY, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        root.present(activity, animated: true)
+    }
 }
 
 struct DocumentRowView: View {
@@ -1276,6 +1327,7 @@ struct DocumentRowView: View {
     let onMoveToFolder: () -> Void
     let onDelete: () -> Void
     let onConvert: () -> Void
+    let onShare: () -> Void
     
     var body: some View {
         let parts = splitDisplayTitle(document.title)
@@ -1308,6 +1360,7 @@ struct DocumentRowView: View {
                     .frame(width: 28, height: 28)
             } else {
                 Menu {
+                    Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
                     Button(action: onRename) { Label("Rename", systemImage: "pencil") }
                     Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
                     Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
@@ -1401,6 +1454,7 @@ struct DocumentGridItemView: View {
     let onMoveToFolder: () -> Void
     let onDelete: () -> Void
     let onConvert: () -> Void
+    let onShare: () -> Void
 
     var body: some View {
         let parts = splitDisplayTitle(document.title)
@@ -1442,6 +1496,7 @@ struct DocumentGridItemView: View {
                         .padding(.trailing, 6)
                 } else {
                     Menu {
+                        Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
                         Button(action: onRename) { Label("Rename", systemImage: "pencil") }
                         Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
                         Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
@@ -1739,7 +1794,8 @@ struct FolderDocumentsView: View {
                                 documentToMove = document
                             },
                             onDelete: { documentManager.deleteDocument(document) },
-                            onConvert: { }
+                            onConvert: { },
+                            onShare: { shareDocuments([document]) }
                         )
                         .listRowBackground(Color.clear)
                     }
@@ -1786,7 +1842,8 @@ struct FolderDocumentsView: View {
                                 documentToMove = document
                             },
                                 onDelete: { documentManager.deleteDocument(document) },
-                                onConvert: { }
+                                onConvert: { },
+                                onShare: { shareDocuments([document]) }
                             )
                         }
                     }
@@ -1810,6 +1867,9 @@ struct FolderDocumentsView: View {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 if isSelectionMode {
                     Menu {
+                        Button("Share Selected") {
+                            shareSelectedDocuments()
+                        }
                         Button("Delete Selected", role: .destructive) {
                             showingBulkDeleteDialog = true
                         }
@@ -2053,6 +2113,52 @@ struct FolderDocumentsView: View {
         }
 
         clearSelection()
+    }
+
+    private func shareSelectedDocuments() {
+        let docs = documentManager.documents.filter { selectedDocumentIds.contains($0.id) }
+        shareDocuments(docs)
+    }
+
+    private func shareDocuments(_ documents: [Document]) {
+        let urls = documents.compactMap { makeShareURL(for: $0) }
+        guard !urls.isEmpty else { return }
+        presentShare(urls: urls)
+    }
+
+    private func makeShareURL(for document: Document) -> URL? {
+        let parts = splitDisplayTitle(document.title)
+        let safeBase = parts.base.replacingOccurrences(of: "/", with: "-")
+        let base = safeBase.isEmpty ? "Document" : safeBase
+        let ext = parts.ext.isEmpty ? fileExtension(for: document.type) : parts.ext
+        let filename = parts.ext.isEmpty ? "\(base).\(ext)" : "\(base).\(parts.ext)"
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(filename)
+
+        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        if !document.content.isEmpty, let data = document.content.data(using: .utf8) {
+            try? data.write(to: tempURL)
+            return tempURL
+        }
+
+        return nil
+    }
+
+    private func presentShare(urls: [URL]) {
+        let activity = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first,
+              let root = window.rootViewController else { return }
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = window
+            popover.sourceRect = CGRect(x: window.bounds.midX, y: window.bounds.midY, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        root.present(activity, animated: true)
     }
 
 }
