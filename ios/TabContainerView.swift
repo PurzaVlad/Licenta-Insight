@@ -72,7 +72,7 @@ struct TabContainerView: View {
         }
         .onAppear {
             applyUserInterfaceStyle()
-            for doc in documentManager.documents where isSummaryPlaceholder(doc.summary) {
+            for doc in documentManager.documents where isSummaryPlaceholder(doc.summary) && doc.type != .zip {
                 documentManager.generateSummary(for: doc)
             }
             lockIfNeeded(force: true)

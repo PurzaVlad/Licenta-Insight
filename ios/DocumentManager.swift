@@ -420,6 +420,7 @@ class DocumentManager: ObservableObject {
     }
     
     func generateSummary(for document: Document, force: Bool = false) {
+        if document.type == .zip { return }
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         // This will integrate with EdgeAI to generate summaries
         let prompt = "<<<SUMMARY_REQUEST>>>\(document.content)"
@@ -538,6 +539,9 @@ class DocumentManager: ObservableObject {
         case "xml":
             content = extractTextFromXML(url: url)
             documentType = .text
+        case "zip":
+            content = "ZIP archive"
+            documentType = .zip
         case "ppt":
             content = "PowerPoint document - text extraction coming soon"
             documentType = .ppt

@@ -24,6 +24,7 @@
 		AEFE19AE2F20EE9400108CD3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */; };
 		AEFE19B02F20F03D00108CD3 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */; };
 		AEFE19B22F20F55F00108CD3 /* PDFEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19B12F20F55F00108CD3 /* PDFEditView.swift */; };
+		AEFE19B42F21089900108CD3 /* ZipExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19B32F21089900108CD3 /* ZipExportView.swift */; };
 		B12D6F9E03A4A66CA4E522E0 /* libPods-VaultAI.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 43A934517A58E224B45297CF /* libPods-VaultAI.a */; };
 		B51DE01B08C2900F75FA8AC0 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
@@ -54,6 +55,7 @@
 		AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		AEFE19B12F20F55F00108CD3 /* PDFEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFEditView.swift; sourceTree = "<group>"; };
+		AEFE19B32F21089900108CD3 /* ZipExportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZipExportView.swift; sourceTree = "<group>"; };
 		B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.debug.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.debug.xcconfig"; sourceTree = "<group>"; };
 		DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VaultAI.release.xcconfig"; path = "Target Support Files/Pods-VaultAI/Pods-VaultAI.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
@@ -74,6 +76,7 @@
 		13B07FAE1A68108700A75B9A /* VaultAI */ = {
 			isa = PBXGroup;
 			children = (
+				AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				AEDA82D22F1FBA4100550D74 /* ConversionView.swift */,
 				AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */,
@@ -310,6 +313,7 @@
 				AEE10FE32F0B0A8800D8EFF7 /* EdgeAI.m in Sources */,
 				AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */,
 				AEDA82D82F1FBA4100550D74 /* DocumentModels.swift in Sources */,
+				AEFE19B42F21089900108CD3 /* ZipExportView.swift in Sources */,
 				AEDA82D92F1FBA4100550D74 /* TabContainerView.swift in Sources */,
 				AEFE19B22F20F55F00108CD3 /* PDFEditView.swift in Sources */,
 				AEFE19AE2F20EE9400108CD3 /* SettingsView.swift in Sources */,

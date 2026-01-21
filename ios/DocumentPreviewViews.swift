@@ -390,6 +390,8 @@ struct DocumentDetailView: View {
             return "pdf"  // Scanned documents are typically saved as PDF
         case .image:
             return "jpg"
+        case .zip:
+            return "zip"
         }
     }
 }
@@ -1148,6 +1150,7 @@ struct DocumentInfoView: View {
         case .image: return "jpg"
         case .scanned: return "pdf"
         case .text: return "txt"
+        case .zip: return "zip"
         }
     }
 

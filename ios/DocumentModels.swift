@@ -37,6 +37,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         case image
         case scanned
         case text
+        case zip
     }
 
     init(
@@ -150,6 +151,7 @@ func fileExtension(for type: Document.DocumentType) -> String {
     case .image: return "jpg"
     case .scanned: return "pdf"
     case .text: return "txt"
+    case .zip: return "zip"
     }
 }
 
@@ -167,6 +169,7 @@ func fileTypeLabel(documentType: Document.DocumentType, titleParts: (base: Strin
     case .pptx: return "PPTX"
     case .xls: return "XLS"
     case .xlsx: return "XLSX"
+    case .zip: return "ZIP"
     }
 }
 
@@ -186,5 +189,7 @@ func iconForDocumentType(_ type: Document.DocumentType) -> String {
         return "doc.text.viewfinder"
     case .text:
         return "doc.plaintext"
+    case .zip:
+        return "archivebox"
     }
 }

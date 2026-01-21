@@ -56,6 +56,14 @@ struct DocumentsView: View {
     @State private var showingDeleteFolderDialog = false
     @State private var folderToDelete: DocumentFolder?
 
+    @State private var showingZipExportSheet = false
+
+    @State private var isSelectionMode = false
+    @State private var selectedDocumentIds: Set<UUID> = []
+    @State private var selectedFolderIds: Set<UUID> = []
+    @State private var showingBulkDeleteDialog = false
+    @State private var showingBulkMoveSheet = false
+
     @State private var draggingDocumentId: UUID?
 
     private var rootFolders: [DocumentFolder] { documentManager.folders(in: nil) }
@@ -102,6 +110,9 @@ struct DocumentsView: View {
                             FolderRowView(
                                 folder: folder,
                                 docCount: documentManager.documents(in: folder.id).count,
+                                isSelected: selectedFolderIds.contains(folder.id),
+                                isSelectionMode: isSelectionMode,
+                                onSelectToggle: { toggleFolderSelection(folder.id) },
                                 onOpen: { activeFolder = folder },
                                 onRename: {
                                     folderToRename = folder
@@ -117,6 +128,9 @@ struct DocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
+                            .onLongPressGesture {
+                                beginSelection(folderId: folder.id)
+                            }
                             .onDrop(of: [UTType.text], isTargeted: nil) { providers in
                                 handleFolderDrop(providers: providers, folderId: folder.id)
                             }
@@ -127,6 +141,9 @@ struct DocumentsView: View {
                 ForEach(rootDocs, id: \.id) { document in
                     DocumentRowView(
                         document: document,
+                        isSelected: selectedDocumentIds.contains(document.id),
+                        isSelectionMode: isSelectionMode,
+                        onSelectToggle: { toggleDocumentSelection(document.id) },
                         onOpen: { openDocumentPreview(document: document) },
                         onRename: { renameDocument(document) },
                         onMoveToFolder: {
@@ -136,6 +153,9 @@ struct DocumentsView: View {
                         onConvert: { convertDocument(document) }
                     )
                     .listRowBackground(Color.clear)
+                    .onLongPressGesture {
+                        beginSelection(documentId: document.id)
+                    }
                     .onDrag {
                         draggingDocumentId = document.id
                         return NSItemProvider(object: document.id.uuidString as NSString)
@@ -166,6 +186,9 @@ struct DocumentsView: View {
                         FolderGridItemView(
                             folder: folder,
                             docCount: documentManager.documents(in: folder.id).count,
+                            isSelected: selectedFolderIds.contains(folder.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleFolderSelection(folder.id) },
                             onOpen: { activeFolder = folder },
                             onRename: {
                                 folderToRename = folder
@@ -181,6 +204,9 @@ struct DocumentsView: View {
                                 showingDeleteFolderDialog = true
                             }
                         )
+                        .onLongPressGesture {
+                            beginSelection(folderId: folder.id)
+                        }
                         .onDrop(of: [UTType.text], isTargeted: nil) { providers in
                             handleFolderDrop(providers: providers, folderId: folder.id)
                         }
@@ -189,6 +215,9 @@ struct DocumentsView: View {
                     ForEach(rootDocs, id: \.id) { document in
                         DocumentGridItemView(
                             document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
                             onOpen: { openDocumentPreview(document: document) },
                             onRename: { renameDocument(document) },
                         onMoveToFolder: {
@@ -197,6 +226,9 @@ struct DocumentsView: View {
                             onDelete: { deleteDocument(document) },
                             onConvert: { convertDocument(document) }
                         )
+                        .onLongPressGesture {
+                            beginSelection(documentId: document.id)
+                        }
                         .onDrag {
                             draggingDocumentId = document.id
                             return NSItemProvider(object: document.id.uuidString as NSString)
@@ -316,36 +348,60 @@ struct DocumentsView: View {
                             .fixedSize(horizontal: true, vertical: false)
                     }
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
-                        Button {
-                            documentManager.setPrefersGridLayout(false)
-                        } label: {
-                            Image(systemName: "list.bullet")
-                                .font(.system(size: 16, weight: layoutMode == .list ? .semibold : .regular))
-                        }
-                        .foregroundColor(layoutMode == .list ? .primary : .secondary)
-
-                        Button {
-                            documentManager.setPrefersGridLayout(true)
-                        } label: {
-                            Image(systemName: layoutMode == .grid ? "square.grid.3x3.fill" : "square.grid.3x3")
-                                .font(.system(size: 16, weight: layoutMode == .grid ? .semibold : .regular))
-                        }
-                        .foregroundColor(layoutMode == .grid ? .primary : .secondary)
-
-                        Menu {
-                            Button("New Folder") {
-                                newFolderName = ""
-                                showingNewFolderDialog = true
+                        if isSelectionMode {
+                            Menu {
+                                Button("Delete Selected", role: .destructive) {
+                                    showingBulkDeleteDialog = true
+                                }
+                                Button("Move Selected") {
+                                    showingBulkMoveSheet = true
+                                }
+                                Button("Create Zip") {
+                                    showingZipExportSheet = true
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
                             }
 
-                            Button("Scan Document") {
-                                startScan()
+                            Button("Done") {
+                                clearSelection()
                             }
-                            Button("Import Files") {
-                                showingDocumentPicker = true
+                        } else {
+                            Button {
+                                documentManager.setPrefersGridLayout(false)
+                            } label: {
+                                Image(systemName: "list.bullet")
+                                    .font(.system(size: 16, weight: layoutMode == .list ? .semibold : .regular))
                             }
-                        } label: {
-                            Image(systemName: "plus")
+                            .foregroundColor(layoutMode == .list ? .primary : .secondary)
+
+                            Button {
+                                documentManager.setPrefersGridLayout(true)
+                            } label: {
+                                Image(systemName: layoutMode == .grid ? "square.grid.3x3.fill" : "square.grid.3x3")
+                                    .font(.system(size: 16, weight: layoutMode == .grid ? .semibold : .regular))
+                            }
+                            .foregroundColor(layoutMode == .grid ? .primary : .secondary)
+
+                            Menu {
+                                Button("New Folder") {
+                                    newFolderName = ""
+                                    showingNewFolderDialog = true
+                                }
+
+                                Button("Create Zip") {
+                                    showingZipExportSheet = true
+                                }
+
+                                Button("Scan Document") {
+                                    startScan()
+                                }
+                                Button("Import Files") {
+                                    showingDocumentPicker = true
+                                }
+                            } label: {
+                                Image(systemName: "plus")
+                            }
                         }
                     }
                 }
@@ -386,6 +442,26 @@ struct DocumentsView: View {
         } message: { folder in
             Text("Choose what to do with items inside \"\(folder.name)\".")
         }
+        .confirmationDialog("Delete Selected Items", isPresented: $showingBulkDeleteDialog) {
+            Button("Delete", role: .destructive) {
+                deleteSelectedItems()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will delete all selected items and their contents.")
+        }
+        .sheet(isPresented: $showingBulkMoveSheet) {
+            BulkMoveSheet(
+                folders: documentManager.folders,
+                onSelectParent: { parentId in
+                    moveSelectedItems(to: parentId)
+                    showingBulkMoveSheet = false
+                },
+                onCancel: {
+                    showingBulkMoveSheet = false
+                }
+            )
+        }
         .sheet(isPresented: $showingMoveFolderSheet) {
             if let folder = folderToMove {
                 let invalid = documentManager.descendantFolderIds(of: folder.id).union([folder.id])
@@ -425,6 +501,13 @@ struct DocumentsView: View {
             DocumentPicker { urls in
                 processImportedFiles(urls)
             }
+        }
+        .sheet(isPresented: $showingZipExportSheet) {
+            ZipExportView(
+                preselectedDocumentIds: selectedDocumentIds,
+                preselectedFolderIds: selectedFolderIds
+            )
+                .environmentObject(documentManager)
         }
         .onAppear {
             // Force refresh when the view appears to show newly converted documents
@@ -566,12 +649,78 @@ struct DocumentsView: View {
             documentManager.deleteDocument(rootDocs[index])
         }
     }
-    
+
     // Menu actions
     private func renameDocument(_ document: Document) {
         documentToRename = document
         renameText = splitDisplayTitle(document.title).base
         showingRenameDialog = true
+    }
+
+    private func beginSelection(documentId: UUID? = nil, folderId: UUID? = nil) {
+        if !isSelectionMode {
+            isSelectionMode = true
+        }
+        if let documentId {
+            toggleDocumentSelection(documentId)
+        }
+        if let folderId {
+            toggleFolderSelection(folderId)
+        }
+    }
+
+    private func toggleDocumentSelection(_ id: UUID) {
+        if selectedDocumentIds.contains(id) {
+            selectedDocumentIds.remove(id)
+        } else {
+            selectedDocumentIds.insert(id)
+        }
+    }
+
+    private func toggleFolderSelection(_ id: UUID) {
+        if selectedFolderIds.contains(id) {
+            selectedFolderIds.remove(id)
+        } else {
+            selectedFolderIds.insert(id)
+        }
+    }
+
+    private func clearSelection() {
+        isSelectionMode = false
+        selectedDocumentIds.removeAll()
+        selectedFolderIds.removeAll()
+    }
+
+    private func deleteSelectedItems() {
+        let docIds = selectedDocumentIds
+        let folderIds = selectedFolderIds
+
+        for id in docIds {
+            if let doc = documentManager.documents.first(where: { $0.id == id }) {
+                documentManager.deleteDocument(doc)
+            }
+        }
+
+        for folderId in folderIds {
+            documentManager.deleteFolder(folderId: folderId, mode: .deleteAllItems)
+        }
+
+        clearSelection()
+    }
+
+    private func moveSelectedItems(to parentId: UUID?) {
+        let docIds = selectedDocumentIds
+        let folderIds = selectedFolderIds
+
+        for id in docIds {
+            documentManager.moveDocument(documentId: id, toFolder: parentId)
+        }
+
+        for folderId in folderIds {
+            documentManager.moveFolder(folderId: folderId, toParent: parentId)
+        }
+
+        clearSelection()
     }
     
     private func deleteDocument(_ document: Document) {
@@ -1158,6 +1307,8 @@ struct DocumentsView: View {
             return "pdf"
         case .image:
             return "jpg"
+        case .zip:
+            return "zip"
         }
     }
 }
@@ -1184,6 +1335,10 @@ struct DocumentReorderDropDelegate: DropDelegate {
 struct DocumentRowView: View {
     let document: Document
     @State private var isGeneratingSummary = false
+
+    let isSelected: Bool
+    let isSelectionMode: Bool
+    let onSelectToggle: () -> Void
 
     let onOpen: () -> Void
     let onRename: () -> Void
@@ -1215,23 +1370,34 @@ struct DocumentRowView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, 34)
 
-            Menu {
-                Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .medium))
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(isSelected ? .blue : .secondary)
                     .frame(width: 28, height: 28)
-                    .foregroundColor(.secondary)
+            } else {
+                Menu {
+                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                    Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+                    Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
+                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 28, height: 28)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(PlainButtonStyle())
             }
-            .buttonStyle(PlainButtonStyle())
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            onOpen()
+            if isSelectionMode {
+                onSelectToggle()
+            } else {
+                onOpen()
+            }
         }
     }
     
@@ -1290,6 +1456,9 @@ struct DocumentRowView: View {
 
 struct DocumentGridItemView: View {
     let document: Document
+    let isSelected: Bool
+    let isSelectionMode: Bool
+    let onSelectToggle: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMoveToFolder: () -> Void
@@ -1328,21 +1497,29 @@ struct DocumentGridItemView: View {
             .cornerRadius(10)
             .frame(maxWidth: .infinity, alignment: .topTrailing)
             .overlay(alignment: .topTrailing) {
-                Menu {
-                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                    Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                    Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(.secondary)
-                        .contentShape(Rectangle())
+                if isSelectionMode {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(isSelected ? .blue : .secondary)
+                        .padding(.top, 6)
+                        .padding(.trailing, 6)
+                } else {
+                    Menu {
+                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                        Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+                        Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
+                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(.top, 6)
+                    .padding(.trailing, 6)
                 }
-                .buttonStyle(PlainButtonStyle())
-                .padding(.top, 6)
-                .padding(.trailing, 6)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1360,7 +1537,11 @@ struct DocumentGridItemView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .onTapGesture {
-            onOpen()
+            if isSelectionMode {
+                onSelectToggle()
+            } else {
+                onOpen()
+            }
         }
     }
 }
@@ -1368,6 +1549,9 @@ struct DocumentGridItemView: View {
 struct FolderRowView: View {
     let folder: DocumentFolder
     let docCount: Int
+    let isSelected: Bool
+    let isSelectionMode: Bool
+    let onSelectToggle: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMove: () -> Void
@@ -1375,7 +1559,13 @@ struct FolderRowView: View {
 
     var body: some View {
         ZStack(alignment: .trailing) {
-            Button(action: onOpen) {
+            Button(action: {
+                if isSelectionMode {
+                    onSelectToggle()
+                } else {
+                    onOpen()
+                }
+            }) {
                 HStack(spacing: 10) {
                     Image(systemName: "folder")
                         .foregroundColor(.blue)
@@ -1394,17 +1584,24 @@ struct FolderRowView: View {
             }
             .buttonStyle(PlainButtonStyle())
 
-            Menu {
-                Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .medium))
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(isSelected ? .blue : .secondary)
                     .frame(width: 28, height: 28)
-                    .foregroundColor(.secondary)
+            } else {
+                Menu {
+                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                    Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 28, height: 28)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(PlainButtonStyle())
             }
-            .buttonStyle(PlainButtonStyle())
         }
         .padding(.vertical, 4)
     }
@@ -1413,6 +1610,9 @@ struct FolderRowView: View {
 struct FolderGridItemView: View {
     let folder: DocumentFolder
     let docCount: Int
+    let isSelected: Bool
+    let isSelectionMode: Bool
+    let onSelectToggle: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMove: () -> Void
@@ -1434,20 +1634,28 @@ struct FolderGridItemView: View {
             .cornerRadius(10)
             .frame(maxWidth: .infinity, alignment: .topTrailing)
             .overlay(alignment: .topTrailing) {
-                Menu {
-                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                    Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(.secondary)
-                        .contentShape(Rectangle())
+                if isSelectionMode {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(isSelected ? .blue : .secondary)
+                        .padding(.top, 6)
+                        .padding(.trailing, 6)
+                } else {
+                    Menu {
+                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                        Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 24, height: 24)
+                            .foregroundColor(.secondary)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(.top, 6)
+                    .padding(.trailing, 6)
                 }
-                .buttonStyle(PlainButtonStyle())
-                .padding(.top, 6)
-                .padding(.trailing, 6)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1465,7 +1673,11 @@ struct FolderGridItemView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .onTapGesture {
-            onOpen()
+            if isSelectionMode {
+                onSelectToggle()
+            } else {
+                onOpen()
+            }
         }
     }
 }
@@ -1478,6 +1690,13 @@ struct FolderDocumentsView: View {
     @State private var documentToMove: Document?
 
     @State private var activeSubfolder: DocumentFolder?
+
+    @State private var isSelectionMode = false
+    @State private var selectedDocumentIds: Set<UUID> = []
+    @State private var selectedFolderIds: Set<UUID> = []
+    @State private var showingBulkDeleteDialog = false
+    @State private var showingBulkMoveSheet = false
+    @State private var showingZipExportSheet = false
 
     @State private var showingRenameFolderDialog = false
     @State private var renameFolderText = ""
@@ -1529,23 +1748,29 @@ struct FolderDocumentsView: View {
                             FolderRowView(
                                 folder: sub,
                                 docCount: documentManager.documents(in: sub.id).count,
+                                isSelected: selectedFolderIds.contains(sub.id),
+                                isSelectionMode: isSelectionMode,
+                                onSelectToggle: { toggleFolderSelection(sub.id) },
                                 onOpen: { activeSubfolder = sub },
                                 onRename: {
                                     folderToRename = sub
                                     renameFolderText = sub.name
-                                        showingRenameFolderDialog = true
-                                    },
-                                    onMove: {
-                                        folderToMove = sub
-                                        showingMoveFolderSheet = true
-                                    },
-                                    onDelete: {
-                                        folderToDelete = sub
-                                        showingDeleteFolderDialog = true
-                                    }
+                                    showingRenameFolderDialog = true
+                                },
+                                onMove: {
+                                    folderToMove = sub
+                                    showingMoveFolderSheet = true
+                                },
+                                onDelete: {
+                                    folderToDelete = sub
+                                    showingDeleteFolderDialog = true
+                                }
                             )
                             .onDrop(of: [UTType.text], isTargeted: nil) { providers in
                                 handleFolderDrop(providers: providers, folderId: sub.id)
+                            }
+                            .onLongPressGesture {
+                                beginSelection(folderId: sub.id)
                             }
                         }
                         }
@@ -1554,6 +1779,9 @@ struct FolderDocumentsView: View {
                     ForEach(docs, id: \ .id) { document in
                         DocumentRowView(
                             document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
                             onOpen: { onOpenDocument(document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
@@ -1563,6 +1791,9 @@ struct FolderDocumentsView: View {
                             onConvert: { }
                         )
                         .listRowBackground(Color.clear)
+                        .onLongPressGesture {
+                            beginSelection(documentId: document.id)
+                        }
                         .onDrag {
                             draggingDocumentId = document.id
                             return NSItemProvider(object: document.id.uuidString as NSString)
@@ -1583,6 +1814,9 @@ struct FolderDocumentsView: View {
                             FolderGridItemView(
                                 folder: sub,
                                 docCount: documentManager.documents(in: sub.id).count,
+                                isSelected: selectedFolderIds.contains(sub.id),
+                                isSelectionMode: isSelectionMode,
+                                onSelectToggle: { toggleFolderSelection(sub.id) },
                                 onOpen: { activeSubfolder = sub },
                                 onRename: {
                                     folderToRename = sub
@@ -1601,11 +1835,17 @@ struct FolderDocumentsView: View {
                             .onDrop(of: [UTType.text], isTargeted: nil) { providers in
                                 handleFolderDrop(providers: providers, folderId: sub.id)
                             }
+                            .onLongPressGesture {
+                                beginSelection(folderId: sub.id)
+                            }
                         }
 
                         ForEach(docs, id: \ .id) { document in
                         DocumentGridItemView(
                             document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
                             onOpen: { onOpenDocument(document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
@@ -1614,6 +1854,9 @@ struct FolderDocumentsView: View {
                                 onDelete: { documentManager.deleteDocument(document) },
                                 onConvert: { }
                             )
+                            .onLongPressGesture {
+                                beginSelection(documentId: document.id)
+                            }
                             .onDrag {
                                 draggingDocumentId = document.id
                                 return NSItemProvider(object: document.id.uuidString as NSString)
@@ -1644,21 +1887,41 @@ struct FolderDocumentsView: View {
         .navigationTitle(folder.name)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button {
-                    documentManager.setPrefersGridLayout(false)
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.system(size: 16, weight: layoutMode == .list ? .semibold : .regular))
-                }
-                .foregroundColor(layoutMode == .list ? .primary : .secondary)
+                if isSelectionMode {
+                    Menu {
+                        Button("Delete Selected", role: .destructive) {
+                            showingBulkDeleteDialog = true
+                        }
+                        Button("Move Selected") {
+                            showingBulkMoveSheet = true
+                        }
+                        Button("Create Zip") {
+                            showingZipExportSheet = true
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
 
-                Button {
-                    documentManager.setPrefersGridLayout(true)
-                } label: {
-                    Image(systemName: layoutMode == .grid ? "square.grid.3x3.fill" : "square.grid.3x3")
-                        .font(.system(size: 16, weight: layoutMode == .grid ? .semibold : .regular))
+                    Button("Done") {
+                        clearSelection()
+                    }
+                } else {
+                    Button {
+                        documentManager.setPrefersGridLayout(false)
+                    } label: {
+                        Image(systemName: "list.bullet")
+                            .font(.system(size: 16, weight: layoutMode == .list ? .semibold : .regular))
+                    }
+                    .foregroundColor(layoutMode == .list ? .primary : .secondary)
+
+                    Button {
+                        documentManager.setPrefersGridLayout(true)
+                    } label: {
+                        Image(systemName: layoutMode == .grid ? "square.grid.3x3.fill" : "square.grid.3x3")
+                            .font(.system(size: 16, weight: layoutMode == .grid ? .semibold : .regular))
+                    }
+                    .foregroundColor(layoutMode == .grid ? .primary : .secondary)
                 }
-                .foregroundColor(layoutMode == .grid ? .primary : .secondary)
             }
         }
         .sheet(item: $documentToMove) { doc in
@@ -1676,6 +1939,33 @@ struct FolderDocumentsView: View {
                     documentToMove = nil
                 }
             )
+        }
+        .confirmationDialog("Delete Selected Items", isPresented: $showingBulkDeleteDialog) {
+            Button("Delete", role: .destructive) {
+                deleteSelectedItems()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will delete all selected items and their contents.")
+        }
+        .sheet(isPresented: $showingBulkMoveSheet) {
+            BulkMoveSheet(
+                folders: documentManager.folders,
+                onSelectParent: { parentId in
+                    moveSelectedItems(to: parentId)
+                    showingBulkMoveSheet = false
+                },
+                onCancel: {
+                    showingBulkMoveSheet = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingZipExportSheet) {
+            ZipExportView(
+                preselectedDocumentIds: selectedDocumentIds,
+                preselectedFolderIds: selectedFolderIds
+            )
+            .environmentObject(documentManager)
         }
         .alert("Rename Document", isPresented: $showingRenameDialog) {
             TextField("Document name", text: $renameText)
@@ -1795,6 +2085,72 @@ struct FolderDocumentsView: View {
         showingRenameDialog = true
     }
 
+    private func beginSelection(documentId: UUID? = nil, folderId: UUID? = nil) {
+        if !isSelectionMode {
+            isSelectionMode = true
+        }
+        if let documentId {
+            toggleDocumentSelection(documentId)
+        }
+        if let folderId {
+            toggleFolderSelection(folderId)
+        }
+    }
+
+    private func toggleDocumentSelection(_ id: UUID) {
+        if selectedDocumentIds.contains(id) {
+            selectedDocumentIds.remove(id)
+        } else {
+            selectedDocumentIds.insert(id)
+        }
+    }
+
+    private func toggleFolderSelection(_ id: UUID) {
+        if selectedFolderIds.contains(id) {
+            selectedFolderIds.remove(id)
+        } else {
+            selectedFolderIds.insert(id)
+        }
+    }
+
+    private func clearSelection() {
+        isSelectionMode = false
+        selectedDocumentIds.removeAll()
+        selectedFolderIds.removeAll()
+    }
+
+    private func deleteSelectedItems() {
+        let docIds = selectedDocumentIds
+        let folderIds = selectedFolderIds
+
+        for id in docIds {
+            if let doc = documentManager.documents.first(where: { $0.id == id }) {
+                documentManager.deleteDocument(doc)
+            }
+        }
+
+        for folderId in folderIds {
+            documentManager.deleteFolder(folderId: folderId, mode: .deleteAllItems)
+        }
+
+        clearSelection()
+    }
+
+    private func moveSelectedItems(to parentId: UUID?) {
+        let docIds = selectedDocumentIds
+        let folderIds = selectedFolderIds
+
+        for id in docIds {
+            documentManager.moveDocument(documentId: id, toFolder: parentId)
+        }
+
+        for folderId in folderIds {
+            documentManager.moveFolder(folderId: folderId, toParent: parentId)
+        }
+
+        clearSelection()
+    }
+
 }
 
 struct MoveToFolderSheet: View {
@@ -1890,6 +2246,45 @@ struct MoveFolderSheet: View {
                                 Image(systemName: "checkmark")
                                     .foregroundColor(.blue)
                             }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Move")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Cancel") { onCancel() }
+                }
+            }
+        }
+    }
+}
+
+struct BulkMoveSheet: View {
+    let folders: [DocumentFolder]
+    let onSelectParent: (UUID?) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationView {
+            List {
+                Button {
+                    onSelectParent(nil)
+                } label: {
+                    HStack {
+                        Text("On My iPhone")
+                        Spacer()
+                    }
+                }
+
+                ForEach(folders.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })) { dest in
+                    Button {
+                        onSelectParent(dest.id)
+                    } label: {
+                        HStack {
+                            Text(dest.name)
+                            Spacer()
                         }
                     }
                 }

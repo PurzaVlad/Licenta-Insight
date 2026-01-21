@@ -955,6 +955,7 @@ struct ConversionResultSheet: View {
         case "docx", "doc": return .docx
         case "txt": return .text
         case "jpg", "jpeg", "png": return .image
+        case "zip": return .zip
         default: return .text
         }
     }
@@ -989,6 +990,8 @@ struct ConversionResultSheet: View {
             return "Converted PDF document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         case .image:
             return "Converted image document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+        case .zip:
+            return "ZIP archive - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         default:
             return "Converted document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         }
