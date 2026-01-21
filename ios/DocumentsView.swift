@@ -64,7 +64,7 @@ struct DocumentsView: View {
     @State private var showingBulkDeleteDialog = false
     @State private var showingBulkMoveSheet = false
 
-    @State private var draggingDocumentId: UUID?
+    
 
     private var rootFolders: [DocumentFolder] { documentManager.folders(in: nil) }
     private var rootDocs: [Document] { documentManager.documents(in: nil) }
@@ -113,6 +113,7 @@ struct DocumentsView: View {
                                 isSelected: selectedFolderIds.contains(folder.id),
                                 isSelectionMode: isSelectionMode,
                                 onSelectToggle: { toggleFolderSelection(folder.id) },
+                                onLongPress: { beginSelection(folderId: folder.id) },
                                 onOpen: { activeFolder = folder },
                                 onRename: {
                                     folderToRename = folder
@@ -128,12 +129,6 @@ struct DocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
-                            .onLongPressGesture {
-                                beginSelection(folderId: folder.id)
-                            }
-                            .onDrop(of: [UTType.text], isTargeted: nil) { providers in
-                                handleFolderDrop(providers: providers, folderId: folder.id)
-                            }
                         }
                     }
                 }
@@ -144,6 +139,7 @@ struct DocumentsView: View {
                         isSelected: selectedDocumentIds.contains(document.id),
                         isSelectionMode: isSelectionMode,
                         onSelectToggle: { toggleDocumentSelection(document.id) },
+                        onLongPress: { beginSelection(documentId: document.id) },
                         onOpen: { openDocumentPreview(document: document) },
                         onRename: { renameDocument(document) },
                         onMoveToFolder: {
@@ -153,19 +149,6 @@ struct DocumentsView: View {
                         onConvert: { convertDocument(document) }
                     )
                     .listRowBackground(Color.clear)
-                    .onLongPressGesture {
-                        beginSelection(documentId: document.id)
-                    }
-                    .onDrag {
-                        draggingDocumentId = document.id
-                        return NSItemProvider(object: document.id.uuidString as NSString)
-                    }
-                    .onDrop(of: [UTType.text], delegate: DocumentReorderDropDelegate(
-                        targetDocumentId: document.id,
-                        folderId: nil,
-                        draggingDocumentId: $draggingDocumentId,
-                        documentManager: documentManager
-                    ))
                 }
                 .onDelete { offsets in
                     for i in offsets {
@@ -183,33 +166,28 @@ struct DocumentsView: View {
             ScrollView {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                     ForEach(rootFolders) { folder in
-                        FolderGridItemView(
-                            folder: folder,
-                            docCount: documentManager.documents(in: folder.id).count,
-                            isSelected: selectedFolderIds.contains(folder.id),
-                            isSelectionMode: isSelectionMode,
-                            onSelectToggle: { toggleFolderSelection(folder.id) },
-                            onOpen: { activeFolder = folder },
-                            onRename: {
-                                folderToRename = folder
-                                renameFolderText = folder.name
-                                showingRenameFolderDialog = true
-                            },
-                            onMove: {
-                                folderToMove = folder
-                                showingMoveFolderSheet = true
-                            },
-                            onDelete: {
-                                folderToDelete = folder
-                                showingDeleteFolderDialog = true
-                            }
-                        )
-                        .onLongPressGesture {
-                            beginSelection(folderId: folder.id)
-                        }
-                        .onDrop(of: [UTType.text], isTargeted: nil) { providers in
-                            handleFolderDrop(providers: providers, folderId: folder.id)
-                        }
+                            FolderGridItemView(
+                                folder: folder,
+                                docCount: documentManager.documents(in: folder.id).count,
+                                isSelected: selectedFolderIds.contains(folder.id),
+                                isSelectionMode: isSelectionMode,
+                                onSelectToggle: { toggleFolderSelection(folder.id) },
+                                onLongPress: { beginSelection(folderId: folder.id) },
+                                onOpen: { activeFolder = folder },
+                                onRename: {
+                                    folderToRename = folder
+                                    renameFolderText = folder.name
+                                    showingRenameFolderDialog = true
+                                },
+                                onMove: {
+                                    folderToMove = folder
+                                    showingMoveFolderSheet = true
+                                },
+                                onDelete: {
+                                    folderToDelete = folder
+                                    showingDeleteFolderDialog = true
+                                }
+                            )
                     }
 
                     ForEach(rootDocs, id: \.id) { document in
@@ -218,6 +196,7 @@ struct DocumentsView: View {
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { openDocumentPreview(document: document) },
                             onRename: { renameDocument(document) },
                         onMoveToFolder: {
@@ -226,19 +205,6 @@ struct DocumentsView: View {
                             onDelete: { deleteDocument(document) },
                             onConvert: { convertDocument(document) }
                         )
-                        .onLongPressGesture {
-                            beginSelection(documentId: document.id)
-                        }
-                        .onDrag {
-                            draggingDocumentId = document.id
-                            return NSItemProvider(object: document.id.uuidString as NSString)
-                        }
-                        .onDrop(of: [UTType.text], delegate: DocumentReorderDropDelegate(
-                            targetDocumentId: document.id,
-                            folderId: nil,
-                            draggingDocumentId: $draggingDocumentId,
-                            documentManager: documentManager
-                        ))
                     }
                 }
                 .padding(.horizontal, 12)
@@ -734,23 +700,6 @@ struct DocumentsView: View {
         // Note: Users should use the Convert tab for full conversion functionality
     }
 
-    private func handleFolderDrop(providers: [NSItemProvider], folderId: UUID) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
-            let s: String? = {
-                if let str = item as? String { return str }
-                if let str = item as? NSString { return str as String }
-                if let data = item as? Data { return String(data: data, encoding: .utf8) }
-                return nil
-            }()
-            guard let s, let id = UUID(uuidString: s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
-            DispatchQueue.main.async {
-                documentManager.moveDocument(documentId: id, toFolder: folderId)
-            }
-        }
-        return true
-    }
-    
     private func processImportedFiles(_ urls: [URL]) {
         print("📱 UI: Starting to process \\(urls.count) imported files")
         isProcessing = true
@@ -1313,25 +1262,6 @@ struct DocumentsView: View {
     }
 }
 
-struct DocumentReorderDropDelegate: DropDelegate {
-    let targetDocumentId: UUID
-    let folderId: UUID?
-    @Binding var draggingDocumentId: UUID?
-    let documentManager: DocumentManager
-
-    func dropEntered(info: DropInfo) {
-        guard let dragged = draggingDocumentId else { return }
-        if dragged != targetDocumentId {
-            documentManager.reorderDocuments(in: folderId, draggedId: dragged, targetId: targetDocumentId)
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        draggingDocumentId = nil
-        return true
-    }
-}
-
 struct DocumentRowView: View {
     let document: Document
     @State private var isGeneratingSummary = false
@@ -1339,6 +1269,7 @@ struct DocumentRowView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
+    let onLongPress: () -> Void
 
     let onOpen: () -> Void
     let onRename: () -> Void
@@ -1399,6 +1330,11 @@ struct DocumentRowView: View {
                 onOpen()
             }
         }
+        .simultaneousGesture(
+            LongPressGesture().onEnded { _ in
+                onLongPress()
+            }
+        )
     }
     
     private func generateAISummary() {
@@ -1459,6 +1395,7 @@ struct DocumentGridItemView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
+    let onLongPress: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMoveToFolder: () -> Void
@@ -1543,6 +1480,11 @@ struct DocumentGridItemView: View {
                 onOpen()
             }
         }
+        .simultaneousGesture(
+            LongPressGesture().onEnded { _ in
+                onLongPress()
+            }
+        )
     }
 }
 
@@ -1552,6 +1494,7 @@ struct FolderRowView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
+    let onLongPress: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMove: () -> Void
@@ -1604,6 +1547,12 @@ struct FolderRowView: View {
             }
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .highPriorityGesture(
+            LongPressGesture().onEnded { _ in
+                onLongPress()
+            }
+        )
     }
 }
 
@@ -1613,6 +1562,7 @@ struct FolderGridItemView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
+    let onLongPress: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMove: () -> Void
@@ -1679,6 +1629,11 @@ struct FolderGridItemView: View {
                 onOpen()
             }
         }
+        .highPriorityGesture(
+            LongPressGesture().onEnded { _ in
+                onLongPress()
+            }
+        )
     }
 }
 
@@ -1712,7 +1667,7 @@ struct FolderDocumentsView: View {
     @State private var renameText = ""
     @State private var documentToRename: Document?
 
-    @State private var draggingDocumentId: UUID?
+    
 
     private var isShowingActiveSubfolder: Binding<Bool> {
         Binding(
@@ -1751,6 +1706,7 @@ struct FolderDocumentsView: View {
                                 isSelected: selectedFolderIds.contains(sub.id),
                                 isSelectionMode: isSelectionMode,
                                 onSelectToggle: { toggleFolderSelection(sub.id) },
+                                onLongPress: { beginSelection(folderId: sub.id) },
                                 onOpen: { activeSubfolder = sub },
                                 onRename: {
                                     folderToRename = sub
@@ -1766,12 +1722,6 @@ struct FolderDocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
-                            .onDrop(of: [UTType.text], isTargeted: nil) { providers in
-                                handleFolderDrop(providers: providers, folderId: sub.id)
-                            }
-                            .onLongPressGesture {
-                                beginSelection(folderId: sub.id)
-                            }
                         }
                         }
                     }
@@ -1782,6 +1732,7 @@ struct FolderDocumentsView: View {
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { onOpenDocument(document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
@@ -1791,19 +1742,6 @@ struct FolderDocumentsView: View {
                             onConvert: { }
                         )
                         .listRowBackground(Color.clear)
-                        .onLongPressGesture {
-                            beginSelection(documentId: document.id)
-                        }
-                        .onDrag {
-                            draggingDocumentId = document.id
-                            return NSItemProvider(object: document.id.uuidString as NSString)
-                        }
-                        .onDrop(of: [UTType.text], delegate: DocumentReorderDropDelegate(
-                            targetDocumentId: document.id,
-                            folderId: folder.id,
-                            draggingDocumentId: $draggingDocumentId,
-                            documentManager: documentManager
-                        ))
                     }
                 }
                 .listStyle(.plain)
@@ -1817,6 +1755,7 @@ struct FolderDocumentsView: View {
                                 isSelected: selectedFolderIds.contains(sub.id),
                                 isSelectionMode: isSelectionMode,
                                 onSelectToggle: { toggleFolderSelection(sub.id) },
+                                onLongPress: { beginSelection(folderId: sub.id) },
                                 onOpen: { activeSubfolder = sub },
                                 onRename: {
                                     folderToRename = sub
@@ -1832,12 +1771,6 @@ struct FolderDocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
-                            .onDrop(of: [UTType.text], isTargeted: nil) { providers in
-                                handleFolderDrop(providers: providers, folderId: sub.id)
-                            }
-                            .onLongPressGesture {
-                                beginSelection(folderId: sub.id)
-                            }
                         }
 
                         ForEach(docs, id: \ .id) { document in
@@ -1846,6 +1779,7 @@ struct FolderDocumentsView: View {
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { onOpenDocument(document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
@@ -1854,19 +1788,6 @@ struct FolderDocumentsView: View {
                                 onDelete: { documentManager.deleteDocument(document) },
                                 onConvert: { }
                             )
-                            .onLongPressGesture {
-                                beginSelection(documentId: document.id)
-                            }
-                            .onDrag {
-                                draggingDocumentId = document.id
-                                return NSItemProvider(object: document.id.uuidString as NSString)
-                            }
-                            .onDrop(of: [UTType.text], delegate: DocumentReorderDropDelegate(
-                                targetDocumentId: document.id,
-                                folderId: folder.id,
-                                draggingDocumentId: $draggingDocumentId,
-                                documentManager: documentManager
-                            ))
                         }
                     }
                     .padding(.horizontal, 12)
@@ -2060,23 +1981,6 @@ struct FolderDocumentsView: View {
                 )
             }
         }
-    }
-
-    private func handleFolderDrop(providers: [NSItemProvider], folderId: UUID) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
-            let s: String? = {
-                if let str = item as? String { return str }
-                if let str = item as? NSString { return str as String }
-                if let data = item as? Data { return String(data: data, encoding: .utf8) }
-                return nil
-            }()
-            guard let s, let id = UUID(uuidString: s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
-            DispatchQueue.main.async {
-                documentManager.moveDocument(documentId: id, toFolder: folderId)
-            }
-        }
-        return true
     }
 
     private func renameDocument(_ document: Document) {
