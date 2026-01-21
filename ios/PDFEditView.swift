@@ -25,14 +25,14 @@ struct PDFEditView: View {
                     RearrangePDFView()
                         .environmentObject(documentManager)
                 } label: {
-                    Label("Rearrange PDF", systemImage: "arrow.up.arrow.down")
+                    Label("Rearrange pages", systemImage: "arrow.up.arrow.down")
                 }
 
                 NavigationLink {
                     RotatePDFView()
                         .environmentObject(documentManager)
                 } label: {
-                    Label("Rotate PDF Pages", systemImage: "rotate.right")
+                    Label("Rotate Pages", systemImage: "rotate.right")
                 }
             }
             .navigationBarTitleDisplayMode(.inline)

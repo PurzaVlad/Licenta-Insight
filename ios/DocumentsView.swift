@@ -63,6 +63,8 @@ struct DocumentsView: View {
     @State private var selectedFolderIds: Set<UUID> = []
     @State private var showingBulkDeleteDialog = false
     @State private var showingBulkMoveSheet = false
+    @State private var showingNameSearch = false
+    @State private var nameSearchText = ""
 
     
 
@@ -308,6 +310,22 @@ struct DocumentsView: View {
         NavigationView {
             documentsMainStack
                 .navigationBarTitleDisplayMode(.inline)
+                .overlay(alignment: .bottomTrailing) {
+                    Button {
+                        nameSearchText = ""
+                        showingNameSearch = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 52, height: 52)
+                            .background(Color.accentColor)
+                            .clipShape(Circle())
+                            .shadow(radius: 4, y: 2)
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 12)
+                }
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Text(" Documents ")
@@ -589,6 +607,19 @@ struct DocumentsView: View {
         } message: {
             Text("Enter a new name for the document")
         }
+        .sheet(isPresented: $showingNameSearch) {
+            DocumentNameSearchSheet(
+                query: $nameSearchText,
+                documents: documentManager.documents,
+                onSelect: { doc in
+                    showingNameSearch = false
+                    openDocumentPreview(document: doc)
+                },
+                onClose: {
+                    showingNameSearch = false
+                }
+            )
+        }
         .fullScreenCover(isPresented: $showingDocumentPreview, onDismiss: { isOpeningPreview = false }) {
             if let url = previewDocumentURL, let document = currentDocument {
                 let shouldShowSummary = document.type != .image
@@ -815,6 +846,7 @@ struct DocumentsView: View {
             showingCameraPermissionAlert = true
         }
     }
+
     
     private func processScannedText(_ text: String) {
         isProcessing = true
@@ -2267,6 +2299,59 @@ struct MoveFolderSheet: View {
                     Button("Cancel") { onCancel() }
                 }
             }
+        }
+    }
+}
+
+struct DocumentNameSearchSheet: View {
+    @Binding var query: String
+    let documents: [Document]
+    let onSelect: (Document) -> Void
+    let onClose: () -> Void
+
+    private var matches: [Document] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let q = trimmed.lowercased()
+        return documents.filter { doc in
+            let title = doc.title.lowercased()
+            if title.hasPrefix(q) { return true }
+            let base = splitDisplayTitle(doc.title).base.lowercased()
+            return base.hasPrefix(q)
+        }
+        .sorted { a, b in
+            a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                if matches.isEmpty {
+                } else {
+                    ForEach(matches) { doc in
+                        Button {
+                            onSelect(doc)
+                        } label: {
+                            HStack {
+                                Image(systemName: iconForDocumentType(doc.type))
+                                    .foregroundColor(.blue)
+                                Text(doc.title)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Find Document")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Close") { onClose() }
+                }
+            }
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Enter document name")
         }
     }
 }

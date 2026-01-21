@@ -63,6 +63,16 @@ class EdgeAI: RCTEventEmitter {
             self?.sendEvent(withName: "EdgeAICancel", body: [:])
         }
     }
+
+    @objc(setModelReady:)
+    func setModelReady(_ ready: Bool) {
+        UserDefaults.standard.set(ready, forKey: "modelReady")
+        NotificationCenter.default.post(
+            name: NSNotification.Name("ModelReadyStatus"),
+            object: nil,
+            userInfo: ["ready": ready]
+        )
+    }
 }
 
 final class EdgeAIRequests {

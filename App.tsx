@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
-import {Alert, SafeAreaView, StyleSheet, View, ActivityIndicator, Text, NativeModules, NativeEventEmitter} from 'react-native';
+import {Alert, SafeAreaView, StyleSheet, NativeModules, NativeEventEmitter} from 'react-native';
 import RNFS from 'react-native-fs';
 import {initLlama, releaseAllLlama} from 'llama.rn';
 import {downloadModel} from './src/api/model';
@@ -50,6 +50,9 @@ function App(): React.JSX.Element {
 
     const prepareModel = async () => {
       console.log('[Model] Starting model preparation...');
+      try {
+        EdgeAI?.setModelReady?.(false);
+      } catch {}
       setIsDownloading(true);
       try {
         const filePath = `${RNFS.DocumentDirectoryPath}/${MODEL_FILENAME}`;
@@ -87,12 +90,18 @@ function App(): React.JSX.Element {
         }
 
         setContext(llamaContext);
+        try {
+          EdgeAI?.setModelReady?.(true);
+        } catch {}
         console.log('[Model] Model ready for use!');
       } catch (error: any) {
         console.error('[Model] AI Model Error:', error);
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.error('[Model] Error details:', errorMsg);
         Alert.alert('AI Model Error', `Failed to initialize model: ${errorMsg}`);
+        try {
+          EdgeAI?.setModelReady?.(false);
+        } catch {}
       } finally {
         if (!cancelled) setIsDownloading(false);
       }
@@ -107,6 +116,9 @@ function App(): React.JSX.Element {
       } catch (e) {
         console.warn('Error releasing llama context', e);
       }
+      try {
+        EdgeAI?.setModelReady?.(false);
+      } catch {}
     };
   }, []);
 
@@ -451,21 +463,6 @@ useEffect(() => {
   };
 }, [context]);
 
-  if (isDownloading || !context) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" />
-          <Text style={styles.loadingText}>
-            {isDownloading
-              ? `Downloading Model: ${downloadProgress.toFixed(1)}%`
-              : 'Initializing AI Model...'}
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   // Render native SwiftUI chat UI
   return (
     <SafeAreaView style={styles.container}>
@@ -476,12 +473,6 @@ useEffect(() => {
 
 const styles = StyleSheet.create({
   container: {flex: 1, backgroundColor: 'transparent'}, // allow SwiftUI materials
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {marginTop: 15, fontSize: 16, color: '#FFFFFF'},
 });
 
 
