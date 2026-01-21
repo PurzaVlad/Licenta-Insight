@@ -18,17 +18,15 @@ struct ConversionView: View {
     
     enum DocumentFormat: String, CaseIterable {
         case pdf = "PDF"
-        case docx = "Word Document"
-        case txt = "Text File"
-        case image = "Image (JPEG)"
-        case pptx = "PowerPoint (.pptx)"
-        case xlsx = "Excel (.xlsx)"
+        case docx = "DOCX"
+        case image = "JPG"
+        case pptx = "PPTX"
+        case xlsx = "XLSX"
         
         var fileExtension: String {
             switch self {
             case .pdf: return "pdf"
             case .docx: return "docx"
-            case .txt: return "txt"
             case .image: return "jpg"
             case .pptx: return "pptx"
             case .xlsx: return "xlsx"
@@ -39,12 +37,11 @@ struct ConversionView: View {
             switch self {
             case .pdf: return "doc.fill"
             case .docx: return "doc.text.fill"
-            case .txt: return "doc.plaintext.fill"
             case .image: return "photo.fill"
             case .pptx: return "rectangle.on.rectangle"
             case .xlsx: return "tablecells"
-            }
         }
+    }
     }
     
     struct ConversionResult {
@@ -61,97 +58,110 @@ struct ConversionView: View {
                     VStack(spacing: 24) {
                     // Header
 
-                    let panelHeight: CGFloat = 220
-
-                    HStack(alignment: .center, spacing: 16) {
-                        // Document Selection
-                        VStack(alignment: .leading, spacing: 12) {
+                    if selectedDocument == nil {
+                        VStack(spacing: 16) {
                             Text("Select Document")
                                 .font(.headline)
-                            
-                            if let document = selectedDocument {
-                                DocumentSelectionCard(document: document) {
-                                    selectedDocument = nil
+                            Button(action: { showingDocumentPicker = true }) {
+                                HStack {
+                                    Image(systemName: "doc.badge.plus")
+                                        .font(.system(size: 28, weight: .semibold))
+                                    Text("Choose Document")
+                                        .font(.headline)
+                                    Image(systemName: "chevron.right")
+                                        .foregroundColor(.secondary)
                                 }
-                            } else {
-                                Button(action: { showingDocumentPicker = true }) {
-                                    HStack {
-                                        Image(systemName: "doc.badge.plus")
-                                            .font(.system(size: 28, weight: .semibold))
-                                        Image(systemName: "chevron.right")
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .padding()
-                                    .background(Color(.secondarySystemBackground))
-                                    .cornerRadius(12)
-                                    .frame(minHeight: 72)
-                                }
-                                .frame(maxWidth:.infinity, alignment: .center)
-                                .foregroundColor(.primary)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 14)
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(12)
                             }
                         }
-                        .frame(height: panelHeight, alignment: .center)
-                        
-                        // Conversion Icon
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .padding(.top,24)
-                            .font(.title2)
-                            .foregroundColor(.blue)
-                            .frame(height: panelHeight)
-                        
-                        // Target Format (only)
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Convert To")
-                                .font(.headline)
-                            
-                            ScrollView {
-                                VStack(spacing: 10) {
-                                    ForEach(DocumentFormat.allCases, id: \.self) { format in
-                                        let isDisabled = selectedDocument != nil && format == sourceFormat
-                                        FormatSelectionChip(
-                                            format: format,
-                                            isSelected: selectedTargetFormat == format,
-                                            isDisabled: isDisabled
-                                        ) {
-                                            if !isDisabled {
-                                                selectedTargetFormat = format
+                        .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: .center)
+                    } else {
+                        let panelHeight: CGFloat = 220
+
+                        HStack(alignment: .center, spacing: 16) {
+                            // Document Selection
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Selected Document")
+                                    .font(.headline)
+
+                                if let document = selectedDocument {
+                                    DocumentSelectionCard(document: document) {
+                                        selectedDocument = nil
+                                    }
+                                }
+                            }
+                            .frame(height: panelHeight, alignment: .center)
+
+                            // Conversion Icon
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .padding(.top, 24)
+                                .font(.title2)
+                                .foregroundColor(.blue)
+                                .frame(height: panelHeight)
+
+                            // Target Format (only)
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Convert To")
+                                    .font(.headline)
+
+                                ScrollView {
+                                    VStack(spacing: 10) {
+                                        if allowedTargetFormats.isEmpty {
+                                            Text("No available conversions yet.")
+                                                .font(.subheadline)
+                                                .foregroundColor(.secondary)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        } else {
+                                            ForEach(allowedTargetFormats, id: \.self) { format in
+                                                FormatSelectionChip(
+                                                    format: format,
+                                                    isSelected: selectedTargetFormat == format,
+                                                    isDisabled: false
+                                                ) {
+                                                    selectedTargetFormat = format
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                .frame(height: panelHeight - 32)
                             }
-                            .frame(height: panelHeight - 32)
                         }
+                        .padding(.horizontal)
+                        .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    .padding(.horizontal)
-                    .frame(maxWidth: .infinity, alignment: .center)
                     
-                    // Conversion Button
-                    VStack(spacing: 16) {
-                        if isConverting {
-                            VStack(spacing: 12) {
-                                ProgressView(value: conversionProgress)
-                                    .progressViewStyle(LinearProgressViewStyle(tint: .blue))
-                                Text("Converting... \(Int(conversionProgress * 100))%")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal)
-                        } else {
-                            Button(action: performConversion) {
-                                HStack {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                    Text("Convert Document")
-                                        .fontWeight(.semibold)
+                    if selectedDocument != nil {
+                        // Conversion Button
+                        VStack(spacing: 16) {
+                            if isConverting {
+                                VStack(spacing: 12) {
+                                    ProgressView(value: conversionProgress)
+                                        .progressViewStyle(LinearProgressViewStyle(tint: .blue))
+                                    Text("Converting... \(Int(conversionProgress * 100))%")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(canConvert ? Color.blue : Color.gray)
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
+                                .padding(.horizontal)
+                            } else {
+                                Button(action: performConversion) {
+                                    HStack {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                        Text("Convert Document")
+                                            .fontWeight(.semibold)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(canConvert ? Color.blue : Color.gray)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
+                                }
+                                .disabled(!canConvert)
+                                .padding(.horizontal)
                             }
-                            .disabled(!canConvert)
-                            .padding(.horizontal)
                         }
                     }
                     
@@ -196,18 +206,25 @@ struct ConversionView: View {
     }
     
     private var canConvert: Bool {
-        selectedDocument != nil &&
-            selectedTargetFormat != nil &&
-            sourceFormat != selectedTargetFormat &&
-            !isConverting
+        guard selectedDocument != nil, let target = selectedTargetFormat else { return false }
+        return allowedTargetFormats.contains(target) && !isConverting
+    }
+
+    private var allowedTargetFormats: [DocumentFormat] {
+        switch sourceFormat {
+        case .pdf:
+            return [.docx, .xlsx, .pptx, .image]
+        case .docx, .xlsx, .pptx, .image:
+            return [.pdf]
+        }
     }
     
     private func formatFromDocumentType(_ type: Document.DocumentType) -> DocumentFormat {
         switch type {
         case .pdf: return .pdf
         case .docx: return .docx
-        case .text: return .txt
         case .image: return .image
+        case .scanned: return .pdf
         case .ppt, .pptx: return .pptx
         case .xls, .xlsx: return .xlsx
         default: return .pdf
@@ -253,27 +270,29 @@ struct ConversionView: View {
             let outputData: Data?
             
             switch (sourceFormat, targetFormat) {
-            case (.pdf, .txt), (.docx, .txt), (.image, .txt):
-                outputData = latestDocument.content.data(using: .utf8)
-                
-            case (.txt, .pdf), (.image, .pdf):
-                outputData = convertToPDF(content: latestDocument.content, title: latestDocument.title)
-
             case (.docx, .pdf):
                 outputData = convertDocxToPDF(document: latestDocument) ?? convertToPDF(content: latestDocument.content, title: latestDocument.title)
-                
+
             case (.pptx, .pdf), (.xlsx, .pdf):
                 outputData = convertOfficeToPDF(document: latestDocument)
-                
-            case (.pdf, .docx), (.txt, .docx):
+
+            case (.image, .pdf):
+                if let imageData = latestDocument.imageData {
+                    let images = imageData.compactMap { UIImage(data: $0) }
+                    outputData = convertImagesToPDF(images)
+                } else {
+                    outputData = convertToPDF(content: latestDocument.content, title: latestDocument.title)
+                }
+
+            case (.pdf, .docx):
                 outputData = convertToDocx(content: latestDocument.content, title: latestDocument.title)
-                
-            case (.pdf, .image), (.docx, .image), (.txt, .image), (.pptx, .image), (.xlsx, .image):
-                outputData = convertToImage(content: latestDocument.content)
-                
-            case (.pptx, .txt), (.xlsx, .txt):
+
+            case (.pdf, .xlsx), (.pdf, .pptx):
                 outputData = latestDocument.content.data(using: .utf8)
-                
+
+            case (.pdf, .image):
+                outputData = convertToImage(content: latestDocument.content)
+
             default:
                 throw ConversionError.unsupportedConversion
             }
@@ -529,6 +548,20 @@ struct ConversionView: View {
             image.draw(in: CGRect(origin: .zero, size: size))
         }
     }
+
+    private func convertImagesToPDF(_ images: [UIImage]) -> Data? {
+        let filtered = images.filter { $0.size.width > 0 && $0.size.height > 0 }
+        guard !filtered.isEmpty else { return nil }
+
+        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: filtered[0].size))
+        return renderer.pdfData { context in
+            for image in filtered {
+                let rect = CGRect(origin: .zero, size: image.size)
+                context.beginPage(withBounds: rect, pageInfo: [:])
+                image.draw(in: rect)
+            }
+        }
+    }
 }
 
 // MARK: - Conversion View Components
@@ -538,8 +571,11 @@ struct DocumentSelectionCard: View {
     let onRemove: () -> Void
     
     var body: some View {
+        let titleParts = splitDisplayTitle(document.title)
+        let typeLabel = fileTypeLabel(documentType: document.type, titleParts: titleParts)
+
         HStack {
-            Image(systemName: document.type == .pdf ? "doc.fill" : "doc.text.fill")
+            Image(systemName: iconForDocumentType(document.type))
                 .font(.system(size: 32, weight: .semibold))
                 .foregroundColor(.blue)
             
@@ -547,7 +583,7 @@ struct DocumentSelectionCard: View {
                 Text(document.title)
                     .font(.headline)
                     .lineLimit(1)
-                Text(document.type.rawValue.uppercased())
+                Text(typeLabel)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -668,31 +704,41 @@ struct DocumentPickerSheet: View {
     var body: some View {
         NavigationView {
             List {
-                ForEach(documentManager.documents) { document in
-                    Button(action: {
-                        selectedDocument = document
-                        dismiss()
-                    }) {
-                        HStack {
-                            Image(systemName: document.type == .pdf ? "doc.fill" : "doc.text.fill")
-                                .foregroundColor(.blue)
+                let supportedTypes: Set<Document.DocumentType> = [.pdf, .docx, .ppt, .pptx, .xls, .xlsx, .image, .scanned]
+                let supportedDocuments = documentManager.documents.filter { supportedTypes.contains($0.type) }
+
+                if supportedDocuments.isEmpty {
+                    Text("No supported documents yet.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(supportedDocuments) { document in
+                        let titleParts = splitDisplayTitle(document.title)
+                        let typeLabel = fileTypeLabel(documentType: document.type, titleParts: titleParts)
+                        Button(action: {
+                            selectedDocument = document
+                            dismiss()
+                        }) {
+                            HStack {
+                                Image(systemName: iconForDocumentType(document.type))
+                                    .foregroundColor(.blue)
                             
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(document.title)
                                     .font(.headline)
                                     .foregroundColor(.primary)
-                                Text(document.type.rawValue.uppercased())
+                                Text(typeLabel)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
-                            
-                            Spacer()
-                            
-                            Text(formattedSize(for: document))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+
+                                Spacer()
+
+                                Text(formattedSize(for: document))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
                         }
-                        .padding(.vertical, 4)
                     }
                 }
             }

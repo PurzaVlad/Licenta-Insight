@@ -147,7 +147,7 @@ func fileExtension(for type: Document.DocumentType) -> String {
     case .pptx: return "pptx"
     case .xls: return "xls"
     case .xlsx: return "xlsx"
-    case .image: return "png"
+    case .image: return "jpg"
     case .scanned: return "pdf"
     case .text: return "txt"
     }
@@ -159,7 +159,7 @@ func fileTypeLabel(documentType: Document.DocumentType, titleParts: (base: Strin
     }
     switch documentType {
     case .scanned: return "PDF"
-    case .image: return "IMG"
+    case .image: return "JPG"
     case .text: return "TXT"
     case .pdf: return "PDF"
     case .docx: return "DOCX"

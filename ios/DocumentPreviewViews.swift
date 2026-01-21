@@ -1145,8 +1145,8 @@ struct DocumentInfoView: View {
         case .pptx: return "pptx"
         case .xls: return "xls"
         case .xlsx: return "xlsx"
-        case .image: return "img"
-        case .scanned: return document.pdfData != nil ? "pdf" : "img"
+        case .image: return "jpg"
+        case .scanned: return "pdf"
         case .text: return "txt"
         }
     }

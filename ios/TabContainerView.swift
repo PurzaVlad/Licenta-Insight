@@ -30,34 +30,41 @@ struct TabContainerView: View {
 
     var body: some View {
         ZStack {
-            TabView {
-                DocumentsView()
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "doc.text")
-                        Text("Documents")
-                    }
+        TabView {
+            DocumentsView()
+                .environmentObject(documentManager)
+                .tabItem {
+                    Image(systemName: "doc.text")
+                    Text("Documents")
+                }
 
-                ConversionView()
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                        Text("Convert")
-                    }
+            NativeChatView()
+                .environmentObject(documentManager)
+                .tabItem {
+                    Image(systemName: "message")
+                    Text("Chat")
+                }
 
-                NativeChatView()
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "message")
-                        Text("Chat")
-                    }
+            PDFEditView()
+                .environmentObject(documentManager)
+                .tabItem {
+                    Image(systemName: "doc.richtext")
+                    Text("PDFEdit")
+                }
 
-                SettingsView()
-                    .tabItem {
-                        Image(systemName: "gear")
-                        Text("Settings")
-                    }
-            }
+            ConversionView()
+                .environmentObject(documentManager)
+                .tabItem {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Text("Convert")
+                }
+
+            SettingsView()
+                .tabItem {
+                    Image(systemName: "gear")
+                    Text("Settings")
+                }
+        }
 
             if isLocked {
                 lockOverlay
