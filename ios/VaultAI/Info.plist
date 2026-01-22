@@ -27,12 +27,14 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
-		<false/>
+		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>VaultAI connects to a local conversion server to convert documents.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to scan documents and extract text using OCR.</string>
 	<key>NSFaceIDUsageDescription</key>

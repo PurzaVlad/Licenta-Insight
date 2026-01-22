@@ -1179,11 +1179,37 @@ struct DocumentInfoView: View {
     var body: some View {
         NavigationView {
             List {
-                infoRow("Name", splitDisplayTitle(document.title).base)
-                infoRow("Size", formattedSize)
-                infoRow("Source", sourceLabel)
-                infoRow("Extension", fileExtension)
-                infoRow("Date Added", dateAdded)
+                Section {
+                    infoRow("Name", splitDisplayTitle(document.title).base)
+                    infoRow("Size", formattedSize)
+                    infoRow("Source", sourceLabel)
+                    infoRow("Extension", fileExtension)
+                    infoRow("Date Added", dateAdded)
+                }
+
+                Section("Extracted OCR") {
+                    if ocrText.isEmpty {
+                        Text("No OCR text available.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text(ocrText)
+                            .font(.footnote)
+                            .textSelection(.enabled)
+                            .foregroundColor(.primary)
+                    }
+                }
+
+                Section("DocPack JSON") {
+                    if docpackJson.isEmpty {
+                        Text("No DocPack JSON available.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text(docpackJson)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                            .foregroundColor(.primary)
+                    }
+                }
             }
             .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
@@ -1244,6 +1270,60 @@ struct DocumentInfoView: View {
 
     private var dateAdded: String {
         DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .short)
+    }
+
+    private var ocrText: String {
+        let trimmed = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        guard let pages = document.ocrPages, !pages.isEmpty else { return "" }
+        return buildStructuredText(from: pages, includePageLabels: true)
+    }
+
+    private var docpackJson: String {
+        document.docpackJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
+        guard !pages.isEmpty else { return "" }
+
+        func paragraphize(_ lines: [(text: String, y: Double)]) -> String {
+            var output: [String] = []
+            var lastY: Double? = nil
+
+            for line in lines {
+                if let last = lastY, abs(line.y - last) > 0.04 {
+                    output.append("")
+                }
+                output.append(line.text)
+                lastY = line.y
+            }
+
+            return output.joined(separator: "\n").replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+        }
+
+        var result: [String] = []
+        for page in pages {
+            let sorted = page.blocks.sorted { $0.order < $1.order }
+            var lines: [(text: String, y: Double)] = []
+
+            for block in sorted {
+                if let last = lines.last, abs(block.bbox.y - last.y) < 0.02 {
+                    let combined = last.text.isEmpty ? block.text : "\(last.text) \(block.text)"
+                    lines[lines.count - 1] = (combined, last.y)
+                } else {
+                    lines.append((block.text, block.bbox.y))
+                }
+            }
+
+            let body = paragraphize(lines)
+            if includePageLabels {
+                result.append("Page \(page.pageIndex + 1):\n\(body)")
+            } else {
+                result.append(body)
+            }
+        }
+
+        return result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

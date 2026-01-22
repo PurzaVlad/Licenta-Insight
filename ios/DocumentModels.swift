@@ -15,6 +15,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let imageData: [Data]?
     let pdfData: Data?
     let originalFileData: Data?
+    let docpackJson: String?
 
     enum DocumentCategory: String, CaseIterable, Codable {
         case general = "General"
@@ -54,7 +55,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         type: DocumentType,
         imageData: [Data]?,
         pdfData: Data?,
-        originalFileData: Data? = nil
+        originalFileData: Data? = nil,
+        docpackJson: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -70,6 +72,70 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.imageData = imageData
         self.pdfData = pdfData
         self.originalFileData = originalFileData
+        self.docpackJson = docpackJson
+    }
+}
+
+struct DocPack: Codable, Hashable, Equatable {
+    let schema: String
+    let doc: DocPackDoc
+    let outline: [DocPackSection]
+    let blocks: [DocPackBlock]
+    let assets: [DocPackAsset]
+    let index: DocPackIndex
+}
+
+struct DocPackDoc: Codable, Hashable, Equatable {
+    let id: String
+    let title: String?
+    let sourceType: String
+    let language: String
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case sourceType = "source_type"
+        case language
+        case createdAt = "created_at"
+    }
+}
+
+struct DocPackSection: Codable, Hashable, Equatable {
+    let id: String
+    let title: String
+    let level: Int
+    let parent: String?
+}
+
+struct DocPackBlock: Codable, Hashable, Equatable {
+    let id: String
+    let section: String?
+    let type: String
+    let text: String?
+    let style: String?
+    let items: [String]?
+    let caption: String?
+    let columns: [String]?
+    let rows: [[String]]?
+    let notes: String?
+    let language: String?
+    let ref: String?
+    let alt: String?
+}
+
+struct DocPackAsset: Codable, Hashable, Equatable {
+    let id: String
+    let kind: String
+    let mime: String
+    let hash: String
+}
+
+struct DocPackIndex: Codable, Hashable, Equatable {
+    let blockTextMap: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case blockTextMap = "block_text_map"
     }
 }
 

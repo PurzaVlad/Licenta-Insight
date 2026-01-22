@@ -3,11 +3,11 @@ import UIKit
 import PDFKit
 import WebKit
 import Foundation
-import QuickLookThumbnailing
 
 struct ConversionView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @State private var selectedDocument: Document? = nil
+    @AppStorage("conversionServerURL") private var conversionServerURL = "http://localhost:8787"
     @State private var sourceFormat: DocumentFormat = .pdf
     @State private var selectedTargetFormat: DocumentFormat? = nil
     @State private var isConverting = false
@@ -15,6 +15,8 @@ struct ConversionView: View {
     @State private var showingResult = false
     @State private var conversionResult: ConversionResult? = nil
     @State private var showingDocumentPicker = false
+    @State private var showingServerEdit = false
+    @State private var serverDraft = ""
     
     enum DocumentFormat: String, CaseIterable {
         case pdf = "PDF"
@@ -133,6 +135,19 @@ struct ConversionView: View {
                         .padding(.horizontal)
                         .frame(maxWidth: .infinity, alignment: .center)
                     }
+
+                    HStack {
+                        Text("Server:")
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(conversionServerURL) {
+                            serverDraft = conversionServerURL
+                            showingServerEdit = true
+                        }
+                        .lineLimit(1)
+                    }
+                    .font(.footnote)
+                    .padding(.horizontal)
                     
                     if selectedDocument != nil {
                         // Conversion Button
@@ -186,11 +201,33 @@ struct ConversionView: View {
         }
         .sheet(isPresented: $showingResult) {
             if let result = conversionResult {
-                ConversionResultSheet(result: result, documentManager: documentManager, onDismiss: {
+                ConversionResultSheet(
+                    result: result,
+                    documentManager: documentManager,
+                    sourceFormat: sourceFormat,
+                    sourceDocument: selectedDocument,
+                    onDismiss: {
                     showingResult = false
                     conversionResult = nil
                 })
             }
+        }
+        .alert("Conversion Server", isPresented: $showingServerEdit) {
+            TextField("http://host:8787", text: $serverDraft)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+            Button("Save") {
+                let trimmed = serverDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    conversionServerURL = trimmed
+                }
+                showingServerEdit = false
+            }
+            Button("Cancel", role: .cancel) {
+                showingServerEdit = false
+            }
+        } message: {
+            Text("Set the LibreOffice server URL.")
         }
         .onChange(of: selectedDocument) { document in
             if let document = document {
@@ -268,13 +305,18 @@ struct ConversionView: View {
         
         do {
             let outputData: Data?
+            var serverError: String? = nil
             
             switch (sourceFormat, targetFormat) {
             case (.docx, .pdf):
-                outputData = convertDocxToPDF(document: latestDocument) ?? convertToPDF(content: latestDocument.content, title: latestDocument.title)
+                let result = convertViaServer(document: latestDocument, to: targetFormat)
+                outputData = result.data
+                serverError = result.error
 
             case (.pptx, .pdf), (.xlsx, .pdf):
-                outputData = convertOfficeToPDF(document: latestDocument)
+                let result = convertViaServer(document: latestDocument, to: targetFormat)
+                outputData = result.data
+                serverError = result.error
 
             case (.image, .pdf):
                 if let imageData = latestDocument.imageData {
@@ -285,19 +327,27 @@ struct ConversionView: View {
                 }
 
             case (.pdf, .docx):
-                outputData = convertToDocx(content: latestDocument.content, title: latestDocument.title)
+                let result = convertViaServer(document: latestDocument, to: targetFormat)
+                outputData = result.data
+                serverError = result.error
 
             case (.pdf, .xlsx), (.pdf, .pptx):
-                outputData = latestDocument.content.data(using: .utf8)
+                let result = convertViaServer(document: latestDocument, to: targetFormat)
+                outputData = result.data
+                serverError = result.error
 
             case (.pdf, .image):
                 outputData = convertToImage(content: latestDocument.content)
+                serverError = nil
 
             default:
                 throw ConversionError.unsupportedConversion
             }
             
             guard let data = outputData else {
+                if let serverError {
+                    throw ConversionError.serverFailure(serverError)
+                }
                 throw ConversionError.conversionFailed
             }
             
@@ -322,10 +372,62 @@ struct ConversionView: View {
             )
         }
     }
+
+    private func convertViaServer(document: Document, to targetFormat: DocumentFormat) -> (data: Data?, error: String?) {
+        let trimmed = conversionServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let baseURL = URL(string: trimmed) else { return (nil, nil) }
+        guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else { return (nil, nil) }
+
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = "/convert"
+        components?.queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
+
+        guard let url = components?.url else { return (nil, nil) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(document.title, forHTTPHeaderField: "X-Filename")
+        request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
+        request.timeoutInterval = 180
+        let semaphore = DispatchSemaphore(value: 0)
+        var resultData: Data?
+        var errorMessage: String?
+
+        request.httpBody = inputData
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                errorMessage = error.localizedDescription
+                return
+            }
+            guard let http = response as? HTTPURLResponse else {
+                errorMessage = "No response from server."
+                return
+            }
+            if http.statusCode == 200 {
+                resultData = data
+                return
+            }
+            if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
+                errorMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return
+            }
+            errorMessage = "Server error (HTTP \(http.statusCode))."
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 180)
+
+        if resultData == nil && errorMessage == nil {
+            errorMessage = "No response from server (timeout or network issue)."
+        }
+        return (resultData, errorMessage)
+    }
     
     enum ConversionError: Error {
         case unsupportedConversion
         case conversionFailed
+        case serverFailure(String)
         
         var localizedDescription: String {
             switch self {
@@ -333,6 +435,8 @@ struct ConversionView: View {
                 return "This conversion is not supported yet"
             case .conversionFailed:
                 return "Failed to convert document"
+            case .serverFailure(let message):
+                return message
             }
         }
     }
@@ -399,116 +503,6 @@ struct ConversionView: View {
         return data
     }
     
-    private func convertToDocx(content: String, title: String) -> Data? {
-        // Create a simple Word-compatible document using HTML format
-        // This creates a .docx file that Word can open
-        let htmlContent = """
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>\(title)</title>
-        </head>
-        <body>
-            <h1>\(title)</h1>
-            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-                \(content.replacingOccurrences(of: "\n", with: "<br>"))
-            </div>
-        </body>
-        </html>
-        """
-        return htmlContent.data(using: .utf8)
-    }
-
-    private func convertDocxToPDF(document: Document) -> Data? {
-        guard document.type == .docx else { return nil }
-        guard let data = document.originalFileData else { return nil }
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("docx_render_\(UUID().uuidString).docx")
-        do {
-            try data.write(to: tempURL)
-        } catch {
-            print("📄 Conversion: Failed to write temp docx: \(error.localizedDescription)")
-            return nil
-        }
-
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var renderedData: Data?
-        var renderer: DocxPDFRenderer?
-
-        DispatchQueue.main.async {
-            renderer = DocxPDFRenderer(fileURL: tempURL) { data in
-                renderedData = data
-                semaphore.signal()
-                renderer = nil
-            }
-            renderer?.start()
-        }
-
-        _ = semaphore.wait(timeout: .now() + 20)
-        return renderedData
-    }
-    
-    private func convertOfficeToPDF(document: Document) -> Data? {
-        guard let data = document.originalFileData else { return nil }
-        let ext: String = {
-            switch document.type {
-            case .ppt, .pptx: return "pptx"
-            case .xls, .xlsx: return "xlsx"
-            default: return document.type.rawValue
-            }
-        }()
-        
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("office_render_\(UUID().uuidString).\(ext)")
-        do {
-            try data.write(to: tempURL)
-        } catch {
-            print("📄 Conversion: Failed to write temp office file: \(error.localizedDescription)")
-            return convertToPDF(content: document.content, title: document.title)
-        }
-        
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-        
-        if #available(iOS 13.0, *) {
-            if let thumbnail = generateOfficeThumbnail(url: tempURL) {
-                if let pdf = convertImageToPDF(thumbnail) {
-                    return pdf
-                }
-            }
-        }
-        
-        return convertToPDF(content: document.content, title: document.title)
-    }
-    
-    @available(iOS 13.0, *)
-    private func generateOfficeThumbnail(url: URL) -> UIImage? {
-        let size = CGSize(width: 1400, height: 1400)
-        let request = QLThumbnailGenerator.Request(
-            fileAt: url,
-            size: size,
-            scale: UIScreen.main.scale,
-            representationTypes: .thumbnail
-        )
-        
-        let generator = QLThumbnailGenerator.shared
-        let semaphore = DispatchSemaphore(value: 0)
-        var image: UIImage?
-        
-        generator.generateBestRepresentation(for: request) { rep, error in
-            if let rep = rep {
-                image = rep.uiImage
-            } else if let error = error {
-                print("📄 Conversion: Thumbnail error: \(error.localizedDescription)")
-            }
-            semaphore.signal()
-        }
-        
-        _ = semaphore.wait(timeout: .now() + 8)
-        return image
-    }
     
     private func convertToRTF(content: String) -> Data? {
         let rtfContent = "{\\\\rtf1\\\\ansi\\\\deff0 {\\\\fonttbl {\\\\f0 Times New Roman;}} \\\\f0\\\\fs24 \\(content.replacingOccurrences(of: \"\\n\", with: \"\\\\par \"))}"
@@ -772,6 +766,8 @@ struct DocumentPickerSheet: View {
 struct ConversionResultSheet: View {
     let result: ConversionView.ConversionResult
     let documentManager: DocumentManager
+    let sourceFormat: ConversionView.DocumentFormat
+    let sourceDocument: Document?
     let onDismiss: () -> Void
     @State private var showingShareSheet = false
     @State private var isSaving = false
@@ -911,7 +907,15 @@ struct ConversionResultSheet: View {
             let documentType = self.getDocumentType(from: self.result.filename)
             
             // Extract content based on type
-            let content = self.extractContent(from: outputData, type: documentType)
+            var content = self.extractContent(from: outputData, type: documentType)
+            if self.sourceFormat == .pdf, documentType == .docx {
+                if let source = self.sourceDocument {
+                    let sourceText = source.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !sourceText.isEmpty {
+                        content = sourceText
+                    }
+                }
+            }
             
             // Create the document
             let cleanedTitle = normalizedTitle(from: self.result.filename)
@@ -953,6 +957,8 @@ struct ConversionResultSheet: View {
         switch ext {
         case "pdf": return .pdf
         case "docx", "doc": return .docx
+        case "ppt", "pptx": return .pptx
+        case "xls", "xlsx": return .xlsx
         case "txt": return .text
         case "jpg", "jpeg", "png": return .image
         case "zip": return .zip
@@ -990,6 +996,10 @@ struct ConversionResultSheet: View {
             return "Converted PDF document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         case .image:
             return "Converted image document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+        case .ppt, .pptx:
+            return "Converted PowerPoint document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+        case .xls, .xlsx:
+            return "Converted Excel document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         case .zip:
             return "ZIP archive - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         default:

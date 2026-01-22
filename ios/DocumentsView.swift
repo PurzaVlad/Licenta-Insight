@@ -589,7 +589,8 @@ struct DocumentsView: View {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData
+                        originalFileData: old.originalFileData,
+                        docpackJson: old.docpackJson
                     )
                     documentManager.documents[idx] = updated
 
@@ -768,6 +769,7 @@ struct DocumentsView: View {
                     
                     DispatchQueue.main.async {
                         // Update the document with category and keywords but keep the original title
+                        let current = self.documentManager.getDocument(by: document.id) ?? document
                         let updatedDocument = Document(
                             id: document.id,
                             title: document.title, // Keep original name
@@ -780,7 +782,8 @@ struct DocumentsView: View {
                             type: document.type,
                             imageData: document.imageData,
                             pdfData: document.pdfData,
-                            originalFileData: document.originalFileData
+                            originalFileData: document.originalFileData,
+                            docpackJson: current.docpackJson
                         )
                         
                         // Update document in the manager
@@ -2011,7 +2014,8 @@ struct FolderDocumentsView: View {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData
+                        originalFileData: old.originalFileData,
+                        docpackJson: old.docpackJson
                     )
 
                     // Trigger persistence
