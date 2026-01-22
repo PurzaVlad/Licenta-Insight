@@ -1,4 +1,3 @@
-import SwiftUI
 import Foundation
 
 func formatMarkdownText(_ text: String) -> AttributedString {

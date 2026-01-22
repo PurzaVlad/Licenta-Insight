@@ -84,7 +84,7 @@ class DocumentManager: ObservableObject {
         print("💾 DocumentManager: Document saved successfully")
         
         // Generate AI summary
-        generateSummary(for: document)
+        generateSummary(for: updated)
     }
     
     func deleteDocument(_ document: Document) {
@@ -431,10 +431,15 @@ class DocumentManager: ObservableObject {
     func generateSummary(for document: Document, force: Bool = false) {
         if document.type == .zip { return }
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
-        // This will integrate with EdgeAI to generate summaries
-        let prompt = "<<<SUMMARY_REQUEST>>>\(document.content)"
+        let ensured = Self.withDocPackIfNeeded(document)
+        let docpack = ensured.docpackJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let promptBody = docpack.isEmpty ? ensured.content : docpack
+        let prompt = """
+        <<<SUMMARY_REQUEST>>>
+        \(promptBody)
+        """
 
-        print("🤖 DocumentManager: Sending summary request, content length: \(document.content.count)")
+        print("🤖 DocumentManager: Sending summary request, content length: \(promptBody.count)")
         if force {
             updateSummary(for: document.id, to: "Processing summary...")
         }
@@ -1176,7 +1181,7 @@ class DocumentManager: ObservableObject {
         return updated
     }
 
-    private static let docPackEligibleTypes: Set<Document.DocumentType> = [.pdf, .docx, .ppt, .pptx, .xls, .xlsx]
+    private static let docPackEligibleTypes: Set<Document.DocumentType> = [.pdf, .docx, .ppt, .pptx, .xls, .xlsx, .image, .scanned]
 
     private static func withDocPackIfNeeded(_ doc: Document, forceRebuild: Bool = false) -> Document {
         if !forceRebuild, let existing = doc.docpackJson, !existing.isEmpty {
@@ -1205,7 +1210,7 @@ class DocumentManager: ObservableObject {
         )
     }
 
-    private static func buildDocPackJSON(for document: Document, textOverride: String?) -> String? {
+    static func buildDocPackJSON(for document: Document, textOverride: String?) -> String? {
         let override = textOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let text = override.isEmpty ? resolveDocPackText(for: document) : override
         let docPack = buildDocPack(for: document, text: text)
@@ -1213,6 +1218,37 @@ class DocumentManager: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(docPack) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    static func docpackPrefix(from json: String) -> String? {
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
+        guard let docpack = try? JSONDecoder().decode(DocPack.self, from: data) else { return nil }
+
+        var parts: [String] = []
+        var sawParagraph = false
+
+        for block in docpack.blocks {
+            if block.type == "heading" {
+                if let text = block.text, !text.isEmpty {
+                    parts.append(text)
+                }
+                continue
+            }
+
+            if block.type == "paragraph" {
+                if let text = block.text, !text.isEmpty {
+                    parts.append(text)
+                }
+                sawParagraph = true
+                break
+            }
+        }
+
+        if parts.isEmpty || !sawParagraph && parts.isEmpty {
+            return nil
+        }
+        return parts.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func resolveDocPackText(for document: Document) -> String {

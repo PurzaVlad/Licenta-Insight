@@ -11,12 +11,34 @@ class NativeChatViewManager: RCTViewManager {
     }
 
     override func view() -> UIView! {
-        let hosting = UIHostingController(rootView: TabContainerView())
-        hosting.view.backgroundColor = UIColor.clear
-        return hosting.view
+        HostingContainerView(rootView: TabContainerView())
     }
     
     override class func moduleName() -> String! {
         return "NativeChatView"
+    }
+}
+
+private final class HostingContainerView<Content: View>: UIView {
+    private let hostingController: UIHostingController<Content>
+
+    init(rootView: Content) {
+        self.hostingController = UIHostingController(rootView: rootView)
+        super.init(frame: .zero)
+
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hostingController.view)
+        NSLayoutConstraint.activate([
+            hostingController.view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hostingController.view.topAnchor.constraint(equalTo: topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }

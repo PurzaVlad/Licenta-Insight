@@ -18,10 +18,18 @@ struct TabContainerView: View {
     @State private var passcodeEntry = ""
     @State private var unlockErrorMessage = ""
     @State private var lastBackgroundDate: Date?
+    @State private var previewItem: PreviewItem?
+    @State private var summaryDocument: Document?
 
     private struct SummaryJob: Equatable {
         let documentId: UUID
         let prompt: String
+    }
+    
+    private struct PreviewItem: Identifiable {
+        let id: UUID
+        let url: URL
+        let document: Document
     }
 
     private var appTheme: AppTheme {
@@ -31,7 +39,14 @@ struct TabContainerView: View {
     var body: some View {
         ZStack {
         TabView {
-            DocumentsView()
+            DocumentsView(
+                onOpenPreview: { document, url in
+                    previewItem = PreviewItem(id: document.id, url: url, document: document)
+                },
+                onShowSummary: { document in
+                    summaryDocument = document
+                }
+            )
                 .environmentObject(documentManager)
                 .tabItem {
                     Image(systemName: "doc.text")
@@ -64,6 +79,21 @@ struct TabContainerView: View {
                     Image(systemName: "gear")
                     Text("Settings")
                 }
+        }
+        .fullScreenCover(item: $previewItem) { item in
+            let shouldShowSummary = item.document.type != .image
+            DocumentPreviewContainerView(
+                url: item.url,
+                document: item.document,
+                onAISummary: shouldShowSummary ? {
+                    previewItem = nil
+                    summaryDocument = item.document
+                } : nil
+            )
+        }
+        .sheet(item: $summaryDocument) { document in
+            DocumentSummaryView(document: document)
+                .environmentObject(documentManager)
         }
 
             if isLocked {

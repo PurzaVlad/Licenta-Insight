@@ -503,14 +503,18 @@ struct NativeChatView: View {
                     return
                 }
 
-                // Stage 1: summary prefixes first; still provide titles for explicit requests.
+                // Stage 1: docpack/summary prefixes first; still provide titles for explicit requests.
                 let titlesBlock = buildDocumentTitlesBlock(for: docsToSearch, maxDocs: 60)
-                let summaryPrefixBlock = buildDocumentSummaryPrefixBlock(for: docsToSearch, maxDocs: 60, maxChars: 100)
+                let summaryPrefixBlock = buildDocumentSummaryPrefixBlock(for: docsToSearch, maxDocs: 60)
                 let stage2Prompt = """
+                You will receive DocPack prefixes for each document.
+                Each prefix includes all headings up to the first paragraph, plus that first paragraph.
+                Use headings as strong topical signals.
+
                 Document Titles:
                 \(titlesBlock)
 
-                Summary Prefixes (first 100 chars each):
+                DocPack Prefixes (headings + first paragraph):
                 \(summaryPrefixBlock)
 
                 Question: \(question)
@@ -534,6 +538,8 @@ struct NativeChatView: View {
                 if remainingDocs.count > 1 {
                     let fullSummaries = buildDocumentFullSummariesBlock(for: remainingDocs, maxDocs: 12)
                     let stage3Prompt = """
+                    These summaries were generated from DocPack JSON for each document.
+
                     Full Summaries:
                     \(fullSummaries)
 
@@ -568,7 +574,11 @@ struct NativeChatView: View {
 
                 let ocrBlock = buildDocumentOCRBlock(for: finalDoc)
                 let stage4Prompt = """
-                OCR (full text):
+                You will receive DocPack JSON (schema: docpack.v1) for the selected document.
+                Use docpack.blocks in order to interpret headings, paragraphs, lists, and tables.
+                Do not repeat phrases or sentences. Do not loop. If you have nothing new to add, stop.
+
+                DOCPACK_JSON (full):
                 \(ocrBlock)
 
                 Previous stage output:
@@ -688,12 +698,29 @@ struct NativeChatView: View {
         return list.isEmpty ? "(No documents)" : list.joined(separator: "\n")
     }
 
-    private func buildDocumentSummaryPrefixBlock(for docs: [Document], maxDocs: Int, maxChars: Int) -> String {
+    private func buildDocumentSummaryPrefixBlock(for docs: [Document], maxDocs: Int) -> String {
         let lines = docs.prefix(maxDocs).map { doc -> String in
-            let ocrPrefix = String(doc.content.prefix(maxChars)).replacingOccurrences(of: "\n", with: " ")
-            return "Title - \"\(doc.title)\" Summary - \"\(ocrPrefix)\""
+            let prefix = buildDocpackPrefix(for: doc) ?? extractFirstParagraphPrefix(from: doc.content)
+            let safe = prefix.isEmpty ? "(No summary prefix)" : prefix.replacingOccurrences(of: "\n", with: " ")
+            return "Title - \"\(doc.title)\" Summary - \"\(safe)\""
         }
         return lines.isEmpty ? "(No summaries)" : lines.joined(separator: "\n")
+    }
+
+    private func buildDocpackPrefix(for doc: Document) -> String? {
+        let raw = doc.docpackJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty else { return nil }
+        return DocumentManager.docpackPrefix(from: raw)
+    }
+
+    private func extractFirstParagraphPrefix(from text: String) -> String {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if let range = trimmed.range(of: "\n\n") {
+            return String(trimmed[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
     }
 
     private func buildDocumentFullSummariesBlock(for docs: [Document], maxDocs: Int) -> String {
@@ -706,6 +733,11 @@ struct NativeChatView: View {
     }
 
     private func buildDocumentOCRBlock(for doc: Document) -> String {
+        let docpack = doc.docpackJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !docpack.isEmpty {
+            return "Title - \"\(doc.title)\"\nDOCPACK_JSON - \(docpack)"
+        }
+
         let body = doc.content.trimmingCharacters(in: .whitespacesAndNewlines)
         let ocrText = body.isEmpty ? "(No OCR text)" : body
         return "Title - \"\(doc.title)\"\nOCR - \"\(ocrText)\""
@@ -1227,4 +1259,3 @@ private struct MessageRow: View {
             )
     }
 }
-

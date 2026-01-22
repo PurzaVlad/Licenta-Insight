@@ -18,6 +18,8 @@ private enum ScannerMode {
 }
 struct DocumentsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let onOpenPreview: (Document, URL) -> Void
+    let onShowSummary: (Document) -> Void
     @State private var showingDocumentPicker = false
     @State private var showingScanner = false
     @State private var scannerMode: ScannerMode = .document
@@ -31,10 +33,6 @@ struct DocumentsView: View {
     @State private var pendingOCRPages: [OCRPage] = []
     @State private var pendingCategory: Document.DocumentCategory = .general
     @State private var pendingKeywordsResume: String = ""
-    @State private var showingDocumentPreview = false
-    @State private var previewDocumentURL: URL?
-    @State private var currentDocument: Document?
-    @State private var showingAISummary = false
     @State private var isOpeningPreview = false
     @State private var activeFolder: DocumentFolder?
     @State private var showingRenameDialog = false
@@ -65,8 +63,6 @@ struct DocumentsView: View {
     @State private var showingBulkMoveSheet = false
     @State private var showingNameSearch = false
     @State private var nameSearchText = ""
-
-    
 
     private var rootFolders: [DocumentFolder] { documentManager.folders(in: nil) }
     private var rootDocs: [Document] { documentManager.documents(in: nil) }
@@ -614,45 +610,19 @@ struct DocumentsView: View {
                 documents: documentManager.documents,
                 onSelect: { doc in
                     showingNameSearch = false
-                    openDocumentPreview(document: doc)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        openDocumentPreview(document: doc)
+                    }
                 },
                 onClose: {
                     showingNameSearch = false
                 }
             )
         }
-        .fullScreenCover(isPresented: $showingDocumentPreview, onDismiss: { isOpeningPreview = false }) {
-            if let url = previewDocumentURL, let document = currentDocument {
-                let shouldShowSummary = document.type != .image
-                DocumentPreviewContainerView(
-                    url: url,
-                    document: document,
-                    onAISummary: shouldShowSummary ? {
-                        showingDocumentPreview = false
-                        showingAISummary = true
-                        isOpeningPreview = false
-                    } : nil
-                )
-            }
-        }
-        .sheet(isPresented: $showingAISummary, onDismiss: { isOpeningPreview = false }) {
-            if let document = currentDocument {
-                DocumentSummaryView(document: document)
-                    .environmentObject(documentManager)
-            }
-        }
     }
 
     
     
-    private func deleteDocuments(offsets: IndexSet) {
-        let rootDocs = documentManager.documents(in: nil)
-        for index in offsets {
-            guard index < rootDocs.count else { continue }
-            documentManager.deleteDocument(rootDocs[index])
-        }
-    }
-
     // Menu actions
     private func renameDocument(_ document: Document) {
         documentToRename = document
@@ -821,9 +791,15 @@ struct DocumentsView: View {
     }
 
     private func startScan() {
+        func presentScanner() {
+            // Delay to avoid presenting from a context menu hosting controller.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                showingScanner = true
+            }
+        }
         if !VNDocumentCameraViewController.isSupported {
             scannerMode = .simple
-            showingScanner = true
+            presentScanner()
             return
         }
 
@@ -831,13 +807,13 @@ struct DocumentsView: View {
         switch status {
         case .authorized:
             scannerMode = .document
-            showingScanner = true
+            presentScanner()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
                     if granted {
                         scannerMode = .document
-                        showingScanner = true
+                        presentScanner()
                     } else {
                         showingCameraPermissionAlert = true
                     }
@@ -908,10 +884,12 @@ struct DocumentsView: View {
             }
         }
 
-        // Use AI to suggest document name based on first 200 OCR chars
-        if !firstPageText.isEmpty && firstPageText != "No text found in image" && !firstPageText.contains("OCR failed") {
+        let namingSeed = buildNamingSeed(from: ocrPages, fallback: firstPageText)
+
+        // Use AI to suggest document name based on headings + first paragraph
+        if !namingSeed.isEmpty && namingSeed != "No text found in image" && !namingSeed.contains("OCR failed") {
             print("Using AI to generate document name from OCR text")
-            generateAIDocumentName(from: firstPageText)
+            generateAIDocumentName(from: namingSeed)
         } else {
             print("OCR extraction failed or returned no text, using default name")
             suggestedName = "ScannedDocument"
@@ -923,10 +901,12 @@ struct DocumentsView: View {
 
     private func generateAIDocumentName(from text: String) {
         let prompt = """
-            You will receive OCR text.
+            You will receive DocPack-derived text.
+            It contains headings followed by the first paragraph (then stops).
+            Treat headings as strong signals for the document's topic.
 
             Task:
-            Pick up to 3 DESCRIPTIVE TAGS that appear in the OCR text (exact words only).
+            Pick up to 3 DESCRIPTIVE TAGS that appear in the text (exact words only).
 
             HARD RULES:
             - choose words that appear in OCR text EXACTLY (no paraphrase)
@@ -935,13 +915,13 @@ struct DocumentsView: View {
             - no duplicates
             - no spaces anywhere in output
             - no numbers
-            - TitleCaseOnly
             - output must be a single string
+            - no explanations, no reasoning, no extra text
 
             OUTPUT:
             - Join the selected words with NO separator (concatenate).
 
-            OCR TEXT:
+            TEXT:
             <<<
             \(text.prefix(300))
             >>>
@@ -986,7 +966,45 @@ struct DocumentsView: View {
         let stopwords: Set<String> = ["and", "of", "for", "the", "to", "in", "on", "with", "by", "from", "at", "or", "a", "an"]
         let filtered = words.filter { !stopwords.contains($0.lowercased()) }
         let limited = Array(filtered.prefix(3))
-        return limited.map { $0.lowercased() }.joined()
+        return limited.joined()
+    }
+
+    private func buildNamingSeed(from pages: [OCRPage], fallback: String) -> String {
+        let structured = buildStructuredText(from: pages, includePageLabels: false)
+        let source = structured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : structured
+        let tempDoc = Document(
+            title: "Scan",
+            content: source,
+            summary: "",
+            ocrPages: pages.isEmpty ? nil : pages,
+            type: .scanned,
+            imageData: nil,
+            pdfData: nil
+        )
+        if let json = DocumentManager.buildDocPackJSON(for: tempDoc, textOverride: source),
+           let prefix = DocumentManager.docpackPrefix(from: json),
+           !prefix.isEmpty {
+            return String(prefix.prefix(800))
+        }
+
+        let prefix = extractHeadingsAndFirstParagraph(from: source)
+        return String((prefix.isEmpty ? source : prefix).prefix(800))
+    }
+
+    private func extractHeadingsAndFirstParagraph(from text: String) -> String {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let paragraphs = trimmed
+            .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !paragraphs.isEmpty else { return trimmed }
+        if paragraphs.count == 1 { return paragraphs[0] }
+        return paragraphs[0] + "\n\n" + paragraphs[1]
     }
 
     private func finalizeDocument(with name: String) {
@@ -1029,44 +1047,6 @@ struct DocumentsView: View {
             pendingCategory = .general
             pendingKeywordsResume = ""
             pendingOCRPages = []
-        }
-    }
-    
-    private func processScannedImages(_ images: [UIImage]) {
-        isProcessing = true
-        
-        var allText = ""
-        var imageDataArray: [Data] = []
-        var ocrPages: [OCRPage] = []
-        
-        for (index, image) in images.enumerated() {
-            let page = performOCRDetailed(on: image, pageIndex: index)
-            allText += "Page \(index + 1):\n\(page.text)\n\n"
-            ocrPages.append(page.page)
-            
-            // Save image data with high quality
-            if let imageData = image.jpegData(compressionQuality: 0.95) {
-                imageDataArray.append(imageData)
-            }
-        }
-        
-        // Generate PDF from images
-        let pdfData = createPDF(from: images)
-        
-        let document = Document(
-            title: "Scanned Document \(documentManager.documents.count + 1)",
-            content: buildStructuredText(from: ocrPages, includePageLabels: true),
-            summary: "Processing summary...",
-            ocrPages: ocrPages.isEmpty ? nil : ocrPages,
-            dateCreated: Date(),
-            type: .scanned,
-            imageData: imageDataArray,
-            pdfData: pdfData
-        )
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            documentManager.addDocument(document)
-            isProcessing = false
         }
     }
     
@@ -1254,9 +1234,12 @@ struct DocumentsView: View {
         let tempURL = tempDirectory.appendingPathComponent("preview_\(document.id).\(fileExt)")
         
         func present(url: URL) {
-            self.previewDocumentURL = url
-            self.currentDocument = document
-            self.showingDocumentPreview = true
+            DispatchQueue.main.async {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    self.onOpenPreview(document, url)
+                    self.isOpeningPreview = false
+                }
+            }
         }
         
         // Prefer original file, then PDF, then first image fallback
@@ -1270,8 +1253,8 @@ struct DocumentsView: View {
             }
         } else {
             // Fallback: show content in a simple text preview via summary sheet
-            self.currentDocument = document
-            self.showingAISummary = true
+            self.isOpeningPreview = false
+            self.onShowSummary(document)
             isOpeningPreview = false
         }
     }
@@ -1350,8 +1333,6 @@ struct DocumentsView: View {
 
 struct DocumentRowView: View {
     let document: Document
-    @State private var isGeneratingSummary = false
-
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
@@ -1425,57 +1406,6 @@ struct DocumentRowView: View {
         )
     }
     
-    private func generateAISummary() {
-        print("🧠 DocumentRowView: Generating AI summary for '\(document.title)'")
-        isGeneratingSummary = true
-        
-        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
-        
-        print("🧠 DocumentRowView: Sending summary request, content length: \(document.content.count)")
-        EdgeAI.shared?.generate(prompt, resolver: { result in
-            print("🧠 DocumentRowView: Got summary result: \(String(describing: result))")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                if let result = result as? String, !result.isEmpty {
-                    // Show the summary in an alert
-                    let alert = UIAlertController(
-                        title: "AI Summary",
-                        message: result,
-                        preferredStyle: .alert
-                    )
-                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                    
-                    // Present from the current window
-                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                       let window = windowScene.windows.first,
-                       let rootViewController = window.rootViewController {
-                        rootViewController.present(alert, animated: true)
-                    }
-                } else {
-                    print("🧠 DocumentRowView: Invalid or empty summary result")
-                }
-            }
-        }, rejecter: { code, message, error in
-            print("🧠 DocumentRowView: Summary generation failed - Code: \(String(describing: code)), Message: \(String(describing: message)), Error: \(String(describing: error))")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                let alert = UIAlertController(
-                    title: "Summary Failed",
-                    message: "Failed to generate AI summary. Please try again.",
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let window = windowScene.windows.first,
-                   let rootViewController = window.rootViewController {
-                    rootViewController.present(alert, animated: true)
-                }
-            }
-        })
-    }
 }
 
 struct DocumentGridItemView: View {

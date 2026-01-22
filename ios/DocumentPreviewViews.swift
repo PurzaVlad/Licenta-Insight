@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 import PDFKit
 import QuickLook
-import WebKit
 import Foundation
 
 struct DocumentDetailView: View {

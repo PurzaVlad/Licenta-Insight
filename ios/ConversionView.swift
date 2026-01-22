@@ -1,7 +1,5 @@
 import SwiftUI
 import UIKit
-import PDFKit
-import WebKit
 import Foundation
 
 struct ConversionView: View {
@@ -504,11 +502,6 @@ struct ConversionView: View {
     }
     
     
-    private func convertToRTF(content: String) -> Data? {
-        let rtfContent = "{\\\\rtf1\\\\ansi\\\\deff0 {\\\\fonttbl {\\\\f0 Times New Roman;}} \\\\f0\\\\fs24 \\(content.replacingOccurrences(of: \"\\n\", with: \"\\\\par \"))}"
-        return rtfContent.data(using: .utf8)
-    }
-    
     private func convertToImage(content: String) -> Data? {
         let size = CGSize(width: 600, height: 800)
         let renderer = UIGraphicsImageRenderer(size: size)
@@ -532,17 +525,6 @@ struct ConversionView: View {
         return image.jpegData(compressionQuality: 0.8)
     }
     
-    private func convertImageToPDF(_ image: UIImage) -> Data? {
-        let size = image.size
-        guard size.width > 0, size.height > 0 else { return nil }
-        
-        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: size))
-        return renderer.pdfData { context in
-            context.beginPage()
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
-    }
-
     private func convertImagesToPDF(_ images: [UIImage]) -> Data? {
         let filtered = images.filter { $0.size.width > 0 && $0.size.height > 0 }
         guard !filtered.isEmpty else { return nil }
@@ -593,64 +575,6 @@ struct DocumentSelectionCard: View {
         .background(Color(.secondarySystemBackground))
         .cornerRadius(12)
         .frame(minHeight: 72)
-    }
-}
-
-struct FormatSelectionRow: View {
-    let title: String
-    @Binding var selectedFormat: ConversionView.DocumentFormat
-    let isEnabled: Bool
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-            
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(ConversionView.DocumentFormat.allCases, id: \.self) { format in
-                        FormatButton(
-                            format: format,
-                            isSelected: selectedFormat == format,
-                            isEnabled: isEnabled
-                        ) {
-                            selectedFormat = format
-                        }
-                    }
-                }
-                .padding(.horizontal)
-            }
-        }
-    }
-}
-
-struct FormatButton: View {
-    let format: ConversionView.DocumentFormat
-    let isSelected: Bool
-    let isEnabled: Bool
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: format.systemImage)
-                    .font(.title2)
-                Text(format.rawValue)
-                    .font(.caption)
-                    .fontWeight(.medium)
-            }
-            .frame(width: 80, height: 70)
-            .background(isSelected ? Color.blue.opacity(0.2) : Color(.tertiarySystemBackground))
-            .foregroundColor(isSelected ? .blue : (isEnabled ? .primary : .secondary))
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
-            )
-        }
-        .disabled(!isEnabled)
     }
 }
 
@@ -1016,40 +940,4 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-final class DocxPDFRenderer: NSObject, WKNavigationDelegate {
-    private let fileURL: URL
-    private let completion: (Data?) -> Void
-    private var webView: WKWebView?
-
-    init(fileURL: URL, completion: @escaping (Data?) -> Void) {
-        self.fileURL = fileURL
-        self.completion = completion
-    }
-
-    func start() {
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
-        self.webView = webView
-        webView.navigationDelegate = self
-        webView.isHidden = true
-        webView.loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        let contentSize = webView.scrollView.contentSize
-        let rect = CGRect(origin: .zero, size: contentSize == .zero ? webView.bounds.size : contentSize)
-        let config = WKPDFConfiguration()
-        config.rect = rect
-
-        webView.createPDF(configuration: config) { result in
-            switch result {
-            case .success(let data):
-                self.completion(data)
-            case .failure(let error):
-                print("📄 Conversion: WKWebView PDF render failed: \(error.localizedDescription)")
-                self.completion(nil)
-            }
-        }
-    }
 }

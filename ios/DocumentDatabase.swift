@@ -1,6 +1,5 @@
-import Foundation
 import CoreData
-import UIKit
+import Foundation
 
 // MARK: - Core Data Document Entity
 @objc(DocumentEntity)

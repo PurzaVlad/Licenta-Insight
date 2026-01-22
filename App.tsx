@@ -13,12 +13,20 @@ type Message = {
   timestamp: number;
 };
 
-const MODEL_FILENAME = 'qwen2.5-1.5b-instruct-q2_k.gguf';
+const MODEL_FILENAME = 'qwen2.5-0.5b-instruct-q8_0.gguf';
 const MODEL_URL =
-  'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q2_k.gguf';
+  'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q8_0.gguf';
 
-const SUMMARY_SYSTEM_PROMPT =
-  'Write a medium-detail summary that covers the whole document, focusing on the main categories/topics rather than specifics. Keep it concise but flexible in length depending on document size (about 4-8 sentences). Mention the overall category if it is clear (e.g., legal, finance, medical, resume, notes). No introduction, no commentary, no suggestions, no feedback, nothing else besides summary content. Do not write the word "Summary". Do not talk about age or current year.';
+const SUMMARY_SYSTEM_PROMPT = `
+  MANDATORY:
+  You will be given the text of a document in structured form.
+  Summarize ONLY the document's actual content (headings, paragraphs, lists, table text, b001).
+  Do NOT describe the data format. Output plain text only.
+  Write 4-7 short sentences covering the main topics and the overall document type if obvious (e.g., resume, legal, medical, finance, notes).
+  No title.
+  No "Summary:" label.
+  No commentary.
+  `;
 
 const CHAT_SYSTEM_PROMPT =
   'You have access to document titles, summaries, and OCR text provided in the prompt. Be analytical. Use that information when it is relevant to the user question. Do not default to quoting document content; if the user asks for titles, counts, lists, or high-level info and you are confident, answer without pulling full document content. If the user is doing small talk or specifying to ignore the documents, respond based on your general knowledge.';
@@ -252,6 +260,8 @@ useEffect(() => {
           console.log('[EdgeAI] Generated prompt length:', promptText.length);
           console.log('[EdgeAI] Prompt preview:', promptText.substring(0, 200) + '...');
           
+          const stopTokens = stopTokensForModel();
+
           const runSummary = async (summaryText: string, nPredict: number): Promise<string> => {
             const summaryMessages: Message[] = [
               { role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() },
@@ -264,8 +274,8 @@ useEffect(() => {
                 n_predict: nPredict,
                 temperature: 0.3,
                 top_p: 0.9,
-                repeat_penalty: 1.15,
-                stop: stopTokensForModel()
+                repeat_penalty: 1.25,
+                stop: stopTokens
               },
               () => {}
             );
@@ -284,13 +294,13 @@ useEffect(() => {
             }
 
             if (chunks.length <= 1) {
-              text = await runSummary(userContent, 300);
+              text = await runSummary(userContent, 820);
             } else {
               const chunkSummaries: string[] = [];
               for (let i = 0; i < chunks.length; i++) {
                 const chunk = chunks[i];
                 const header = `Chunk ${i + 1} of ${chunks.length}:\n`;
-                const chunkSummary = await runSummary(header + chunk, 160);
+                const chunkSummary = await runSummary(header + chunk, 320);
                 if (chunkSummary) {
                   chunkSummaries.push(chunkSummary);
                 }
@@ -298,7 +308,7 @@ useEffect(() => {
 
               const combined = chunkSummaries.join("\n");
               const finalPrompt = `Combine the following chunk summaries into concise bullet points:\n\n${combined}`;
-              text = await runSummary(finalPrompt, 300);
+              text = await runSummary(finalPrompt, 820);
             }
           } else if (isName) {
             const namePrompt = formatPrompt(messagesForAI);
@@ -308,8 +318,8 @@ useEffect(() => {
                 n_predict: 50,
                 temperature: 0.4,
                 top_p: 0.9,
-                repeat_penalty: 1.1,
-                stop: stopTokensForModel()
+                repeat_penalty: 1.2,
+                stop: stopTokens
               },
               () => {}
             );
@@ -317,11 +327,11 @@ useEffect(() => {
           } else {
             const completionParams = {
               prompt: promptText,
-              n_predict: 512,
+              n_predict: 700,
               temperature: 0.35,
               top_p: 0.8,
-              repeat_penalty: 1.25,
-              stop: stopTokensForModel()
+              repeat_penalty: 1.35,
+              stop: stopTokens
             };
 
             console.log('[EdgeAI] Calling context.completion with params:', Object.keys(completionParams));
@@ -366,6 +376,10 @@ useEffect(() => {
             .replace(/^\s*model\s*\n/i, '')
             .trim();
           text = dedupeRepeats(text);
+          text = text
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/<think>[\s\S]*/gi, '')
+            .trim();
 
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;
