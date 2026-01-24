@@ -111,7 +111,7 @@ class ConvertHandler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    host = "0.0.0.0"
+    host = os.environ.get("CONVERT_HOST", "127.0.0.1")
     port = int(os.environ.get("CONVERT_PORT", "8787"))
     server = http.server.ThreadingHTTPServer((host, port), ConvertHandler)
     print(f"LibreOffice convert server listening on http://{host}:{port}")

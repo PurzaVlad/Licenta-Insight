@@ -19,13 +19,11 @@ const MODEL_URL =
 
 const SUMMARY_SYSTEM_PROMPT = `
   MANDATORY:
-  You will be given the text of a document in structured form.
-  Summarize ONLY the document's actual content (headings, paragraphs, lists, table text, b001).
-  Do NOT describe the data format. Output plain text only.
-  Write 4-7 short sentences covering the main topics and the overall document type if obvious (e.g., resume, legal, medical, finance, notes).
-  No title.
-  No "Summary:" label.
-  No commentary.
+    -You will be given the json representing the text of a document in structured form.
+    -Summarize the content in sentences containing the key points.
+    -Only output the summary, nothing related to Outline, Document or other metadata.
+    -The user mustn't know how the data was formatted, only see the summary of their document.
+    -Use only information present in the document. If a detail is not stated, do not guess.
   `;
 
 const CHAT_SYSTEM_PROMPT =
@@ -272,8 +270,8 @@ useEffect(() => {
               {
                 prompt: summaryPrompt,
                 n_predict: nPredict,
-                temperature: 0.3,
-                top_p: 0.9,
+                temperature: 0.2,
+                top_p: 0.7,
                 repeat_penalty: 1.25,
                 stop: stopTokens
               },
@@ -287,28 +285,35 @@ useEffect(() => {
 
           let text = "";
           if (isSummary) {
-            const chunkSize = 4000;
-            const chunks: string[] = [];
-            for (let i = 0; i < userContent.length; i += chunkSize) {
-              chunks.push(userContent.slice(i, i + chunkSize));
-            }
+            const isDocpack = /"schema"\s*:\s*"docpack\.v1"/i.test(userContent);
 
-            if (chunks.length <= 1) {
-              text = await runSummary(userContent, 820);
+            if (isDocpack) {
+              // Keep JSON intact so the model can parse blocks reliably.
+              text = await runSummary(userContent, 900);
             } else {
-              const chunkSummaries: string[] = [];
-              for (let i = 0; i < chunks.length; i++) {
-                const chunk = chunks[i];
-                const header = `Chunk ${i + 1} of ${chunks.length}:\n`;
-                const chunkSummary = await runSummary(header + chunk, 320);
-                if (chunkSummary) {
-                  chunkSummaries.push(chunkSummary);
-                }
+              const chunkSize = 4000;
+              const chunks: string[] = [];
+              for (let i = 0; i < userContent.length; i += chunkSize) {
+                chunks.push(userContent.slice(i, i + chunkSize));
               }
 
-              const combined = chunkSummaries.join("\n");
-              const finalPrompt = `Combine the following chunk summaries into concise bullet points:\n\n${combined}`;
-              text = await runSummary(finalPrompt, 820);
+              if (chunks.length <= 1) {
+                text = await runSummary(userContent, 820);
+              } else {
+                const chunkSummaries: string[] = [];
+                for (let i = 0; i < chunks.length; i++) {
+                  const chunk = chunks[i];
+                  const header = `Chunk ${i + 1} of ${chunks.length}:\n`;
+                  const chunkSummary = await runSummary(header + chunk, 320);
+                  if (chunkSummary) {
+                    chunkSummaries.push(chunkSummary);
+                  }
+                }
+
+                const combined = chunkSummaries.join("\n");
+                const finalPrompt = `Combine the following chunk summaries into concise bullet points:\n\n${combined}`;
+                text = await runSummary(finalPrompt, 820);
+              }
             }
           } else if (isName) {
             const namePrompt = formatPrompt(messagesForAI);
@@ -375,11 +380,12 @@ useEffect(() => {
             .replace(/<\|im_end\|>/g, '')
             .replace(/^\s*model\s*\n/i, '')
             .trim();
+          if (isSummary) {
+            text = text
+              .trim();
+          }
           text = dedupeRepeats(text);
-          text = text
-            .replace(/<think>[\s\S]*?<\/think>/gi, '')
-            .replace(/<think>[\s\S]*/gi, '')
-            .trim();
+          text = text.trim();
 
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;
