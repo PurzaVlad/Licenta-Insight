@@ -6,6 +6,7 @@ struct ConversionView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @State private var selectedDocument: Document? = nil
     @AppStorage("conversionServerURL") private var conversionServerURL = "http://localhost:8787"
+    @AppStorage("conversionEngine") private var conversionEngine = "auto"
     @State private var sourceFormat: DocumentFormat = .pdf
     @State private var selectedTargetFormat: DocumentFormat? = nil
     @State private var isConverting = false
@@ -42,6 +43,22 @@ struct ConversionView: View {
             case .xlsx: return "tablecells"
         }
     }
+    }
+
+    enum ConversionEngine: String, CaseIterable, Identifiable {
+        case auto = "Auto"
+        case adobe = "Adobe"
+        case libreoffice = "LibreOffice"
+
+        var id: String { rawValue }
+
+        var headerValue: String {
+            switch self {
+            case .auto: return "auto"
+            case .adobe: return "adobe"
+            case .libreoffice: return "libreoffice"
+            }
+        }
     }
     
     struct ConversionResult {
@@ -81,71 +98,92 @@ struct ConversionView: View {
                     } else {
                         let panelHeight: CGFloat = 220
 
-                        HStack(alignment: .center, spacing: 16) {
-                            // Document Selection
-                            VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .firstTextBaseline) {
                                 Text("Selected Document")
                                     .font(.headline)
-
-                                if let document = selectedDocument {
-                                    DocumentSelectionCard(document: document) {
-                                        selectedDocument = nil
-                                    }
-                                }
-                            }
-                            .frame(height: panelHeight, alignment: .center)
-
-                            // Conversion Icon
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .padding(.top, 24)
-                                .font(.title2)
-                                .foregroundColor(.blue)
-                                .frame(height: panelHeight)
-
-                            // Target Format (only)
-                            VStack(alignment: .leading, spacing: 12) {
+                                Spacer()
                                 Text("Convert To")
                                     .font(.headline)
+                            }
 
-                                ScrollView {
-                                    VStack(spacing: 10) {
-                                        if allowedTargetFormats.isEmpty {
-                                            Text("No available conversions yet.")
-                                                .font(.subheadline)
-                                                .foregroundColor(.secondary)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                        } else {
-                                            ForEach(allowedTargetFormats, id: \.self) { format in
-                                                FormatSelectionChip(
-                                                    format: format,
-                                                    isSelected: selectedTargetFormat == format,
-                                                    isDisabled: false
-                                                ) {
-                                                    selectedTargetFormat = format
+                            HStack(alignment: .center, spacing: 16) {
+                                // Document Selection
+                                VStack(alignment: .leading, spacing: 12) {
+                                    if let document = selectedDocument {
+                                        DocumentSelectionCard(document: document) {
+                                            selectedDocument = nil
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                                // Conversion Icon
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.title2)
+                                    .foregroundColor(.blue)
+                                    .frame(height: panelHeight)
+
+                                // Target Format (only)
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ScrollView {
+                                        VStack(spacing: 10) {
+                                            if allowedTargetFormats.isEmpty {
+                                                Text("No available conversions yet.")
+                                                    .font(.headline)
+                                                    .foregroundColor(.secondary)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                            } else {
+                                                ForEach(allowedTargetFormats, id: \.self) { format in
+                                                    FormatSelectionChip(
+                                                        format: format,
+                                                        isSelected: selectedTargetFormat == format,
+                                                        isDisabled: false
+                                                    ) {
+                                                        selectedTargetFormat = format
+                                                    }
                                                 }
                                             }
                                         }
                                     }
+                                    .frame(height: panelHeight)
                                 }
-                                .frame(height: panelHeight - 32)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                         .padding(.horizontal)
                         .frame(maxWidth: .infinity, alignment: .center)
                     }
 
-                    HStack {
-                        Text("Server:")
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Button(conversionServerURL) {
-                            serverDraft = conversionServerURL
-                            showingServerEdit = true
+                    if selectedDocument != nil {
+                        HStack {
+                            Text("Server:")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button(conversionServerURL) {
+                                serverDraft = conversionServerURL
+                                showingServerEdit = true
+                            }
+                            .lineLimit(1)
                         }
-                        .lineLimit(1)
+                        .font(.footnote)
+                        .padding(.horizontal)
+
+                        HStack {
+                            Text("Engine:")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Picker("Engine", selection: $conversionEngine) {
+                                ForEach(ConversionEngine.allCases) { engine in
+                                    Text(engine.rawValue).tag(engine.headerValue)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 240)
+                        }
+                        .font(.footnote)
+                        .padding(.horizontal)
                     }
-                    .font(.footnote)
-                    .padding(.horizontal)
                     
                     if selectedDocument != nil {
                         // Conversion Button
@@ -376,6 +414,7 @@ struct ConversionView: View {
         guard !trimmed.isEmpty, let baseURL = URL(string: trimmed) else { return (nil, nil) }
         guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else { return (nil, nil) }
 
+        let engineHeader = ConversionEngine.allCases.first(where: { $0.headerValue == conversionEngine })?.headerValue ?? "auto"
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.path = "/convert"
         components?.queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
@@ -386,6 +425,7 @@ struct ConversionView: View {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.setValue(document.title, forHTTPHeaderField: "X-Filename")
         request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
+        request.setValue(engineHeader, forHTTPHeaderField: "X-Conversion-Engine")
         request.timeoutInterval = 180
         let semaphore = DispatchSemaphore(value: 0)
         var resultData: Data?
@@ -588,10 +628,9 @@ struct FormatSelectionChip: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: format.systemImage)
-                    .font(.headline)
+                    .font(.system(size: 20, weight: .semibold))
                 Text(format.rawValue)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                    .font(.headline)
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
@@ -610,7 +649,7 @@ struct FormatSelectionChip: View {
         }
         .buttonStyle(PlainButtonStyle())
         .disabled(isDisabled)
-        .frame(height: 44)
+        .frame(height: 52)
     }
 }
 
@@ -693,130 +732,58 @@ struct ConversionResultSheet: View {
     let sourceFormat: ConversionView.DocumentFormat
     let sourceDocument: Document?
     let onDismiss: () -> Void
-    @State private var showingShareSheet = false
     @State private var isSaving = false
     @State private var saveSuccess = false
+    @State private var didAutoSave = false
     
     var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                // Result Icon
-                Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(result.success ? .green : .red)
-                
-                // Result Message
-                VStack(spacing: 8) {
-                    Text(result.success ? "Conversion Complete" : "Conversion Failed")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    
-                    Text(result.message)
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                
-                if result.success {
-                    VStack(spacing: 16) {
-                        // File Info
-                        VStack(spacing: 8) {
-                            Text("Generated File")
-                                .font(.headline)
-                            Text(result.filename)
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding()
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
-                        
-                        // Success message for save
-                        if saveSuccess {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text("Saved to Documents")
-                                    .foregroundColor(.green)
-                                    .fontWeight(.medium)
-                            }
-                            .padding()
-                            .background(Color.green.opacity(0.1))
-                            .cornerRadius(8)
-                        }
-                        
-                        // Action Buttons
-                        VStack(spacing: 12) {
-                            // Save to Documents button
-                            Button(action: saveToDocuments) {
-                                HStack {
-                                    if isSaving {
-                                        ProgressView()
-                                            .scaleEffect(0.8)
-                                    } else {
-                                        Image(systemName: saveSuccess ? "checkmark.circle.fill" : "folder.badge.plus")
-                                    }
-                                    Text(saveSuccess ? "Saved to Documents" : "Save in Documents")
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(saveSuccess ? Color.green : Color.orange)
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                            }
-                            .disabled(isSaving || saveSuccess)
-                            
-                            Button(action: {
-                                showingShareSheet = true
-                            }) {
-                                HStack {
-                                    Image(systemName: "square.and.arrow.up")
-                                    Text("Share File")
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .foregroundColor(.white)
-                                .cornerRadius(12)
-                            }
-                            
-                            Button(action: onDismiss) {
-                                Text("Done")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(Color(.secondarySystemBackground))
-                                    .foregroundColor(.primary)
-                                    .cornerRadius(12)
-                            }
-                        }
-                    }
-                } else {
-                    Button(action: onDismiss) {
-                        Text("OK")
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(.secondarySystemBackground))
+        VStack(spacing: 24) {
+            Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: 60))
+                .foregroundColor(result.success ? .green : .red)
+
+            Text(result.success ? "Conversion Complete" : "Conversion Failed")
+                .font(.title2)
+                .fontWeight(.bold)
+
+            if result.success {
+                VStack(spacing: 12) {
+                    HStack(spacing: 12) {
+                        Image(systemName: iconForDocumentType(getDocumentType(from: result.filename)))
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundColor(.blue)
+                        Text(result.filename)
+                            .font(.headline)
                             .foregroundColor(.primary)
-                            .cornerRadius(12)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(12)
+
+                    if saveSuccess {
+                        Text("Saved to Documents")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
                 }
-                
-                Spacer()
-            }
-            .padding()
-            .navigationTitle("Conversion Result")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        onDismiss()
-                    }
-                }
+            } else {
+                Text(result.message)
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
-        .sheet(isPresented: $showingShareSheet) {
-            if let data = result.outputData {
-                ShareSheet(items: [data])
+        .padding()
+        .onAppear {
+            if result.success && !didAutoSave {
+                didAutoSave = true
+                saveToDocuments()
+            } else if !result.success {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    onDismiss()
+                }
             }
         }
     }

@@ -4,7 +4,6 @@ import UIKit
 import Vision
 import SSZipArchive
 import QuickLookThumbnailing
-import NaturalLanguage
 
 class DocumentManager: ObservableObject {
     @Published var documents: [Document] = []
@@ -50,7 +49,6 @@ class DocumentManager: ObservableObject {
     func addDocument(_ document: Document) {
         print("💾 DocumentManager: Adding document '\\(document.title)' (\\(document.type.rawValue))")
         var updated = Self.withInferredMetadataIfNeeded(document)
-        updated = Self.withDocPackIfNeeded(updated)
 
         // Assign ordering at the end of the target container (root by default).
         if updated.sortOrder == 0 {
@@ -73,8 +71,7 @@ class DocumentManager: ObservableObject {
                 type: updated.type,
                 imageData: updated.imageData,
                 pdfData: updated.pdfData,
-                originalFileData: updated.originalFileData,
-                docpackJson: updated.docpackJson
+                originalFileData: updated.originalFileData
             )
         }
 
@@ -109,8 +106,7 @@ class DocumentManager: ObservableObject {
                 type: old.type,
                 imageData: old.imageData,
                 pdfData: old.pdfData,
-                originalFileData: old.originalFileData,
-                docpackJson: old.docpackJson
+                originalFileData: old.originalFileData
             )
             documents[idx] = updated
             saveState()
@@ -120,7 +116,7 @@ class DocumentManager: ObservableObject {
     func updateContent(for documentId: UUID, to newContent: String) {
         if let idx = documents.firstIndex(where: { $0.id == documentId }) {
             let old = documents[idx]
-            var updated = Document(
+            let updated = Document(
                 id: old.id,
                 title: old.title,
                 content: newContent,
@@ -134,10 +130,8 @@ class DocumentManager: ObservableObject {
                 type: old.type,
                 imageData: old.imageData,
                 pdfData: old.pdfData,
-                originalFileData: old.originalFileData,
-                docpackJson: old.docpackJson
+                originalFileData: old.originalFileData
             )
-            updated = Self.withDocPackIfNeeded(updated, forceRebuild: true)
             documents[idx] = updated
             saveState()
         }
@@ -303,8 +297,7 @@ class DocumentManager: ObservableObject {
             type: old.type,
             imageData: old.imageData,
             pdfData: old.pdfData,
-            originalFileData: old.originalFileData,
-            docpackJson: old.docpackJson
+            originalFileData: old.originalFileData
         )
         documents[idx] = updated
 
@@ -343,8 +336,7 @@ class DocumentManager: ObservableObject {
                     type: old.type,
                     imageData: old.imageData,
                     pdfData: old.pdfData,
-                    originalFileData: old.originalFileData,
-                    docpackJson: old.docpackJson
+                    originalFileData: old.originalFileData
                 )
             }
         }
@@ -386,8 +378,7 @@ class DocumentManager: ObservableObject {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData,
-                        docpackJson: old.docpackJson
+                        originalFileData: old.originalFileData
                     )
                 }
             }
@@ -431,9 +422,10 @@ class DocumentManager: ObservableObject {
     func generateSummary(for document: Document, force: Bool = false) {
         if document.type == .zip { return }
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
-        let ensured = Self.withDocPackIfNeeded(document)
-        let docpack = ensured.docpackJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let promptBody = docpack.isEmpty ? ensured.content : docpack
+        var promptBody = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if promptBody.isEmpty, let pages = document.ocrPages, !pages.isEmpty {
+            promptBody = Self.buildStructuredText(from: pages, includePageLabels: true)
+        }
         let prompt = """
         <<<SUMMARY_REQUEST>>>
         \(promptBody)
@@ -616,41 +608,17 @@ class DocumentManager: ObservableObject {
             type: documentType,
             imageData: imageData,
             pdfData: pdfData,
-            originalFileData: originalFileData,
-            docpackJson: nil
-        )
-
-        var docpackJson: String? = nil
-        if Self.docPackEligibleTypes.contains(documentType) {
-            docpackJson = Self.buildDocPackJSON(for: baseDocument, textOverride: nil)
-        }
-
-        let document = Document(
-            id: baseDocument.id,
-            title: baseDocument.title,
-            content: baseDocument.content,
-            summary: baseDocument.summary,
-            ocrPages: baseDocument.ocrPages,
-            category: baseDocument.category,
-            keywordsResume: baseDocument.keywordsResume,
-            dateCreated: baseDocument.dateCreated,
-            folderId: baseDocument.folderId,
-            sortOrder: baseDocument.sortOrder,
-            type: baseDocument.type,
-            imageData: baseDocument.imageData,
-            pdfData: baseDocument.pdfData,
-            originalFileData: baseDocument.originalFileData,
-            docpackJson: docpackJson
+            originalFileData: originalFileData
         )
         
         print("📄 DocumentManager: ✅ Document created successfully:")
-        print("📄 DocumentManager:   - Title: \\(document.title)")
-        print("📄 DocumentManager:   - Type: \\(document.type.rawValue)")
-        print("📄 DocumentManager:   - Content length: \\(document.content.count)")
-        print("📄 DocumentManager:   - Has image data: \\(document.imageData != nil)")
-        print("📄 DocumentManager:   - Has PDF data: \\(document.pdfData != nil)")
+        print("📄 DocumentManager:   - Title: \\(baseDocument.title)")
+        print("📄 DocumentManager:   - Type: \\(baseDocument.type.rawValue)")
+        print("📄 DocumentManager:   - Content length: \\(baseDocument.content.count)")
+        print("📄 DocumentManager:   - Has image data: \\(baseDocument.imageData != nil)")
+        print("📄 DocumentManager:   - Has PDF data: \\(baseDocument.pdfData != nil)")
         
-        return document
+        return baseDocument
     }
     
     // MARK: - Text Extraction
@@ -1031,7 +999,7 @@ class DocumentManager: ObservableObject {
                     print("💾 DocumentManager: Successfully loaded \(documents.count) documents + \(folders.count) folders from \(url.lastPathComponent)")
 
                     // Persist backfilled metadata/order once.
-                    if zip(decodedDocuments, backfilled).contains(where: { $0.keywordsResume != $1.keywordsResume || $0.category != $1.category || $0.docpackJson != $1.docpackJson }) {
+                    if zip(decodedDocuments, backfilled).contains(where: { $0.keywordsResume != $1.keywordsResume || $0.category != $1.category }) {
                         saveState()
                     }
                     return
@@ -1100,8 +1068,7 @@ class DocumentManager: ObservableObject {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData,
-                        docpackJson: old.docpackJson
+                        originalFileData: old.originalFileData
                     )
                 }
             }
@@ -1170,296 +1137,12 @@ class DocumentManager: ObservableObject {
             type: doc.type,
             imageData: doc.imageData,
             pdfData: doc.pdfData,
-            originalFileData: doc.originalFileData,
-            docpackJson: doc.docpackJson
+            originalFileData: doc.originalFileData
         )
     }
 
     private static func withBackfilledMetadata(_ doc: Document) -> Document {
-        var updated = withInferredMetadataIfNeeded(doc)
-        updated = withDocPackIfNeeded(updated)
-        return updated
-    }
-
-    private static let docPackEligibleTypes: Set<Document.DocumentType> = [.pdf, .docx, .ppt, .pptx, .xls, .xlsx, .image, .scanned]
-
-    private static func withDocPackIfNeeded(_ doc: Document, forceRebuild: Bool = false) -> Document {
-        if !forceRebuild, let existing = doc.docpackJson, !existing.isEmpty {
-            if !shouldRebuildDocPack(existing) {
-                return doc
-            }
-        }
-        guard docPackEligibleTypes.contains(doc.type) else { return doc }
-        let json = buildDocPackJSON(for: doc, textOverride: nil)
-        return Document(
-            id: doc.id,
-            title: doc.title,
-            content: doc.content,
-            summary: doc.summary,
-            ocrPages: doc.ocrPages,
-            category: doc.category,
-            keywordsResume: doc.keywordsResume,
-            dateCreated: doc.dateCreated,
-            folderId: doc.folderId,
-            sortOrder: doc.sortOrder,
-            type: doc.type,
-            imageData: doc.imageData,
-            pdfData: doc.pdfData,
-            originalFileData: doc.originalFileData,
-            docpackJson: json
-        )
-    }
-
-    static func buildDocPackJSON(for document: Document, textOverride: String?) -> String? {
-        let override = textOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let text = override.isEmpty ? resolveDocPackText(for: document) : override
-        let docPack = buildDocPack(for: document, text: text)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(docPack) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    static func docpackPrefix(from json: String) -> String? {
-        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return nil }
-        guard let docpack = try? JSONDecoder().decode(DocPack.self, from: data) else { return nil }
-
-        var parts: [String] = []
-        var sawParagraph = false
-
-        for block in docpack.blocks {
-            if block.type == "heading" {
-                if let text = block.text, !text.isEmpty {
-                    parts.append(text)
-                }
-                continue
-            }
-
-            if block.type == "paragraph" {
-                if let text = block.text, !text.isEmpty {
-                    parts.append(text)
-                }
-                sawParagraph = true
-                break
-            }
-        }
-
-        if parts.isEmpty || !sawParagraph && parts.isEmpty {
-            return nil
-        }
-        return parts.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func resolveDocPackText(for document: Document) -> String {
-        let trimmed = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        guard let pages = document.ocrPages, !pages.isEmpty else { return "" }
-        return buildStructuredText(from: pages, includePageLabels: true)
-    }
-
-    private static func buildDocPack(for document: Document, text: String) -> DocPack {
-        let trimmedLines = normalizeLinesForDocPack(from: text)
-
-        var sections: [DocPackSection] = [DocPackSection(id: "s0", title: "Document", level: 1, parent: nil)]
-        var currentSectionId: String? = "s0"
-        var lastSectionForLevel: [Int: String] = [1: "s0"]
-        var nextSectionIndex = 1
-
-        var blocks: [DocPackBlock] = []
-        var blockTextMap: [String: String] = [:]
-        var blockCounter = 1
-
-        func nextBlockId() -> String {
-            defer { blockCounter += 1 }
-            return String(format: "b%03d", blockCounter)
-        }
-
-        func addBlock(_ block: DocPackBlock) {
-            blocks.append(block)
-            if let text = block.text, !text.isEmpty {
-                blockTextMap[block.id] = text
-            } else if let items = block.items, !items.isEmpty {
-                blockTextMap[block.id] = items.joined(separator: " ")
-            }
-        }
-
-        func parseHeading(_ line: String) -> (id: String, title: String, level: Int, parent: String?) {
-            if let parsed = parseNumberedHeading(line) {
-                let id = "s" + parsed.numbers.map(String.init).joined(separator: ".")
-                let level = parsed.numbers.count
-                let parentId = level > 1 ? "s" + parsed.numbers.dropLast().map(String.init).joined(separator: ".") : nil
-                return (id, parsed.title, level, parentId)
-            }
-            let id = "s\(nextSectionIndex)"
-            nextSectionIndex += 1
-            return (id, line, 1, nil)
-        }
-
-        func addHeadingBlock(_ line: String) {
-            let heading = parseHeading(line)
-            sections.append(DocPackSection(id: heading.id, title: heading.title, level: heading.level, parent: heading.parent))
-            currentSectionId = heading.id
-            lastSectionForLevel[heading.level] = heading.id
-            let block = DocPackBlock(
-                id: nextBlockId(),
-                section: heading.id,
-                type: "heading",
-                text: heading.title,
-                style: nil,
-                items: nil,
-                caption: nil,
-                columns: nil,
-                rows: nil,
-                notes: nil,
-                language: nil,
-                ref: nil,
-                alt: nil
-            )
-            addBlock(block)
-        }
-
-        var i = 0
-        while i < trimmedLines.count {
-            let line = trimmedLines[i]
-            if line.isEmpty {
-                i += 1
-                continue
-            }
-
-            if isHeadingLine(line) {
-                addHeadingBlock(line)
-                i += 1
-                continue
-            }
-
-            if let list = parseList(from: trimmedLines, startIndex: i) {
-                let block = DocPackBlock(
-                    id: nextBlockId(),
-                    section: currentSectionId,
-                    type: "list",
-                    text: nil,
-                    style: list.style,
-                    items: list.items,
-                    caption: nil,
-                    columns: nil,
-                    rows: nil,
-                    notes: nil,
-                    language: nil,
-                    ref: nil,
-                    alt: nil
-                )
-                addBlock(block)
-                i = list.nextIndex
-                continue
-            }
-
-            if let table = parseTable(from: trimmedLines, startIndex: i) {
-                let block = DocPackBlock(
-                    id: nextBlockId(),
-                    section: currentSectionId,
-                    type: "table",
-                    text: nil,
-                    style: nil,
-                    items: nil,
-                    caption: nil,
-                    columns: table.columns,
-                    rows: table.rows,
-                    notes: nil,
-                    language: nil,
-                    ref: nil,
-                    alt: nil
-                )
-                addBlock(block)
-                i = table.nextIndex
-                continue
-            }
-
-            let paragraph = parseParagraph(from: trimmedLines, startIndex: i)
-            if paragraph.text.isEmpty {
-                i = paragraph.nextIndex
-                continue
-            }
-            let block = DocPackBlock(
-                id: nextBlockId(),
-                section: currentSectionId,
-                type: "paragraph",
-                text: paragraph.text,
-                style: nil,
-                items: nil,
-                caption: nil,
-                columns: nil,
-                rows: nil,
-                notes: nil,
-                language: nil,
-                ref: nil,
-                alt: nil
-            )
-            addBlock(block)
-            i = paragraph.nextIndex
-        }
-
-        if sections.count == 1, blocks.count > 1 {
-            let chunkSize = 3
-            var newSections: [DocPackSection] = [sections[0]]
-            var newBlocks: [DocPackBlock] = []
-            var sectionIndex = 1
-            var blockIndex = 0
-
-            while blockIndex < blocks.count {
-                let sectionId = "s\(sectionIndex)"
-                let sectionTitle = "Section \(sectionIndex)"
-                newSections.append(DocPackSection(id: sectionId, title: sectionTitle, level: 1, parent: nil))
-
-                let end = min(blockIndex + chunkSize, blocks.count)
-                for i in blockIndex..<end {
-                    var b = blocks[i]
-                    b = DocPackBlock(
-                        id: b.id,
-                        section: sectionId,
-                        type: b.type,
-                        text: b.text,
-                        style: b.style,
-                        items: b.items,
-                        caption: b.caption,
-                        columns: b.columns,
-                        rows: b.rows,
-                        notes: b.notes,
-                        language: b.language,
-                        ref: b.ref,
-                        alt: b.alt
-                    )
-                    newBlocks.append(b)
-                }
-                blockIndex = end
-                sectionIndex += 1
-            }
-
-            sections = newSections
-            blocks = newBlocks
-        }
-
-        let language = detectLanguageCode(from: text)
-        let sourceType = docPackSourceType(for: document.type)
-        let createdAt = DateFormatter.docPackDate.string(from: document.dateCreated)
-        let title = splitDisplayTitle(document.title).base
-
-        let doc = DocPackDoc(
-            id: "doc_" + document.id.uuidString.prefix(8),
-            title: title.isEmpty ? nil : title,
-            sourceType: sourceType,
-            language: language,
-            createdAt: createdAt
-        )
-
-        return DocPack(
-            schema: "docpack.v1",
-            doc: doc,
-            outline: sections,
-            blocks: blocks,
-            assets: [],
-            index: DocPackIndex(blockTextMap: blockTextMap)
-        )
+        withInferredMetadataIfNeeded(doc)
     }
 
     private static func parseNumberedHeading(_ line: String) -> (numbers: [Int], title: String)? {
@@ -1574,104 +1257,6 @@ class DocumentManager: ObservableObject {
         return (parts.joined(separator: " "), idx)
     }
 
-    private static func normalizeLinesForDocPack(from text: String) -> [String] {
-        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.contains("\n") {
-            let lines = normalized.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-            return lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        }
-
-        let sentences = splitIntoSentences(normalized)
-        if sentences.isEmpty {
-            return [normalized]
-        }
-
-        var paragraphs: [String] = []
-        var current: [String] = []
-        var currentLength = 0
-        for sentence in sentences {
-            if currentLength + sentence.count > 420, !current.isEmpty {
-                paragraphs.append(current.joined(separator: " "))
-                current = []
-                currentLength = 0
-            }
-            current.append(sentence)
-            currentLength += sentence.count + 1
-        }
-        if !current.isEmpty {
-            paragraphs.append(current.joined(separator: " "))
-        }
-
-        var lines: [String] = []
-        for (idx, para) in paragraphs.enumerated() {
-            lines.append(para)
-            if idx < paragraphs.count - 1 {
-                lines.append("")
-            }
-        }
-        return lines
-    }
-
-    private static func splitIntoSentences(_ text: String) -> [String] {
-        let pattern = #"(?<=[.!?])\s+"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [text] }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        let matches = regex.matches(in: text, options: [], range: range)
-        if matches.isEmpty { return [text] }
-        var sentences: [String] = []
-        var lastIndex = text.startIndex
-        for match in matches {
-            if let splitRange = Range(match.range, in: text) {
-                let sentence = String(text[lastIndex..<splitRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !sentence.isEmpty { sentences.append(sentence) }
-                lastIndex = splitRange.upperBound
-            }
-        }
-        let tail = String(text[lastIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !tail.isEmpty { sentences.append(tail) }
-        return sentences
-    }
-
-    private static func shouldRebuildDocPack(_ existing: String) -> Bool {
-        guard let data = existing.data(using: .utf8),
-              let parsed = try? JSONDecoder().decode(DocPack.self, from: data) else {
-            return true
-        }
-        if parsed.blocks.count <= 1 {
-            let text = parsed.blocks.first?.text ?? ""
-            if text.count > 800 {
-                return true
-            }
-        }
-        return false
-    }
-
-    private static func detectLanguageCode(from text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "unknown" }
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(trimmed)
-        if let language = recognizer.dominantLanguage {
-            return language.rawValue
-        }
-        return "unknown"
-    }
-
-    private static func docPackSourceType(for type: Document.DocumentType) -> String {
-        switch type {
-        case .pdf: return "pdf"
-        case .docx: return "docx"
-        case .ppt: return "ppt"
-        case .pptx: return "pptx"
-        case .xls: return "xls"
-        case .xlsx: return "xlsx"
-        case .text: return "txt"
-        case .image: return "image"
-        case .scanned: return "pdf"
-        case .zip: return "other"
-        }
-    }
-
     private static func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
         guard !pages.isEmpty else { return "" }
 
@@ -1782,13 +1367,4 @@ class DocumentManager: ObservableObject {
         let idx = joined.index(joined.startIndex, offsetBy: 50)
         return String(joined[..<idx])
     }
-}
-
-private extension DateFormatter {
-    static let docPackDate: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
 }

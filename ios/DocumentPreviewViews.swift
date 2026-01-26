@@ -1198,17 +1198,6 @@ struct DocumentInfoView: View {
                     }
                 }
 
-                Section("DocPack JSON") {
-                    if docpackJson.isEmpty {
-                        Text("No DocPack JSON available.")
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text(docpackJson)
-                            .font(.footnote.monospaced())
-                            .textSelection(.enabled)
-                            .foregroundColor(.primary)
-                    }
-                }
             }
             .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
@@ -1276,10 +1265,6 @@ struct DocumentInfoView: View {
         if !trimmed.isEmpty { return trimmed }
         guard let pages = document.ocrPages, !pages.isEmpty else { return "" }
         return buildStructuredText(from: pages, includePageLabels: true)
-    }
-
-    private var docpackJson: String {
-        document.docpackJson?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {

@@ -13,21 +13,39 @@ type Message = {
   timestamp: number;
 };
 
-const MODEL_FILENAME = 'qwen2.5-0.5b-instruct-q8_0.gguf';
+const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
 const MODEL_URL =
-  'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q8_0.gguf';
+  'https://huggingface.co/MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
 
 const SUMMARY_SYSTEM_PROMPT = `
-  MANDATORY:
-    -You will be given the json representing the text of a document in structured form.
-    -Summarize the content in sentences containing the key points.
-    -Only output the summary, nothing related to Outline, Document or other metadata.
-    -The user mustn't know how the data was formatted, only see the summary of their document.
-    -Use only information present in the document. If a detail is not stated, do not guess.
+  You will receive extracted text from a document.
+  Write a concise summary of the key points in plain sentences.
+
+  Rules:
+  Output only the summary text.
+  No title, no label, no introduction, no headings, no bullet points.
+  Do not repeat any idea.
+  Do not rephrase earlier sentences.
+  Do not add information not explicitly stated.
+  Omit unclear details.
+  4–7 sentences max.
+  ~120–180 words.
+  If more info exists, prefer omission.
+  Keep it short.
+  Stop after the last sentence.
   `;
 
+const SUMMARY_CHUNK_PROMPT = `${SUMMARY_SYSTEM_PROMPT}\n  Extract only the most important points; ignore minor details.`;
+const SUMMARY_COMBINE_PROMPT = `${SUMMARY_SYSTEM_PROMPT}\n  Merge and deduplicate; prefer omission over repetition.`;
+
 const CHAT_SYSTEM_PROMPT =
-  'You have access to document titles, summaries, and OCR text provided in the prompt. Be analytical. Use that information when it is relevant to the user question. Do not default to quoting document content; if the user asks for titles, counts, lists, or high-level info and you are confident, answer without pulling full document content. If the user is doing small talk or specifying to ignore the documents, respond based on your general knowledge.';
+  'Answer from the provided ACTIVE_CONTEXT. Do not list documents unless the context has no relevant info. If needed, ask a brief clarification or suggest a document. Keep document references concise and do not include content unless explicitly asked for summary or quotes, or confirmed. Respond in English. Always finish your last sentence; do not trail off.';
+
+const CONTINUATION_SYSTEM_PROMPT =
+  'You will receive a draft assistant response. Continue and complete only the final sentence. Output only the missing continuation. Do not add new sentences. Do not repeat any text from the draft. If the final sentence is already complete, output nothing.';
+
+const CHAT_DETAIL_MARKER = '<<<CHAT_DETAIL>>>';
+const CHAT_BRIEF_MARKER = '<<<CHAT_BRIEF>>>';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -65,6 +83,24 @@ function App(): React.JSX.Element {
         console.log('[Model] Checking for model at:', filePath);
         const fileExists = await RNFS.exists(filePath);
         console.log('[Model] File exists:', fileExists);
+
+        // Remove any other installed GGUF models to save space when switching models.
+        try {
+          const dirItems = await RNFS.readDir(RNFS.DocumentDirectoryPath);
+          for (const item of dirItems) {
+            if (!item.isFile()) continue;
+            if (!item.name.endsWith('.gguf')) continue;
+            if (item.name === MODEL_FILENAME) continue;
+            try {
+              console.log('[Model] Removing old model:', item.name);
+              await RNFS.unlink(item.path);
+            } catch (err) {
+              console.warn('[Model] Failed to remove old model:', item.name, err);
+            }
+          }
+        } catch (err) {
+          console.warn('[Model] Failed to scan for old models:', err);
+        }
 
         if (!fileExists) {
           console.log('[Model] Downloading model...');
@@ -133,44 +169,6 @@ useEffect(() => {
 
   const emitter = new NativeEventEmitter(EdgeAI);
 
-  const formatGemmaPrompt = (messages: Message[]): string => {
-    const system = messages
-      .filter(m => m.role === 'system')
-      .map(m => m.content.trim())
-      .join('\n\n')
-      .trim();
-
-    const turns = messages.filter(m => m.role !== 'system');
-
-    // Build a proper multi-turn prompt:
-    // <bos> is often helpful; some builds inject it automatically, but adding it is usually safe.
-    let prompt = `<bos>`;
-
-    // Put system text into the first user turn (common practice for these templates)
-    // so it's not ignored by the model.
-    const normalizedTurns: Message[] = turns.map((m, idx) => {
-      if (idx === 0 && m.role === 'user' && system) {
-        return { ...m, content: `${system}\n\n${m.content}` };
-      }
-      return m;
-    });
-
-    // If there was no initial user message, still include system in a synthetic user turn
-    if (normalizedTurns.length === 0 && system) {
-      normalizedTurns.push({ role: 'user', content: system, timestamp: Date.now() });
-    }
-
-    for (const m of normalizedTurns) {
-      const role = m.role === 'assistant' ? 'model' : 'user';
-      prompt += `<start_of_turn>${role}\n${m.content.trim()}\n<end_of_turn>\n`;
-    }
-
-    // Tell the model it's its turn
-    prompt += `<start_of_turn>model\n`;
-
-    return prompt;
-  };
-
   const formatQwenPrompt = (messages: Message[]): string => {
     let prompt = '';
     for (const m of messages) {
@@ -182,19 +180,11 @@ useEffect(() => {
   };
 
   const formatPrompt = (messages: Message[]): string => {
-    const lower = MODEL_FILENAME.toLowerCase();
-    if (lower.includes('qwen')) {
-      return formatQwenPrompt(messages);
-    }
-    return formatGemmaPrompt(messages);
+    return formatQwenPrompt(messages);
   };
 
   const stopTokensForModel = (): string[] => {
-    const lower = MODEL_FILENAME.toLowerCase();
-    if (lower.includes('qwen')) {
-      return ['<|im_end|>', '</s>'];
-    }
-    return ['<end_of_turn>', '</s>'];
+    return ['<|im_end|>', '</s>'];
   };
 
   const processQueue = async () => {
@@ -226,6 +216,14 @@ useEffect(() => {
         if (rawPrompt.startsWith(NO_HISTORY_MARKER)) {
           noHistory = true;
           rawPrompt = rawPrompt.slice(NO_HISTORY_MARKER.length).trimStart();
+        }
+        let chatDetail = false;
+        if (rawPrompt.startsWith(CHAT_DETAIL_MARKER)) {
+          chatDetail = true;
+          rawPrompt = rawPrompt.slice(CHAT_DETAIL_MARKER.length).trimStart();
+        } else if (rawPrompt.startsWith(CHAT_BRIEF_MARKER)) {
+          chatDetail = false;
+          rawPrompt = rawPrompt.slice(CHAT_BRIEF_MARKER.length).trimStart();
         }
         const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
         const isName = rawPrompt.startsWith(NAME_MARKER);
@@ -262,7 +260,7 @@ useEffect(() => {
 
           const runSummary = async (summaryText: string, nPredict: number): Promise<string> => {
             const summaryMessages: Message[] = [
-              { role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() },
+              { role: 'system', content: SUMMARY_CHUNK_PROMPT, timestamp: Date.now() },
               { role: 'user', content: summaryText, timestamp: Date.now() }
             ];
             const summaryPrompt = formatPrompt(summaryMessages);
@@ -271,8 +269,10 @@ useEffect(() => {
                 prompt: summaryPrompt,
                 n_predict: nPredict,
                 temperature: 0.2,
-                top_p: 0.7,
-                repeat_penalty: 1.25,
+                top_p: 0.9,
+                repeat_penalty: 1.2,
+                repeat_last_n: 256,
+                min_p: 0.05,
                 stop: stopTokens
               },
               () => {}
@@ -283,37 +283,112 @@ useEffect(() => {
             return out;
           };
 
+          const runSummaryFinalCombine = async (summaryText: string, nPredict: number): Promise<string> => {
+            const summaryMessages: Message[] = [
+              { role: 'system', content: SUMMARY_COMBINE_PROMPT, timestamp: Date.now() },
+              { role: 'user', content: summaryText, timestamp: Date.now() }
+            ];
+            const summaryPrompt = formatPrompt(summaryMessages);
+            const summaryResult = await context.completion(
+              {
+                prompt: summaryPrompt,
+                n_predict: nPredict,
+                temperature: 0.12,
+                top_p: 0.88,
+                repeat_penalty: 1.35,
+                repeat_last_n: 256,
+                min_p: 0.05,
+                stop: stopTokens
+              },
+              () => {}
+            );
+
+            let out = (summaryResult?.text ?? '').trim();
+            out = out.replace(/\b(\w+)\b(?:\s+\1){5,}/gi, '$1');
+            return out;
+          };
+
+          const combineSummaries = async (summaries: string[]): Promise<string> => {
+            const items = summaries.map(s => s.trim()).filter(Boolean);
+            if (items.length === 0) return '';
+            if (items.length === 1) return items[0];
+            if (items.length > 6) {
+              const intermediates: string[] = [];
+              for (let i = 0; i < items.length; i += 5) {
+                const slice = items.slice(i, i + 5);
+                const combined = await combineSummaries(slice);
+                if (combined) intermediates.push(combined);
+              }
+              return combineSummaries(intermediates);
+            }
+
+            const combined = items.join('\n');
+            const finalPrompt =
+              `Combine the following chunk summaries into one concise summary in plain sentences. ` +
+              `No bullets, no headings, no labels. Do not repeat ideas.\n\n` +
+              combined;
+            return runSummaryFinalCombine(finalPrompt, 420);
+          };
+
+          const runContinuation = async (draftText: string, nPredict: number): Promise<string> => {
+            const continuationMessages: Message[] = [
+              { role: 'system', content: CONTINUATION_SYSTEM_PROMPT, timestamp: Date.now() },
+              { role: 'user', content: draftText, timestamp: Date.now() }
+            ];
+            const continuationPrompt = formatPrompt(continuationMessages);
+            const continuationResult = await context.completion(
+              {
+                prompt: continuationPrompt,
+                n_predict: nPredict,
+                temperature: 0.2,
+                top_p: 0.9,
+                repeat_penalty: 1.25,
+                repeat_last_n: 256,
+                min_p: 0.05,
+                stop: stopTokens
+              },
+              () => {}
+            );
+
+            let out = (continuationResult?.text ?? '').trim();
+            out = out.replace(/\b(\w+)\b(?:\s+\1){3,}/gi, '$1');
+            return out;
+          };
+
           let text = "";
           if (isSummary) {
-            const isDocpack = /"schema"\s*:\s*"docpack\.v1"/i.test(userContent);
-
-            if (isDocpack) {
-              // Keep JSON intact so the model can parse blocks reliably.
-              text = await runSummary(userContent, 900);
-            } else {
-              const chunkSize = 4000;
-              const chunks: string[] = [];
-              for (let i = 0; i < userContent.length; i += chunkSize) {
-                chunks.push(userContent.slice(i, i + chunkSize));
-              }
-
-              if (chunks.length <= 1) {
-                text = await runSummary(userContent, 820);
+            const chunkSize = 4000;
+            const chunks: string[] = [];
+            const paragraphs = userContent.split(/\n\s*\n/);
+            let current = '';
+            for (const para of paragraphs) {
+              const trimmed = para.trim();
+              if (!trimmed) continue;
+              const candidate = current ? `${current}\n\n${trimmed}` : trimmed;
+              if (candidate.length > chunkSize && current) {
+                chunks.push(current);
+                current = trimmed;
               } else {
-                const chunkSummaries: string[] = [];
-                for (let i = 0; i < chunks.length; i++) {
-                  const chunk = chunks[i];
-                  const header = `Chunk ${i + 1} of ${chunks.length}:\n`;
-                  const chunkSummary = await runSummary(header + chunk, 320);
-                  if (chunkSummary) {
-                    chunkSummaries.push(chunkSummary);
-                  }
-                }
-
-                const combined = chunkSummaries.join("\n");
-                const finalPrompt = `Combine the following chunk summaries into concise bullet points:\n\n${combined}`;
-                text = await runSummary(finalPrompt, 820);
+                current = candidate;
               }
+            }
+            if (current) {
+              chunks.push(current);
+            }
+
+            if (chunks.length <= 1) {
+              text = await runSummary(userContent, 320);
+            } else {
+              const chunkSummaries: string[] = [];
+              for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                const chunkSummary = await runSummary(chunk, 180);
+                if (chunkSummary) {
+                  chunkSummaries.push(chunkSummary);
+                }
+              }
+
+              text = await combineSummaries(chunkSummaries);
             }
           } else if (isName) {
             const namePrompt = formatPrompt(messagesForAI);
@@ -323,7 +398,9 @@ useEffect(() => {
                 n_predict: 50,
                 temperature: 0.4,
                 top_p: 0.9,
-                repeat_penalty: 1.2,
+                repeat_penalty: 1.4,
+                repeat_last_n: 128,
+                min_p: 0.05,
                 stop: stopTokens
               },
               () => {}
@@ -332,10 +409,12 @@ useEffect(() => {
           } else {
             const completionParams = {
               prompt: promptText,
-              n_predict: 700,
-              temperature: 0.35,
+              n_predict: chatDetail ? 650 : 240,
+              temperature: 0.3,
               top_p: 0.8,
-              repeat_penalty: 1.35,
+              repeat_penalty: 1.45,
+              repeat_last_n: 256,
+              min_p: 0.05,
               stop: stopTokens
             };
 
@@ -351,6 +430,24 @@ useEffect(() => {
             text = (result?.text ?? '').trim();
           }
 
+          const endsCleanly = (s: string) => /[.!?]["')\]]?\s*$/.test(s.trim());
+          const looksCut = (s: string) =>
+            !endsCleanly(s) || /[,;:\-–—]\s*$/.test(s.trim());
+
+          const trimToLastCompleteSentence = (input: string): string => {
+            const match = input.match(/[\s\S]*[.!?]["')\]]?\s*/);
+            return match ? match[0].trim() : input.trim();
+          };
+
+          const squashWordStutter = (input: string): string => {
+            let out = input;
+            // Collapse repeated words (3+ in a row) to reduce stutter.
+            out = out.replace(/\b(\w+)\b(?:\s+\1){2,}\b/gi, '$1');
+            // Collapse repeated two-word phrases (3+ in a row).
+            out = out.replace(/\b(\w+\s+\w+)\b(?:\s+\1){2,}\b/gi, '$1');
+            return out;
+          };
+
           const dedupeRepeats = (input: string): string => {
             const lines = input.split('\n');
             const dedupedLines: string[] = [];
@@ -359,17 +456,157 @@ useEffect(() => {
                 dedupedLines.push(line);
               }
             }
-            const lineDeduped = dedupedLines.join('\n');
-            const sentences = lineDeduped.split(/(?<=[.!?])\s+/);
-            const dedupedSentences: string[] = [];
-            for (const sentence of sentences) {
-              const trimmed = sentence.trim();
-              if (!trimmed) continue;
-              if (dedupedSentences[dedupedSentences.length - 1] !== trimmed) {
-                dedupedSentences.push(trimmed);
+            return dedupedLines.join('\n').trim();
+          };
+
+          const dedupeSentencesGlobal = (input: string): string => {
+            const sentences = input.split(/(?<=[.!?])\s+/);
+            const seen = new Set<string>();
+            const out: string[] = [];
+
+            const norm = (s: string) =>
+              s
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .replace(/[“”"']/g, '')
+                .replace(/[^a-z0-9 .,!?:;-]/gi, '')
+                .trim();
+
+            for (const s of sentences) {
+              const t = s.trim();
+              if (!t) continue;
+              const key = norm(t);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              out.push(t);
+            }
+            return out.join(' ').trim();
+          };
+
+          const approxDedupeSentences = (input: string): string => {
+            const sentences = input.split(/(?<=[.!?])\s+/).filter(Boolean);
+            if (sentences.length <= 1) return input.trim();
+            const stopwords = new Set([
+              'a','an','the','and','or','but','if','then','else','when','while','of','to','in','on','for','with',
+              'at','by','from','as','is','are','was','were','be','been','being','it','this','that','these','those',
+              'its','their','they','them','we','you','your','i','me','my','our','ours'
+            ]);
+            const norm = (s: string) =>
+              s
+                .toLowerCase()
+                .replace(/[^a-z0-9\s]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const toSet = (s: string) => {
+              const words = norm(s).split(' ').filter(Boolean).filter(w => !stopwords.has(w));
+              return new Set(words);
+            };
+            const sets: Array<Set<string>> = [];
+            const out: string[] = [];
+
+            for (const s of sentences) {
+              const setA = toSet(s);
+              if (setA.size === 0) {
+                out.push(s.trim());
+                sets.push(setA);
+                continue;
+              }
+              let isDup = false;
+              for (const setB of sets) {
+                if (setB.size === 0) continue;
+                let inter = 0;
+                for (const w of setA) {
+                  if (setB.has(w)) inter++;
+                }
+                const union = setA.size + setB.size - inter;
+                const jaccard = union === 0 ? 0 : inter / union;
+                if (jaccard >= 0.82) {
+                  isDup = true;
+                  break;
+                }
+              }
+              if (!isDup) {
+                out.push(s.trim());
+                sets.push(setA);
               }
             }
-            return dedupedSentences.join(' ').trim();
+
+            return out.join(' ').trim();
+          };
+
+          const trimRepeatedTail = (input: string): string => {
+            const sentences = input.split(/(?<=[.!?])\s+/).filter(Boolean);
+            if (sentences.length < 2) return input.trim();
+            const norm = (s: string) =>
+              s
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .replace(/[“”"']/g, '')
+                .replace(/[^a-z0-9 .,!?:;-]/gi, '')
+                .trim();
+
+            let pops = 0;
+            while (sentences.length >= 2 && pops < 5) {
+              const last = sentences[sentences.length - 1];
+              const lastKey = norm(last);
+              let seenEarlier = false;
+              for (let i = 0; i < sentences.length - 1; i++) {
+                if (norm(sentences[i]) === lastKey) {
+                  seenEarlier = true;
+                  break;
+                }
+              }
+              if (!seenEarlier) break;
+              sentences.pop();
+              pops++;
+            }
+
+            return sentences.join(' ').trim();
+          };
+
+          const stripSummaryHeading = (input: string): string => {
+            let out = input;
+            // Remove a leading sentence that contains "summary" up to the first colon.
+            out = out.replace(/^\s*[^:\n]*\bsummary\b[^:\n]*:\s*/i, '');
+            return out;
+          };
+
+          const stripLeadingMarkdownMarkers = (input: string): string => {
+            let out = input;
+            // Remove leftover bold/italic markers at the start.
+            out = out.replace(/^\s*(\*\*|__|\*)+\s*/, '');
+            return out;
+          };
+
+          const formatBullets = (input: string): string => {
+            let out = input;
+            // Inline dashes -> new line + tab.
+            out = out.replace(/([^\n])\s*-\s+/g, '$1\n\t- ');
+            // Line-start dashes -> ensure newline + tab.
+            out = out.replace(/(^|\n)\s*-\s+/g, '\n\t- ');
+            // Inline bullets -> new line + tab.
+            out = out.replace(/([^\n])\s*•\s*/g, '$1\n\t• ');
+            // Line-start bullets -> ensure newline + tab.
+            out = out.replace(/(^|\n)\s*•\s*/g, '\n\t• ');
+            // Remove a leading newline added at the start of the string.
+            out = out.replace(/^\n/, '');
+            return out;
+          };
+
+          const finishIfCut = async (input: string): Promise<string> => {
+            let out = input.trim();
+            if (endsCleanly(out) && !looksCut(out)) return out;
+
+            for (let i = 0; i < 2; i++) {
+              if (endsCleanly(out) && !looksCut(out)) break;
+              const continuation = await runContinuation(out, 60);
+              const cont = continuation.replace(/^[\s.\-–—:;]+/, '').trim();
+              if (!cont) break;
+              out = (out.trimEnd() + ' ' + cont).trim();
+            }
+
+            if (endsCleanly(out) && !looksCut(out)) return out;
+            return trimToLastCompleteSentence(out);
           };
 
           // strip only template artifacts
@@ -381,11 +618,26 @@ useEffect(() => {
             .replace(/^\s*model\s*\n/i, '')
             .trim();
           if (isSummary) {
-            text = text
-              .trim();
+            text = stripSummaryHeading(text);
+            text = stripLeadingMarkdownMarkers(text).trimStart();
           }
-          text = dedupeRepeats(text);
-          text = text.trim();
+          
+          if (isSummary) {
+            text = squashWordStutter(text);
+            text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
+            text = trimRepeatedTail(text);
+            text = await finishIfCut(text);
+            text = text.trim();
+          } else {
+            if (!isName && looksCut(text)) {
+              const continuation = await runContinuation(text, 60);
+              const cont = continuation.replace(/^[\s.\-–—:;]+/, '').trim();
+              if (cont) text = (text.trimEnd() + ' ' + cont).trim();
+            }
+            text = squashWordStutter(text);
+            text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
+            text = text.trim();
+          }
 
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;

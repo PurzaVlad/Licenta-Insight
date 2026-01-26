@@ -585,8 +585,7 @@ struct DocumentsView: View {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData,
-                        docpackJson: old.docpackJson
+                        originalFileData: old.originalFileData
                     )
                     documentManager.documents[idx] = updated
 
@@ -749,11 +748,12 @@ struct DocumentsView: View {
                             category: cat,
                             keywordsResume: kw,
                             dateCreated: document.dateCreated,
+                            folderId: current.folderId,
+                            sortOrder: current.sortOrder,
                             type: document.type,
                             imageData: document.imageData,
                             pdfData: document.pdfData,
-                            originalFileData: document.originalFileData,
-                            docpackJson: current.docpackJson
+                            originalFileData: document.originalFileData
                         )
                         
                         // Update document in the manager
@@ -831,7 +831,7 @@ struct DocumentsView: View {
         isProcessing = true
         
         let document = Document(
-            title: "Scanned Document \(documentManager.documents.count + 1)",
+            title: titleCaseFromOCR(text),
             content: text,
             summary: "Processing summary...",
             dateCreated: Date(),
@@ -884,15 +884,15 @@ struct DocumentsView: View {
             }
         }
 
-        let namingSeed = buildNamingSeed(from: ocrPages, fallback: firstPageText)
+        let namingSeed = extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? firstPageText : extractedText
 
         // Use AI to suggest document name based on headings + first paragraph
-        if !namingSeed.isEmpty && namingSeed != "No text found in image" && !namingSeed.contains("OCR failed") {
+        if !namingSeed.isEmpty {
             print("Using AI to generate document name from OCR text")
             generateAIDocumentName(from: namingSeed)
         } else {
             print("OCR extraction failed or returned no text, using default name")
-            suggestedName = "ScannedDocument"
+            suggestedName = titleCaseFromOCR(firstPageText)
             customName = suggestedName
             isProcessing = false
             showingNamingDialog = true
@@ -900,45 +900,29 @@ struct DocumentsView: View {
     }
 
     private func generateAIDocumentName(from text: String) {
+        let base = extractHeadingsAndFirstParagraph(from: text)
+        let seed = base.isEmpty ? text : base
+        let candidates = extractTitleCandidates(from: seed)
+        let fallback = candidates.first ?? titleCaseFromOCR(text)
+
         let prompt = """
-            You will receive DocPack-derived text.
-            It contains headings followed by the first paragraph (then stops).
-            Treat headings as strong signals for the document's topic.
+            Choose the best candidate and output a 1–4 word Title Case title. No punctuation. Output only the title.
 
-            Task:
-            Pick up to 3 DESCRIPTIVE TAGS that appear in the text (exact words only).
-
-            HARD RULES:
-            - choose words that appear in OCR text EXACTLY (no paraphrase)
-            - max 3 words total
-            - descriptive only (nouns/adjectives), no stopwords (e.g., The, And, Of, To, For, In)
-            - no duplicates
-            - no spaces anywhere in output
-            - no numbers
-            - output must be a single string
-            - no explanations, no reasoning, no extra text
-
-            OUTPUT:
-            - Join the selected words with NO separator (concatenate).
-
-            TEXT:
-            <<<
-            \(text.prefix(300))
-            >>>
-
-            Before responding, verify all rules.
+            CANDIDATES:
+            \(candidates.map { "- \($0)" }.joined(separator: "\n"))
             """
 
         print("🏷️ DocumentsView: Generating AI document name from OCR text")
-        EdgeAI.shared?.generate(prompt, resolver: { result in
+        // Ensure the JS bridge routes this as a naming request with no chat history.
+        EdgeAI.shared?.generate("<<<NO_HISTORY>>><<<NAME_REQUEST>>>" + prompt, resolver: { result in
             print("🏷️ DocumentsView: Got name suggestion result: \(String(describing: result))")
             DispatchQueue.main.async {
                 if let result = result as? String, !result.isEmpty {
                     let clean = result.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let normalized = normalizeSuggestedTitle(clean)
-                    self.suggestedName = normalized.isEmpty ? "ScannedDocument" : normalized
+                    let normalized = normalizeSuggestedTitle(clean, fallback: fallback)
+                    self.suggestedName = normalized.isEmpty ? fallback : normalized
                 } else {
-                    self.suggestedName = "ScannedDocument"
+                    self.suggestedName = fallback
                 }
                 self.customName = self.suggestedName
                 self.isProcessing = false
@@ -947,7 +931,7 @@ struct DocumentsView: View {
         }, rejecter: { code, message, error in
             print("❌ DocumentsView: Name generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
-                self.suggestedName = "ScannedDocument"
+                self.suggestedName = fallback
                 self.customName = self.suggestedName
                 self.isProcessing = false
                 self.showingNamingDialog = true
@@ -955,38 +939,127 @@ struct DocumentsView: View {
         })
     }
 
-    private func normalizeSuggestedTitle(_ raw: String) -> String {
-        let stripped = raw.replacingOccurrences(of: "[^A-Za-z ]+", with: " ", options: .regularExpression)
-        let words = stripped
-            .split(separator: " ")
-            .map(String.init)
+    private func extractTitleCandidates(from text: String) -> [String] {
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        guard words.count >= 2 else { return "" }
-        let stopwords: Set<String> = ["and", "of", "for", "the", "to", "in", "on", "with", "by", "from", "at", "or", "a", "an"]
-        let filtered = words.filter { !stopwords.contains($0.lowercased()) }
-        let limited = Array(filtered.prefix(3))
-        return limited.joined()
+        var scored: [(String, Double)] = []
+        for (idx, line) in lines.enumerated() {
+            if isMetadataLine(line) { continue }
+            let score = scoreTitleLine(line, index: idx)
+            if score > 0 {
+                scored.append((line, score))
+            }
+        }
+
+        let top = scored
+            .sorted { $0.1 > $1.1 }
+            .prefix(5)
+            .map { normalizeTitleCandidate($0.0, maxWords: 16) }
+            .filter { !$0.isEmpty }
+
+        return top.isEmpty ? [normalizeTitleCandidate(text, maxWords: 8)] : top
+    }
+
+    private func isMetadataLine(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        let denylist = [
+            "abstract", "keywords", "references", "acknowledg", "copyright",
+            "doi", "issn", "isbn", "volume", "vol.", "issue", "no.", "page",
+            "journal", "proceedings", "conference", "university", "department",
+            "faculty", "publisher", "press", "editor", "address", "telephone", "phone", "fax"
+        ]
+        if lower.contains("http://") || lower.contains("https://") || lower.contains("www.") { return true }
+        if lower.range(of: "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if lower.range(of: "\\bdoi\\b", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bissn\\b", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bpage\\s+\\d+\\b", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bvol\\.?\\s*\\d+", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bissue\\s*\\d+", options: .regularExpression) != nil { return true }
+        if denylist.contains(where: { lower.contains($0) }) { return true }
+        return false
+    }
+
+    private func scoreTitleLine(_ line: String, index: Int) -> Double {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 4 { return -1 }
+        if trimmed.count > 120 { return -1 }
+
+        let words = trimmed.split { $0.isWhitespace }
+        let wordCount = words.count
+        let letters = trimmed.filter { $0.isLetter }.count
+        let digits = trimmed.filter { $0.isNumber }.count
+        let total = max(1, trimmed.count)
+
+        var score: Double = 0
+        score += Double(max(0, 5 - index)) * 0.35 // top-of-page boost
+        if wordCount >= 4 && wordCount <= 16 { score += 2.0 }
+        if wordCount <= 2 { score -= 1.5 }
+        if wordCount > 20 { score -= 1.0 }
+
+        let letterRatio = Double(letters) / Double(total)
+        let digitRatio = Double(digits) / Double(total)
+        if letterRatio >= 0.7 { score += 1.0 }
+        if letterRatio < 0.4 { score -= 1.0 }
+        if digitRatio > 0.3 { score -= 1.5 }
+
+        let isAllCaps = trimmed == trimmed.uppercased() && letterRatio > 0.5
+        let isTitleCase = words.allSatisfy { word in
+            guard let first = word.first else { return false }
+            return String(first) == String(first).uppercased()
+        }
+        if isTitleCase { score += 0.8 }
+        if isAllCaps { score += 0.5 }
+
+        return score
+    }
+
+    private func normalizeTitleCandidate(_ input: String, maxWords: Int) -> String {
+        let firstLine = input.components(separatedBy: .newlines).first ?? ""
+        let stripped = firstLine
+            .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[\"'“”`]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.isEmpty { return "" }
+        return stripped.split(separator: " ").prefix(maxWords).joined(separator: " ")
+    }
+
+    private func normalizeSuggestedTitle(_ raw: String, fallback: String) -> String {
+        let firstLine = raw.components(separatedBy: .newlines).first ?? ""
+        let stripped = firstLine
+            .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[\"'“”`]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let words = stripped.split(separator: " ").map(String.init)
+        var seen = Set<String>()
+        var unique: [String] = []
+        for word in words {
+            let key = word.lowercased()
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            unique.append(word)
+            if unique.count == 4 { break }
+        }
+
+        let cleaned = unique.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
+        if isMetadataLine(cleaned) { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
+        return enforceTitleCase(cleaned)
     }
 
     private func buildNamingSeed(from pages: [OCRPage], fallback: String) -> String {
         let structured = buildStructuredText(from: pages, includePageLabels: false)
         let source = structured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : structured
-        let tempDoc = Document(
-            title: "Scan",
-            content: source,
-            summary: "",
-            ocrPages: pages.isEmpty ? nil : pages,
-            type: .scanned,
-            imageData: nil,
-            pdfData: nil
-        )
-        if let json = DocumentManager.buildDocPackJSON(for: tempDoc, textOverride: source),
-           let prefix = DocumentManager.docpackPrefix(from: json),
-           !prefix.isEmpty {
-            return String(prefix.prefix(800))
-        }
-
         let prefix = extractHeadingsAndFirstParagraph(from: source)
         return String((prefix.isEmpty ? source : prefix).prefix(800))
     }
@@ -1005,6 +1078,23 @@ struct DocumentsView: View {
         guard !paragraphs.isEmpty else { return trimmed }
         if paragraphs.count == 1 { return paragraphs[0] }
         return paragraphs[0] + "\n\n" + paragraphs[1]
+    }
+
+    private func titleCaseFromOCR(_ text: String) -> String {
+        let snippet = String(text.prefix(300))
+        return enforceTitleCase(snippet)
+    }
+
+    private func enforceTitleCase(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let normalized = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let words = normalized.lowercased().split(separator: " ").map(String.init)
+        let cased = words.map { word -> String in
+            guard let first = word.first else { return "" }
+            return String(first).uppercased() + word.dropFirst()
+        }
+        return cased.joined()
     }
 
     private func finalizeDocument(with name: String) {
@@ -1944,8 +2034,7 @@ struct FolderDocumentsView: View {
                         type: old.type,
                         imageData: old.imageData,
                         pdfData: old.pdfData,
-                        originalFileData: old.originalFileData,
-                        docpackJson: old.docpackJson
+                        originalFileData: old.originalFileData
                     )
 
                     // Trigger persistence
