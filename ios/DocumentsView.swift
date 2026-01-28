@@ -353,20 +353,11 @@ struct DocumentsView: View {
                             }
                         } else {
                             Button {
-                                documentManager.setPrefersGridLayout(false)
+                                documentManager.setPrefersGridLayout(layoutMode == .list)
                             } label: {
-                                Image(systemName: "list.bullet")
-                                    .font(.system(size: 16, weight: layoutMode == .list ? .semibold : .regular))
+                                Image(systemName: layoutMode == .grid ? "list.bullet" : "square.grid.3x3")
+                                    .font(.system(size: 16, weight: .semibold))
                             }
-                            .foregroundColor(layoutMode == .list ? .primary : .secondary)
-
-                            Button {
-                                documentManager.setPrefersGridLayout(true)
-                            } label: {
-                                Image(systemName: layoutMode == .grid ? "square.grid.3x3.fill" : "square.grid.3x3")
-                                    .font(.system(size: 16, weight: layoutMode == .grid ? .semibold : .regular))
-                            }
-                            .foregroundColor(layoutMode == .grid ? .primary : .secondary)
 
                             Menu {
                                 Button("New Folder") {
@@ -1943,20 +1934,11 @@ struct FolderDocumentsView: View {
                     }
                 } else {
                     Button {
-                        documentManager.setPrefersGridLayout(false)
+                        documentManager.setPrefersGridLayout(layoutMode == .list)
                     } label: {
-                        Image(systemName: "list.bullet")
-                            .font(.system(size: 16, weight: layoutMode == .list ? .semibold : .regular))
+                        Image(systemName: layoutMode == .grid ? "list.bullet" : "square.grid.3x3")
+                            .font(.system(size: 16, weight: .semibold))
                     }
-                    .foregroundColor(layoutMode == .list ? .primary : .secondary)
-
-                    Button {
-                        documentManager.setPrefersGridLayout(true)
-                    } label: {
-                        Image(systemName: layoutMode == .grid ? "square.grid.3x3.fill" : "square.grid.3x3")
-                            .font(.system(size: 16, weight: layoutMode == .grid ? .semibold : .regular))
-                    }
-                    .foregroundColor(layoutMode == .grid ? .primary : .secondary)
                 }
             }
         }

@@ -46,6 +46,9 @@ const CONTINUATION_SYSTEM_PROMPT =
 
 const CHAT_DETAIL_MARKER = '<<<CHAT_DETAIL>>>';
 const CHAT_BRIEF_MARKER = '<<<CHAT_BRIEF>>>';
+const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
+const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
+const NAME_MARKER = '<<<NAME_REQUEST>>>';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -68,6 +71,7 @@ function App(): React.JSX.Element {
   const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'chat' } | null>(null);
   const abortCurrentRef = useRef(false);
   const canceledRequestIdsRef = useRef<Set<string>>(new Set());
+  const pendingSummaryRestartRef = useRef<{ requestId: string; prompt: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,6 +191,19 @@ useEffect(() => {
     return ['<|im_end|>', '</s>'];
   };
 
+  const isUserPromptText = (raw: string): boolean => {
+    let text = raw;
+    if (text.startsWith(NO_HISTORY_MARKER)) {
+      text = text.slice(NO_HISTORY_MARKER.length).trimStart();
+    }
+    if (text.startsWith(CHAT_DETAIL_MARKER)) {
+      text = text.slice(CHAT_DETAIL_MARKER.length).trimStart();
+    } else if (text.startsWith(CHAT_BRIEF_MARKER)) {
+      text = text.slice(CHAT_BRIEF_MARKER.length).trimStart();
+    }
+    return !(text.startsWith(SUMMARY_MARKER) || text.startsWith(NAME_MARKER));
+  };
+
   const processQueue = async () => {
     console.log('[EdgeAI] processQueue called, isRunning:', isRunningRef.current, 'queue length:', queueRef.current.length);
     if (isRunningRef.current) {
@@ -208,9 +225,6 @@ useEffect(() => {
         const { requestId, prompt } = job;
         console.log('[EdgeAI] Processing request:', requestId, 'prompt length:', prompt.length);
         
-        const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
-        const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
-        const NAME_MARKER = '<<<NAME_REQUEST>>>';
         let rawPrompt = prompt;
         let noHistory = false;
         if (rawPrompt.startsWith(NO_HISTORY_MARKER)) {
@@ -233,6 +247,7 @@ useEffect(() => {
           ? rawPrompt.slice(NAME_MARKER.length).trim()
           : rawPrompt;
         const modeLabel: 'summary' | 'name' | 'chat' = isSummary ? 'summary' : isName ? 'name' : 'chat';
+        const jobType = modeLabel;
         console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
         currentJobRef.current = { requestId, prompt, type: modeLabel };
         abortCurrentRef.current = false;
@@ -381,14 +396,18 @@ useEffect(() => {
             } else {
               const chunkSummaries: string[] = [];
               for (let i = 0; i < chunks.length; i++) {
+                if (abortCurrentRef.current) break;
                 const chunk = chunks[i];
                 const chunkSummary = await runSummary(chunk, 180);
+                if (abortCurrentRef.current) break;
                 if (chunkSummary) {
                   chunkSummaries.push(chunkSummary);
                 }
               }
 
-              text = await combineSummaries(chunkSummaries);
+              if (!abortCurrentRef.current) {
+                text = await combineSummaries(chunkSummaries);
+              }
             }
           } else if (isName) {
             const namePrompt = formatPrompt(messagesForAI);
@@ -617,12 +636,12 @@ useEffect(() => {
             .replace(/<\|im_end\|>/g, '')
             .replace(/^\s*model\s*\n/i, '')
             .trim();
-          if (isSummary) {
+          if (isSummary && !abortCurrentRef.current) {
             text = stripSummaryHeading(text);
             text = stripLeadingMarkdownMarkers(text).trimStart();
           }
           
-          if (isSummary) {
+          if (isSummary && !abortCurrentRef.current) {
             text = squashWordStutter(text);
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
             text = trimRepeatedTail(text);
@@ -641,7 +660,6 @@ useEffect(() => {
 
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;
-            queueRef.current.push({ requestId, prompt });
             continue;
           }
 
@@ -669,11 +687,18 @@ useEffect(() => {
           const errorMsg = e?.message ?? 'Unknown error';
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;
-            queueRef.current.push({ requestId, prompt });
           } else {
             EdgeAI.rejectRequest(requestId, 'GEN_ERR', errorMsg);
           }
         } finally {
+          if (jobType === 'chat' && pendingSummaryRestartRef.current) {
+            const hasQueuedUserPrompt = queueRef.current.some((job) => isUserPromptText(job.prompt));
+            if (!hasQueuedUserPrompt) {
+              const pending = pendingSummaryRestartRef.current;
+              pendingSummaryRestartRef.current = null;
+              queueRef.current.unshift(pending);
+            }
+          }
           currentJobRef.current = null;
           console.log('[EdgeAI] Request processed, remaining queue:', queueRef.current.length);
         }
@@ -694,17 +719,39 @@ useEffect(() => {
       return;
     }
     console.log('[EdgeAI] Adding to queue. Current queue length:', queueRef.current.length);
-    const NAME_MARKER = '<<<NAME_REQUEST>>>';
     const isName = prompt.startsWith(NAME_MARKER);
-    if (isName && isRunningRef.current && currentJobRef.current?.type === 'summary') {
+    const isSummary = prompt.startsWith(SUMMARY_MARKER);
+    const isUserPrompt = !isSummary && !isName;
+    let enqueued = false;
+
+    if (isUserPrompt) {
+      if (isRunningRef.current && currentJobRef.current?.type === 'summary') {
+        const currentSummary = currentJobRef.current;
+        if (currentSummary) {
+          pendingSummaryRestartRef.current = { requestId: currentSummary.requestId, prompt: currentSummary.prompt };
+        }
+        abortCurrentRef.current = true;
+        context?.stopCompletion().catch((err: any) => {
+          console.warn('[EdgeAI] Failed to stop summary completion:', err);
+        });
+        queueRef.current.unshift({ requestId, prompt });
+        enqueued = true;
+      }
+    }
+
+    if (!enqueued && isName && isRunningRef.current && currentJobRef.current?.type === 'summary') {
       abortCurrentRef.current = true;
       context?.stopCompletion().catch((err: any) => {
         console.warn('[EdgeAI] Failed to stop summary completion:', err);
       });
       queueRef.current.unshift({ requestId, prompt });
-    } else if (isName) {
+      enqueued = true;
+    } else if (!enqueued && isName) {
       queueRef.current.unshift({ requestId, prompt });
-    } else {
+      enqueued = true;
+    }
+
+    if (!enqueued) {
       queueRef.current.push({ requestId, prompt });
     }
     processQueue().catch((err: any) => {
