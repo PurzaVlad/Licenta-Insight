@@ -5,8 +5,6 @@ import Foundation
 struct ConversionView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @State private var selectedDocument: Document? = nil
-    @AppStorage("conversionServerURL") private var conversionServerURL = "http://localhost:8787"
-    @AppStorage("conversionEngine") private var conversionEngine = "auto"
     @State private var sourceFormat: DocumentFormat = .pdf
     @State private var selectedTargetFormat: DocumentFormat? = nil
     @State private var isConverting = false
@@ -14,8 +12,6 @@ struct ConversionView: View {
     @State private var showingResult = false
     @State private var conversionResult: ConversionResult? = nil
     @State private var showingDocumentPicker = false
-    @State private var showingServerEdit = false
-    @State private var serverDraft = ""
     
     enum DocumentFormat: String, CaseIterable {
         case pdf = "PDF"
@@ -45,22 +41,6 @@ struct ConversionView: View {
     }
     }
 
-    enum ConversionEngine: String, CaseIterable, Identifiable {
-        case auto = "Auto"
-        case adobe = "Adobe"
-        case libreoffice = "LibreOffice"
-
-        var id: String { rawValue }
-
-        var headerValue: String {
-            switch self {
-            case .auto: return "auto"
-            case .adobe: return "adobe"
-            case .libreoffice: return "libreoffice"
-            }
-        }
-    }
-    
     struct ConversionResult {
         let success: Bool
         let outputData: Data?
@@ -156,36 +136,6 @@ struct ConversionView: View {
                     }
 
                     if selectedDocument != nil {
-                        HStack {
-                            Text("Server:")
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Button(conversionServerURL) {
-                                serverDraft = conversionServerURL
-                                showingServerEdit = true
-                            }
-                            .lineLimit(1)
-                        }
-                        .font(.footnote)
-                        .padding(.horizontal)
-
-                        HStack {
-                            Text("Engine:")
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Picker("Engine", selection: $conversionEngine) {
-                                ForEach(ConversionEngine.allCases) { engine in
-                                    Text(engine.rawValue).tag(engine.headerValue)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(maxWidth: 240)
-                        }
-                        .font(.footnote)
-                        .padding(.horizontal)
-                    }
-                    
-                    if selectedDocument != nil {
                         // Conversion Button
                         VStack(spacing: 16) {
                             if isConverting {
@@ -247,23 +197,6 @@ struct ConversionView: View {
                     conversionResult = nil
                 })
             }
-        }
-        .alert("Conversion Server", isPresented: $showingServerEdit) {
-            TextField("http://host:8787", text: $serverDraft)
-                .textInputAutocapitalization(.never)
-                .disableAutocorrection(true)
-            Button("Save") {
-                let trimmed = serverDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    conversionServerURL = trimmed
-                }
-                showingServerEdit = false
-            }
-            Button("Cancel", role: .cancel) {
-                showingServerEdit = false
-            }
-        } message: {
-            Text("Set the LibreOffice server URL.")
         }
         .onChange(of: selectedDocument) { document in
             if let document = document {
@@ -337,22 +270,25 @@ struct ConversionView: View {
     private func convertDocument(_ document: Document, from sourceFormat: DocumentFormat, to targetFormat: DocumentFormat) -> ConversionResult {
         let latestDocument = documentManager.getDocument(by: document.id) ?? document
         let baseName = normalizedBaseName(latestDocument.title)
-        let filename = "\(baseName.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
+        let fallbackFilename = "\(baseName.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
         
         do {
             let outputData: Data?
             var serverError: String? = nil
+            var serverFilename: String? = nil
             
             switch (sourceFormat, targetFormat) {
             case (.docx, .pdf):
                 let result = convertViaServer(document: latestDocument, to: targetFormat)
                 outputData = result.data
                 serverError = result.error
+                serverFilename = result.filename
 
             case (.pptx, .pdf), (.xlsx, .pdf):
                 let result = convertViaServer(document: latestDocument, to: targetFormat)
                 outputData = result.data
                 serverError = result.error
+                serverFilename = result.filename
 
             case (.image, .pdf):
                 if let imageData = latestDocument.imageData {
@@ -366,11 +302,13 @@ struct ConversionView: View {
                 let result = convertViaServer(document: latestDocument, to: targetFormat)
                 outputData = result.data
                 serverError = result.error
+                serverFilename = result.filename
 
             case (.pdf, .xlsx), (.pdf, .pptx):
                 let result = convertViaServer(document: latestDocument, to: targetFormat)
                 outputData = result.data
                 serverError = result.error
+                serverFilename = result.filename
 
             case (.pdf, .image):
                 outputData = convertToImage(content: latestDocument.content)
@@ -386,6 +324,8 @@ struct ConversionView: View {
                 }
                 throw ConversionError.conversionFailed
             }
+
+            let filename = serverFilename ?? fallbackFilename
             
             // Save converted file to documents directory
             let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -403,33 +343,39 @@ struct ConversionView: View {
             return ConversionResult(
                 success: false,
                 outputData: nil,
-                filename: filename,
+                filename: fallbackFilename,
                 message: "Conversion failed: \(error.localizedDescription)"
             )
         }
     }
 
-    private func convertViaServer(document: Document, to targetFormat: DocumentFormat) -> (data: Data?, error: String?) {
-        let trimmed = conversionServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let baseURL = URL(string: trimmed) else { return (nil, nil) }
-        guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else { return (nil, nil) }
+    private func convertViaServer(document: Document, to targetFormat: DocumentFormat) -> (data: Data?, error: String?, filename: String?) {
+        guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else {
+            return (nil, "Missing input data.", nil)
+        }
 
-        let engineHeader = ConversionEngine.allCases.first(where: { $0.headerValue == conversionEngine })?.headerValue ?? "auto"
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        components?.path = "/convert"
+        let config: ConversionConfig
+        do {
+            config = try ConversionConfig.load()
+        } catch {
+            return (nil, error.localizedDescription, nil)
+        }
+
+        var components = URLComponents(url: config.baseURL.appendingPathComponent("convert"), resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
 
-        guard let url = components?.url else { return (nil, nil) }
+        guard let url = components?.url else { return (nil, "Invalid conversion URL.", nil) }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(document.title, forHTTPHeaderField: "X-Filename")
         request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
-        request.setValue(engineHeader, forHTTPHeaderField: "X-Conversion-Engine")
         request.timeoutInterval = 180
         let semaphore = DispatchSemaphore(value: 0)
         var resultData: Data?
         var errorMessage: String?
+        var responseFilename: String?
 
         request.httpBody = inputData
 
@@ -445,6 +391,11 @@ struct ConversionView: View {
             }
             if http.statusCode == 200 {
                 resultData = data
+                if let headerValue = http.allHeaderFields.first(where: { key, _ in
+                    String(describing: key).lowercased() == "content-disposition"
+                })?.value as? String {
+                    responseFilename = ContentDisposition.filename(from: headerValue)
+                }
                 return
             }
             if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
@@ -459,7 +410,7 @@ struct ConversionView: View {
         if resultData == nil && errorMessage == nil {
             errorMessage = "No response from server (timeout or network issue)."
         }
-        return (resultData, errorMessage)
+        return (resultData, errorMessage, responseFilename)
     }
     
     enum ConversionError: Error {

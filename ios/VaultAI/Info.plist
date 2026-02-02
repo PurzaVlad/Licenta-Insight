@@ -35,6 +35,10 @@
 	<string>VaultAI uses your location to support location-based features.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>VaultAI connects to a local conversion server to convert documents.</string>
+	<key>CONVERT_BASE_URL</key>
+	<string>https://conver-server-6k7g4ts3rq-ew.a.run.app</string>
+	<key>CONVERT_API_KEY</key>
+	<string>MAX_CONCURRENT_CONVERSIONS</string>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to scan documents and extract text using OCR.</string>
 	<key>NSFaceIDUsageDescription</key>

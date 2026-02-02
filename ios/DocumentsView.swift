@@ -16,6 +16,40 @@ private enum ScannerMode {
     case document
     case simple
 }
+
+private enum DocumentsSortMode: String, CaseIterable {
+    case newest
+    case oldest
+    case alphabetically
+
+    var title: String {
+        switch self {
+        case .newest: return "Newest"
+        case .oldest: return "Oldest"
+        case .alphabetically: return "Alphabetically"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .newest: return "arrow.down"
+        case .oldest: return "arrow.up"
+        case .alphabetically: return "textformat"
+        }
+    }
+}
+
+private enum MixedItemKind {
+    case folder(DocumentFolder)
+    case document(Document)
+}
+
+private struct MixedItem: Identifiable {
+    let id: UUID
+    let kind: MixedItemKind
+    let name: String
+    let dateCreated: Date
+}
 struct DocumentsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let onOpenPreview: (Document, URL) -> Void
@@ -63,9 +97,30 @@ struct DocumentsView: View {
     @State private var showingBulkMoveSheet = false
     @State private var showingNameSearch = false
     @State private var nameSearchText = ""
+    @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+
+    private var documentsSortMode: DocumentsSortMode {
+        get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .newest }
+        set { documentsSortModeRaw = newValue.rawValue }
+    }
 
     private var rootFolders: [DocumentFolder] { documentManager.folders(in: nil) }
     private var rootDocs: [Document] { documentManager.documents(in: nil) }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(DocumentsSortMode.allCases, id: \.rawValue) { mode in
+                Button {
+                    documentsSortModeRaw = mode.rawValue
+                } label: {
+                    Label(mode.title, systemImage: mode.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 16, weight: .semibold))
+        }
+    }
 
     @ViewBuilder
     private var emptyStateView: some View {
@@ -102,57 +157,60 @@ struct DocumentsView: View {
     private var rootListView: AnyView {
         AnyView(
             List {
-                if !rootFolders.isEmpty {
-                    Section {
-                        ForEach(rootFolders) { folder in
-                            FolderRowView(
-                                folder: folder,
-                                docCount: documentManager.documents(in: folder.id).count,
-                                isSelected: selectedFolderIds.contains(folder.id),
-                                isSelectionMode: isSelectionMode,
-                                onSelectToggle: { toggleFolderSelection(folder.id) },
-                                onLongPress: { beginSelection(folderId: folder.id) },
-                                onOpen: { activeFolder = folder },
-                                onRename: {
-                                    folderToRename = folder
-                                    renameFolderText = folder.name
-                                    showingRenameFolderDialog = true
-                                },
-                                onMove: {
-                                    folderToMove = folder
-                                    showingMoveFolderSheet = true
-                                },
-                                onDelete: {
-                                    folderToDelete = folder
-                                    showingDeleteFolderDialog = true
-                                }
-                            )
-                        }
+                ForEach(mixedRootItems()) { item in
+                    switch item.kind {
+                    case .folder(let folder):
+                        FolderRowView(
+                            folder: folder,
+                            docCount: documentManager.documents(in: folder.id).count,
+                            isSelected: selectedFolderIds.contains(folder.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleFolderSelection(folder.id) },
+                            onLongPress: { beginSelection(folderId: folder.id) },
+                            onOpen: { activeFolder = folder },
+                            onRename: {
+                                folderToRename = folder
+                                renameFolderText = folder.name
+                                showingRenameFolderDialog = true
+                            },
+                            onMove: {
+                                folderToMove = folder
+                                showingMoveFolderSheet = true
+                            },
+                            onDelete: {
+                                folderToDelete = folder
+                                showingDeleteFolderDialog = true
+                            }
+                        )
+                    case .document(let document):
+                        DocumentRowView(
+                            document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onLongPress: { beginSelection(documentId: document.id) },
+                            onOpen: { openDocumentPreview(document: document) },
+                            onRename: { renameDocument(document) },
+                            onMoveToFolder: {
+                                documentToMove = document
+                            },
+                            onDelete: { deleteDocument(document) },
+                            onConvert: { convertDocument(document) },
+                            onShare: { shareDocuments([document]) }
+                        )
+                        .listRowBackground(Color.clear)
                     }
                 }
-
-                ForEach(rootDocs, id: \.id) { document in
-                    DocumentRowView(
-                        document: document,
-                        isSelected: selectedDocumentIds.contains(document.id),
-                        isSelectionMode: isSelectionMode,
-                        onSelectToggle: { toggleDocumentSelection(document.id) },
-                        onLongPress: { beginSelection(documentId: document.id) },
-                        onOpen: { openDocumentPreview(document: document) },
-                        onRename: { renameDocument(document) },
-                        onMoveToFolder: {
-                            documentToMove = document
-                        },
-                        onDelete: { deleteDocument(document) },
-                        onConvert: { convertDocument(document) },
-                        onShare: { shareDocuments([document]) }
-                    )
-                    .listRowBackground(Color.clear)
-                }
                 .onDelete { offsets in
+                    let items = mixedRootItems()
                     for i in offsets {
-                        guard i < rootDocs.count else { continue }
-                        documentManager.deleteDocument(rootDocs[i])
+                        guard i < items.count else { continue }
+                        switch items[i].kind {
+                        case .folder(let folder):
+                            documentManager.deleteFolder(folderId: folder.id, mode: .deleteAllItems)
+                        case .document(let document):
+                            documentManager.deleteDocument(document)
+                        }
                     }
                 }
             }
@@ -164,7 +222,9 @@ struct DocumentsView: View {
         AnyView(
             ScrollView {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                    ForEach(rootFolders) { folder in
+                    ForEach(mixedRootItems()) { item in
+                        switch item.kind {
+                        case .folder(let folder):
                             FolderGridItemView(
                                 folder: folder,
                                 docCount: documentManager.documents(in: folder.id).count,
@@ -187,24 +247,23 @@ struct DocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
-                    }
-
-                    ForEach(rootDocs, id: \.id) { document in
-                        DocumentGridItemView(
-                            document: document,
-                            isSelected: selectedDocumentIds.contains(document.id),
-                            isSelectionMode: isSelectionMode,
-                            onSelectToggle: { toggleDocumentSelection(document.id) },
-                            onLongPress: { beginSelection(documentId: document.id) },
-                            onOpen: { openDocumentPreview(document: document) },
-                            onRename: { renameDocument(document) },
-                        onMoveToFolder: {
-                            documentToMove = document
-                        },
-                            onDelete: { deleteDocument(document) },
-                            onConvert: { convertDocument(document) },
-                            onShare: { shareDocuments([document]) }
-                        )
+                        case .document(let document):
+                            DocumentGridItemView(
+                                document: document,
+                                isSelected: selectedDocumentIds.contains(document.id),
+                                isSelectionMode: isSelectionMode,
+                                onSelectToggle: { toggleDocumentSelection(document.id) },
+                                onLongPress: { beginSelection(documentId: document.id) },
+                                onOpen: { openDocumentPreview(document: document) },
+                                onRename: { renameDocument(document) },
+                                onMoveToFolder: {
+                                    documentToMove = document
+                                },
+                                onDelete: { deleteDocument(document) },
+                                onConvert: { convertDocument(document) },
+                                onShare: { shareDocuments([document]) }
+                            )
+                        }
                     }
                 }
                 .padding(.horizontal, 12)
@@ -358,6 +417,8 @@ struct DocumentsView: View {
                                 Image(systemName: layoutMode == .grid ? "list.bullet" : "square.grid.3x3")
                                     .font(.system(size: 16, weight: .semibold))
                             }
+
+                            sortMenu
 
                             Menu {
                                 Button("New Folder") {
@@ -652,6 +713,37 @@ struct DocumentsView: View {
         isSelectionMode = false
         selectedDocumentIds.removeAll()
         selectedFolderIds.removeAll()
+    }
+
+    private func mixedRootItems() -> [MixedItem] {
+        let folderItems = rootFolders.map { folder in
+            MixedItem(id: folder.id, kind: .folder(folder), name: folder.name, dateCreated: folder.dateCreated)
+        }
+        let documentItems = rootDocs.map { doc in
+            MixedItem(id: doc.id, kind: .document(doc), name: splitDisplayTitle(doc.title).base, dateCreated: doc.dateCreated)
+        }
+        return sortMixedItems(folderItems + documentItems)
+    }
+
+    private func sortMixedItems(_ items: [MixedItem]) -> [MixedItem] {
+        switch documentsSortMode {
+        case .newest:
+            return items.sorted {
+                if $0.dateCreated != $1.dateCreated { return $0.dateCreated > $1.dateCreated }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .oldest:
+            return items.sorted {
+                if $0.dateCreated != $1.dateCreated { return $0.dateCreated < $1.dateCreated }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .alphabetically:
+            return items.sorted {
+                let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return $0.dateCreated > $1.dateCreated
+            }
+        }
     }
 
     private func deleteSelectedItems() {
@@ -1743,6 +1835,11 @@ struct FolderDocumentsView: View {
     let onOpenDocument: (Document) -> Void
     @EnvironmentObject private var documentManager: DocumentManager
     private var layoutMode: DocumentLayoutMode { documentManager.prefersGridLayout ? .grid : .list }
+    @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+    private var documentsSortMode: DocumentsSortMode {
+        get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .newest }
+        set { documentsSortModeRaw = newValue.rawValue }
+    }
     @State private var documentToMove: Document?
 
     @State private var activeSubfolder: DocumentFolder?
@@ -1768,6 +1865,20 @@ struct FolderDocumentsView: View {
     @State private var renameText = ""
     @State private var documentToRename: Document?
 
+    private var sortMenu: some View {
+        Menu {
+            ForEach(DocumentsSortMode.allCases, id: \.rawValue) { mode in
+                Button {
+                    documentsSortModeRaw = mode.rawValue
+                } label: {
+                    Label(mode.title, systemImage: mode.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 16, weight: .semibold))
+        }
+    }
     
 
     private var isShowingActiveSubfolder: Binding<Bool> {
@@ -1792,15 +1903,14 @@ struct FolderDocumentsView: View {
     }
 
     var body: some View {
-        let docs = documentManager.documents(in: folder.id)
-        let subfolders = documentManager.folders(in: folder.id)
+        let items = mixedFolderItems()
 
         Group {
             if layoutMode == .list {
                 List {
-                    if !subfolders.isEmpty {
-                        Section {
-                        ForEach(subfolders) { sub in
+                    ForEach(items) { item in
+                        switch item.kind {
+                        case .folder(let sub):
                             FolderRowView(
                                 folder: sub,
                                 docCount: documentManager.documents(in: sub.id).count,
@@ -1823,74 +1933,72 @@ struct FolderDocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
+                        case .document(let document):
+                            DocumentRowView(
+                                document: document,
+                                isSelected: selectedDocumentIds.contains(document.id),
+                                isSelectionMode: isSelectionMode,
+                                onSelectToggle: { toggleDocumentSelection(document.id) },
+                                onLongPress: { beginSelection(documentId: document.id) },
+                                onOpen: { onOpenDocument(document) },
+                                onRename: { renameDocument(document) },
+                                onMoveToFolder: {
+                                    documentToMove = document
+                                },
+                                onDelete: { documentManager.deleteDocument(document) },
+                                onConvert: { },
+                                onShare: { shareDocuments([document]) }
+                            )
+                            .listRowBackground(Color.clear)
                         }
-                        }
-                    }
-
-                    ForEach(docs, id: \ .id) { document in
-                        DocumentRowView(
-                            document: document,
-                            isSelected: selectedDocumentIds.contains(document.id),
-                            isSelectionMode: isSelectionMode,
-                            onSelectToggle: { toggleDocumentSelection(document.id) },
-                            onLongPress: { beginSelection(documentId: document.id) },
-                            onOpen: { onOpenDocument(document) },
-                            onRename: { renameDocument(document) },
-                            onMoveToFolder: {
-                                documentToMove = document
-                            },
-                            onDelete: { documentManager.deleteDocument(document) },
-                            onConvert: { },
-                            onShare: { shareDocuments([document]) }
-                        )
-                        .listRowBackground(Color.clear)
                     }
                 }
                 .listStyle(.plain)
             } else {
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                        ForEach(subfolders) { sub in
-                            FolderGridItemView(
-                                folder: sub,
-                                docCount: documentManager.documents(in: sub.id).count,
-                                isSelected: selectedFolderIds.contains(sub.id),
-                                isSelectionMode: isSelectionMode,
-                                onSelectToggle: { toggleFolderSelection(sub.id) },
-                                onLongPress: { beginSelection(folderId: sub.id) },
-                                onOpen: { activeSubfolder = sub },
-                                onRename: {
-                                    folderToRename = sub
-                                    renameFolderText = sub.name
-                                    showingRenameFolderDialog = true
-                                },
-                                onMove: {
-                                    folderToMove = sub
-                                    showingMoveFolderSheet = true
-                                },
-                                onDelete: {
-                                    folderToDelete = sub
-                                    showingDeleteFolderDialog = true
-                                }
-                            )
-                        }
-
-                        ForEach(docs, id: \ .id) { document in
-                        DocumentGridItemView(
-                            document: document,
-                            isSelected: selectedDocumentIds.contains(document.id),
-                            isSelectionMode: isSelectionMode,
-                            onSelectToggle: { toggleDocumentSelection(document.id) },
-                            onLongPress: { beginSelection(documentId: document.id) },
-                            onOpen: { onOpenDocument(document) },
-                            onRename: { renameDocument(document) },
-                            onMoveToFolder: {
-                                documentToMove = document
-                            },
-                                onDelete: { documentManager.deleteDocument(document) },
-                                onConvert: { },
-                                onShare: { shareDocuments([document]) }
-                            )
+                        ForEach(items) { item in
+                            switch item.kind {
+                            case .folder(let sub):
+                                FolderGridItemView(
+                                    folder: sub,
+                                    docCount: documentManager.documents(in: sub.id).count,
+                                    isSelected: selectedFolderIds.contains(sub.id),
+                                    isSelectionMode: isSelectionMode,
+                                    onSelectToggle: { toggleFolderSelection(sub.id) },
+                                    onLongPress: { beginSelection(folderId: sub.id) },
+                                    onOpen: { activeSubfolder = sub },
+                                    onRename: {
+                                        folderToRename = sub
+                                        renameFolderText = sub.name
+                                        showingRenameFolderDialog = true
+                                    },
+                                    onMove: {
+                                        folderToMove = sub
+                                        showingMoveFolderSheet = true
+                                    },
+                                    onDelete: {
+                                        folderToDelete = sub
+                                        showingDeleteFolderDialog = true
+                                    }
+                                )
+                            case .document(let document):
+                                DocumentGridItemView(
+                                    document: document,
+                                    isSelected: selectedDocumentIds.contains(document.id),
+                                    isSelectionMode: isSelectionMode,
+                                    onSelectToggle: { toggleDocumentSelection(document.id) },
+                                    onLongPress: { beginSelection(documentId: document.id) },
+                                    onOpen: { onOpenDocument(document) },
+                                    onRename: { renameDocument(document) },
+                                    onMoveToFolder: {
+                                        documentToMove = document
+                                    },
+                                    onDelete: { documentManager.deleteDocument(document) },
+                                    onConvert: { },
+                                    onShare: { shareDocuments([document]) }
+                                )
+                            }
                         }
                     }
                     .padding(.horizontal, 12)
@@ -1939,6 +2047,8 @@ struct FolderDocumentsView: View {
                         Image(systemName: layoutMode == .grid ? "list.bullet" : "square.grid.3x3")
                             .font(.system(size: 16, weight: .semibold))
                     }
+
+                    sortMenu
                 }
             }
         }
@@ -2118,6 +2228,37 @@ struct FolderDocumentsView: View {
         isSelectionMode = false
         selectedDocumentIds.removeAll()
         selectedFolderIds.removeAll()
+    }
+
+    private func mixedFolderItems() -> [MixedItem] {
+        let subfolders = documentManager.folders(in: folder.id).map { sub in
+            MixedItem(id: sub.id, kind: .folder(sub), name: sub.name, dateCreated: sub.dateCreated)
+        }
+        let docs = documentManager.documents(in: folder.id).map { doc in
+            MixedItem(id: doc.id, kind: .document(doc), name: splitDisplayTitle(doc.title).base, dateCreated: doc.dateCreated)
+        }
+        return sortMixedItems(subfolders + docs)
+    }
+
+    private func sortMixedItems(_ items: [MixedItem]) -> [MixedItem] {
+        switch documentsSortMode {
+        case .newest:
+            return items.sorted {
+                if $0.dateCreated != $1.dateCreated { return $0.dateCreated > $1.dateCreated }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .oldest:
+            return items.sorted {
+                if $0.dateCreated != $1.dateCreated { return $0.dateCreated < $1.dateCreated }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .alphabetically:
+            return items.sorted {
+                let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return $0.dateCreated > $1.dateCreated
+            }
+        }
     }
 
     private func deleteSelectedItems() {

@@ -22,6 +22,8 @@
 		AEE10FE12F0B0A8800D8EFF7 /* NativeChatViewManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */; };
 		AEE10FE22F0B0A8800D8EFF7 /* EdgeAI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */; };
 		AEE10FE32F0B0A8800D8EFF7 /* EdgeAI.m in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */; };
+		AEE10FEE2F99B2B700D8EFF7 /* ConversionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FEC2F99B2B700D8EFF7 /* ConversionService.swift */; };
+		AEE10FEF2F99B2B700D8EFF7 /* ConversionService.m in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */; };
 		AEFE19AE2F20EE9400108CD3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */; };
 		AEFE19B02F20F03D00108CD3 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */; };
 		AEFE19B22F20F55F00108CD3 /* PDFEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19B12F20F55F00108CD3 /* PDFEditView.swift */; };
@@ -53,6 +55,8 @@
 		AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeAI.swift; sourceTree = "<group>"; };
 		AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatView.swift; sourceTree = "<group>"; };
 		AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatViewManager.swift; sourceTree = "<group>"; };
+		AEE10FEC2F99B2B700D8EFF7 /* ConversionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversionService.swift; sourceTree = "<group>"; };
+		AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ConversionService.m; sourceTree = "<group>"; };
 		AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EdgeLLMTuto-Bridging-Header.h"; sourceTree = "<group>"; };
 		AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
@@ -87,6 +91,8 @@
 				AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */,
 				AEDA82D42F1FBA4100550D74 /* DocumentPreviewViews.swift */,
 				AEDA82D52F1FBA4100550D74 /* DocumentsView.swift */,
+				AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */,
+				AEE10FEC2F99B2B700D8EFF7 /* ConversionService.swift */,
 				AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */,
 				AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */,
 				AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */,
@@ -316,6 +322,8 @@
 				AEE10FE12F0B0A8800D8EFF7 /* NativeChatViewManager.swift in Sources */,
 				AEE10FE22F0B0A8800D8EFF7 /* EdgeAI.swift in Sources */,
 				AEE10FE32F0B0A8800D8EFF7 /* EdgeAI.m in Sources */,
+				AEE10FEE2F99B2B700D8EFF7 /* ConversionService.swift in Sources */,
+				AEE10FEF2F99B2B700D8EFF7 /* ConversionService.m in Sources */,
 				AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */,
 				AEDA82D82F1FBA4100550D74 /* DocumentModels.swift in Sources */,
 				AEFE19B42F21089900108CD3 /* ZipExportView.swift in Sources */,
