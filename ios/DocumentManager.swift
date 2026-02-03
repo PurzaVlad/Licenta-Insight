@@ -6,9 +6,11 @@ import SSZipArchive
 import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
+    static let summaryUnavailableMessage = "Not available as source file is still available."
     @Published var documents: [Document] = []
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
+    private let maxOCRChars = 50000
     private let documentsKey = "SavedDocuments_v2" // legacy (migration only)
     private let documentsFileName = "SavedDocuments_v2.json"
 
@@ -49,6 +51,77 @@ class DocumentManager: ObservableObject {
     func addDocument(_ document: Document) {
         print("💾 DocumentManager: Adding document '\\(document.title)' (\\(document.type.rawValue))")
         var updated = Self.withInferredMetadataIfNeeded(document)
+        let hasLiveSource = updated.sourceDocumentId != nil &&
+            (updated.sourceDocumentId.flatMap { getDocument(by: $0) } != nil)
+
+        if shouldAutoOCR(for: updated.type) {
+            if updated.content.count > maxOCRChars {
+                let truncated = Self.truncateText(updated.content, maxChars: maxOCRChars)
+                updated = Document(
+                    id: updated.id,
+                    title: updated.title,
+                    content: truncated,
+                    summary: updated.summary,
+                    ocrPages: buildPseudoOCRPages(from: truncated),
+                    category: updated.category,
+                    keywordsResume: updated.keywordsResume,
+                    tags: updated.tags,
+                    sourceDocumentId: updated.sourceDocumentId,
+                    dateCreated: updated.dateCreated,
+                    folderId: updated.folderId,
+                    sortOrder: updated.sortOrder,
+                    type: updated.type,
+                    imageData: updated.imageData,
+                    pdfData: updated.pdfData,
+                    originalFileData: updated.originalFileData
+                )
+            }
+        }
+
+        if updated.ocrPages == nil && shouldAutoOCR(for: updated.type) {
+            let pages = buildPseudoOCRPages(from: updated.content)
+            if let pages = pages, !pages.isEmpty {
+                updated = Document(
+                    id: updated.id,
+                    title: updated.title,
+                    content: updated.content,
+                    summary: updated.summary,
+                    ocrPages: pages,
+                    category: updated.category,
+                    keywordsResume: updated.keywordsResume,
+                    tags: updated.tags,
+                    sourceDocumentId: updated.sourceDocumentId,
+                    dateCreated: updated.dateCreated,
+                    folderId: updated.folderId,
+                    sortOrder: updated.sortOrder,
+                    type: updated.type,
+                    imageData: updated.imageData,
+                    pdfData: updated.pdfData,
+                    originalFileData: updated.originalFileData
+                )
+            }
+        }
+
+        if hasLiveSource {
+            updated = Document(
+                id: updated.id,
+                title: updated.title,
+                content: updated.content,
+                summary: Self.summaryUnavailableMessage,
+                ocrPages: updated.ocrPages,
+                category: updated.category,
+                keywordsResume: updated.keywordsResume,
+                tags: [],
+                sourceDocumentId: updated.sourceDocumentId,
+                dateCreated: updated.dateCreated,
+                folderId: updated.folderId,
+                sortOrder: updated.sortOrder,
+                type: updated.type,
+                imageData: updated.imageData,
+                pdfData: updated.pdfData,
+                originalFileData: updated.originalFileData
+            )
+        }
 
         // Assign ordering at the end of the target container (root by default).
         if updated.sortOrder == 0 {
@@ -65,6 +138,8 @@ class DocumentManager: ObservableObject {
                 ocrPages: updated.ocrPages,
                 category: updated.category,
                 keywordsResume: updated.keywordsResume,
+                tags: updated.tags,
+                sourceDocumentId: updated.sourceDocumentId,
                 dateCreated: updated.dateCreated,
                 folderId: updated.folderId,
                 sortOrder: maxOrder + 1,
@@ -81,11 +156,15 @@ class DocumentManager: ObservableObject {
         print("💾 DocumentManager: Document saved successfully")
         
         // Generate AI summary
-        generateSummary(for: updated)
+        if !hasLiveSource {
+            generateSummary(for: updated)
+            generateTags(for: updated)
+        }
     }
     
     func deleteDocument(_ document: Document) {
         documents.removeAll { $0.id == document.id }
+        handleSourceDeletion(sourceId: document.id)
         saveState()
     }
 
@@ -100,6 +179,8 @@ class DocumentManager: ObservableObject {
                 ocrPages: old.ocrPages,
                 category: old.category,
                 keywordsResume: old.keywordsResume,
+                tags: old.tags,
+                sourceDocumentId: old.sourceDocumentId,
                 dateCreated: old.dateCreated,
                 folderId: old.folderId,
                 sortOrder: old.sortOrder,
@@ -110,6 +191,9 @@ class DocumentManager: ObservableObject {
             )
             documents[idx] = updated
             saveState()
+            if updated.tags.isEmpty && updated.sourceDocumentId == nil {
+                generateTags(for: updated)
+            }
         }
     }
 
@@ -124,6 +208,8 @@ class DocumentManager: ObservableObject {
                 ocrPages: old.ocrPages,
                 category: old.category,
                 keywordsResume: old.keywordsResume,
+                tags: old.tags,
+                sourceDocumentId: old.sourceDocumentId,
                 dateCreated: old.dateCreated,
                 folderId: old.folderId,
                 sortOrder: old.sortOrder,
@@ -135,6 +221,156 @@ class DocumentManager: ObservableObject {
             documents[idx] = updated
             saveState()
         }
+    }
+
+    func updateTags(for documentId: UUID, to newTags: [String]) {
+        if let idx = documents.firstIndex(where: { $0.id == documentId }) {
+            let old = documents[idx]
+            let updated = Document(
+                id: old.id,
+                title: old.title,
+                content: old.content,
+                summary: old.summary,
+                ocrPages: old.ocrPages,
+                category: old.category,
+                keywordsResume: old.keywordsResume,
+                tags: newTags,
+                sourceDocumentId: old.sourceDocumentId,
+                dateCreated: old.dateCreated,
+                folderId: old.folderId,
+                sortOrder: old.sortOrder,
+                type: old.type,
+                imageData: old.imageData,
+                pdfData: old.pdfData,
+                originalFileData: old.originalFileData
+            )
+            documents[idx] = updated
+            saveState()
+        }
+    }
+
+    func updateOCRPages(for documentId: UUID, to newPages: [OCRPage]?) {
+        if let idx = documents.firstIndex(where: { $0.id == documentId }) {
+            let old = documents[idx]
+            let updated = Document(
+                id: old.id,
+                title: old.title,
+                content: old.content,
+                summary: old.summary,
+                ocrPages: newPages,
+                category: old.category,
+                keywordsResume: old.keywordsResume,
+                tags: old.tags,
+                sourceDocumentId: old.sourceDocumentId,
+                dateCreated: old.dateCreated,
+                folderId: old.folderId,
+                sortOrder: old.sortOrder,
+                type: old.type,
+                imageData: old.imageData,
+                pdfData: old.pdfData,
+                originalFileData: old.originalFileData
+            )
+            documents[idx] = updated
+            saveState()
+        }
+    }
+
+    func updateSourceDocumentId(for documentId: UUID, to newSourceId: UUID?) {
+        if let idx = documents.firstIndex(where: { $0.id == documentId }) {
+            let old = documents[idx]
+            let updated = Document(
+                id: old.id,
+                title: old.title,
+                content: old.content,
+                summary: old.summary,
+                ocrPages: old.ocrPages,
+                category: old.category,
+                keywordsResume: old.keywordsResume,
+                tags: old.tags,
+                sourceDocumentId: newSourceId,
+                dateCreated: old.dateCreated,
+                folderId: old.folderId,
+                sortOrder: old.sortOrder,
+                type: old.type,
+                imageData: old.imageData,
+                pdfData: old.pdfData,
+                originalFileData: old.originalFileData
+            )
+            documents[idx] = updated
+            saveState()
+        }
+    }
+
+    func generateTags(for document: Document, force: Bool = false) {
+        if !force && !document.tags.isEmpty { return }
+        if !force, let sourceId = document.sourceDocumentId, getDocument(by: sourceId) != nil {
+            return
+        }
+        guard let edgeAI = EdgeAI.shared else { return }
+
+        var seed = ""
+        var pagesForTags = document.ocrPages
+        if let pages = pagesForTags, !pages.isEmpty {
+            let ocrText = Self.buildStructuredText(from: pages, includePageLabels: false)
+            if ocrText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 40 {
+                seed = ocrText
+            }
+        }
+        if seed.isEmpty {
+            let wantsVisionOCR = document.type == .pdf || document.type == .image || document.type == .scanned
+            if wantsVisionOCR {
+                var dataForOCR: Data?
+                var ocrType: Document.DocumentType = .pdf
+                if document.type == .image {
+                    dataForOCR = document.imageData?.first ?? document.originalFileData
+                    ocrType = .image
+                } else {
+                    dataForOCR = document.pdfData ?? document.originalFileData
+                    ocrType = .pdf
+                }
+
+                if let dataForOCR,
+                   let pages = buildVisionOCRPages(from: dataForOCR, type: ocrType),
+                   !pages.isEmpty {
+                    pagesForTags = pages
+                    updateOCRPages(for: document.id, to: pages)
+                    let ocrText = Self.buildStructuredText(from: pages, includePageLabels: false)
+                    if ocrText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 40 {
+                        seed = ocrText
+                    }
+                }
+            }
+        }
+        if seed.isEmpty {
+            seed = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let snippet = String(seed.prefix(400)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if snippet.isEmpty { return }
+
+        let prompt = """
+        <<<TAG_REQUEST>>>
+        Extract 4 single-word tags from this document excerpt.
+        Output only a comma-separated list of tags.
+
+        EXCERPT:
+        \(snippet)
+        """
+
+        edgeAI.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                let raw = (result as? String ?? "")
+                let tags = Self.parseTags(from: raw)
+                let category = document.category.rawValue
+                let filtered = tags.filter { $0.caseInsensitiveCompare(category) != .orderedSame }
+                let combined = ([category] + filtered).prefix(5)
+                let finalTags = Array(combined)
+                if !finalTags.isEmpty {
+                    self.updateTags(for: document.id, to: finalTags)
+                }
+            }
+        }, rejecter: { code, message, _ in
+            print("❌ DocumentManager: Tag generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
+        })
     }
 
     // MARK: - Folder Management
@@ -291,6 +527,8 @@ class DocumentManager: ObservableObject {
             ocrPages: old.ocrPages,
             category: old.category,
             keywordsResume: old.keywordsResume,
+            tags: old.tags,
+            sourceDocumentId: old.sourceDocumentId,
             dateCreated: old.dateCreated,
             folderId: folderId,
             sortOrder: maxOrder + 1,
@@ -330,6 +568,8 @@ class DocumentManager: ObservableObject {
                     ocrPages: old.ocrPages,
                     category: old.category,
                     keywordsResume: old.keywordsResume,
+                    tags: old.tags,
+                    sourceDocumentId: old.sourceDocumentId,
                     dateCreated: old.dateCreated,
                     folderId: old.folderId,
                     sortOrder: i,
@@ -372,6 +612,8 @@ class DocumentManager: ObservableObject {
                         ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
+                        tags: old.tags,
+                        sourceDocumentId: old.sourceDocumentId,
                         dateCreated: old.dateCreated,
                         folderId: old.folderId,
                         sortOrder: i,
@@ -421,10 +663,19 @@ class DocumentManager: ObservableObject {
     
     func generateSummary(for document: Document, force: Bool = false) {
         if document.type == .zip { return }
+        if !force, let sourceId = document.sourceDocumentId, getDocument(by: sourceId) != nil {
+            return
+        }
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
-        var promptBody = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if promptBody.isEmpty, let pages = document.ocrPages, !pages.isEmpty {
-            promptBody = Self.buildStructuredText(from: pages, includePageLabels: true)
+        var promptBody = ""
+        if let pages = document.ocrPages, !pages.isEmpty {
+            let ocrText = Self.buildStructuredText(from: pages, includePageLabels: true)
+            if ocrText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 40 {
+                promptBody = ocrText
+            }
+        }
+        if promptBody.isEmpty {
+            promptBody = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let prompt = """
         <<<SUMMARY_REQUEST>>>
@@ -451,6 +702,7 @@ class DocumentManager: ObservableObject {
             Type: \(document.type.rawValue)
             Category: \(document.category.rawValue)
             Keywords: \(document.keywordsResume)
+            Tags: \(document.tags.joined(separator: ", "))
             Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
             Summary: \(document.summary)
             
@@ -471,6 +723,7 @@ class DocumentManager: ObservableObject {
             Type: \(document.type.rawValue)
             Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
             Summary: \(document.summary)
+            Tags: \(document.tags.joined(separator: ", "))
             Content Length: \(document.content.count) characters
             
             ---
@@ -483,9 +736,10 @@ class DocumentManager: ObservableObject {
         print("🤖 DocumentManager: Getting smart document context, document count: \(documents.count)")
         return documents.map { document in
             // Use summary if available and meaningful, otherwise use first 500 characters
-            let hasUsableSummary = !document.summary.isEmpty && 
-                                  document.summary != "Processing..." && 
-                                  document.summary != "Processing summary..."
+            let hasUsableSummary = !document.summary.isEmpty &&
+                                  document.summary != "Processing..." &&
+                                  document.summary != "Processing summary..." &&
+                                  document.summary != Self.summaryUnavailableMessage
             
             let contentToUse = hasUsableSummary ? document.summary : String(document.content.prefix(500))
             let contentType = hasUsableSummary ? "Summary:" : "Content (first 500 chars):"
@@ -494,6 +748,7 @@ class DocumentManager: ObservableObject {
             Document: \(document.title)
             Type: \(document.type.rawValue)
             Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
+            Tags: \(document.tags.joined(separator: ", "))
             \(contentType)
             \(contentToUse)
             
@@ -549,10 +804,20 @@ class DocumentManager: ObservableObject {
             content = "ZIP archive"
             documentType = .zip
         case "ppt":
-            content = "PowerPoint document - text extraction coming soon"
+            let result = extractTextFromPresentationViaOCR(url: url)
+            content = result.text.isEmpty ? "PowerPoint document - text extraction is limited on this file." : result.text
+            ocrPages = result.pages
             documentType = .ppt
         case "pptx":
-            content = "PowerPoint document - text extraction coming soon"
+            let parsed = extractTextFromPPTXArchive(url: url)
+            if !parsed.isEmpty {
+                content = parsed
+                ocrPages = nil
+            } else {
+                let result = extractTextFromPresentationViaOCR(url: url)
+                content = result.text.isEmpty ? "PowerPoint document - text extraction is limited on this file." : result.text
+                ocrPages = result.pages
+            }
             documentType = .pptx
         case "xls":
             content = extractTextFromSpreadsheetViaOCR(url: url)
@@ -596,6 +861,12 @@ class DocumentManager: ObservableObject {
         }
         
         let docId = UUID()
+        if content.count > maxOCRChars {
+            content = Self.truncateText(content, maxChars: maxOCRChars)
+        }
+        if ocrPages == nil && shouldAutoOCR(for: documentType) {
+            ocrPages = buildPseudoOCRPages(from: content)
+        }
         let baseDocument = Document(
             id: docId,
             title: fileName,
@@ -604,6 +875,8 @@ class DocumentManager: ObservableObject {
             ocrPages: ocrPages,
             category: .general,
             keywordsResume: "",
+            tags: [],
+            sourceDocumentId: nil,
             dateCreated: Date(),
             type: documentType,
             imageData: imageData,
@@ -658,12 +931,17 @@ class DocumentManager: ObservableObject {
     }
     
     private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
-        guard let cgImage = image.cgImage else {
+        guard let processedImage = preprocessImageForOCR(image),
+              let cgImage = processedImage.cgImage else {
+            print("OCR: Failed to process image")
             return ("Could not process image", OCRPage(pageIndex: pageIndex, blocks: []))
         }
 
         let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = ["en-US", "en-GB"]
 
         var blocks: [OCRBlock] = []
         var recognizedText = ""
@@ -695,8 +973,14 @@ class DocumentManager: ObservableObject {
                 }
 
                 recognizedText = sorted.map { $0.0 }.joined(separator: " ")
+                recognizedText = recognizedText
+                    .replacingOccurrences(of: "\n\n+", with: "\n", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                print("OCR: No results returned")
             }
         } catch {
+            print("OCR Error: \(error.localizedDescription)")
             recognizedText = "OCR failed: \(error.localizedDescription)"
         }
 
@@ -745,6 +1029,74 @@ class DocumentManager: ObservableObject {
         }
 
         return result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func preprocessImageForOCR(_ image: UIImage) -> UIImage? {
+        guard image.cgImage != nil else { return nil }
+        
+        let targetSize: CGFloat = 2560
+        let imageSize = image.size
+        let maxDimension = max(imageSize.width, imageSize.height)
+        
+        if maxDimension > targetSize {
+            let scale = targetSize / maxDimension
+            let newSize = CGSize(
+                width: imageSize.width * scale,
+                height: imageSize.height * scale
+            )
+            
+            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+            let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            
+            return resizedImage
+        }
+        
+        return image
+    }
+
+    func buildVisionOCRPages(from data: Data, type: Document.DocumentType) -> [OCRPage]? {
+        switch type {
+        case .image:
+            guard let image = UIImage(data: data) else { return nil }
+            let result = performOCRDetailed(on: image, pageIndex: 0)
+            return [result.page]
+        case .pdf:
+            guard let pdf = PDFDocument(data: data) else { return nil }
+            var pages: [OCRPage] = []
+            for index in 0..<pdf.pageCount {
+                guard let page = pdf.page(at: index),
+                      let image = renderPDFPageForOCR(page) else { continue }
+                let result = performOCRDetailed(on: image, pageIndex: index)
+                pages.append(result.page)
+            }
+            return pages.isEmpty ? nil : pages
+        default:
+            return nil
+        }
+    }
+
+    private func renderPDFPageForOCR(_ page: PDFPage) -> UIImage? {
+        let pageRect = page.bounds(for: .mediaBox)
+        if pageRect.width <= 0 || pageRect.height <= 0 { return nil }
+        
+        let targetMax: CGFloat = 2200
+        let maxDim = max(pageRect.width, pageRect.height)
+        let scale = maxDim > targetMax ? (targetMax / maxDim) : min(2.0, targetMax / maxDim)
+        let size = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
+        
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            context.cgContext.saveGState()
+            context.cgContext.scaleBy(x: scale, y: scale)
+            context.cgContext.translateBy(x: 0, y: pageRect.height)
+            context.cgContext.scaleBy(x: 1, y: -1)
+            page.draw(with: .mediaBox, to: context.cgContext)
+            context.cgContext.restoreGState()
+        }
     }
     
     private func extractTextFromWordDocument(url: URL) -> String {
@@ -813,6 +1165,18 @@ class DocumentManager: ObservableObject {
             }
         }
         return "Imported spreadsheet. Text extraction is limited on this file."
+    }
+
+    private func extractTextFromPresentationViaOCR(url: URL) -> (text: String, pages: [OCRPage]?) {
+        if #available(iOS 13.0, *) {
+            if let img = generateDOCXThumbnail(url: url) {
+                let result = performOCRDetailed(on: img, pageIndex: 0)
+                if !result.text.isEmpty && !result.text.contains("OCR failed") {
+                    return (formatExtractedText(result.text), [result.page])
+                }
+            }
+        }
+        return ("", nil)
     }
     
     private func extractTextFromXMLContent(_ xmlContent: String) -> String {
@@ -923,6 +1287,81 @@ class DocumentManager: ObservableObject {
 
         try? FileManager.default.removeItem(at: tempDir)
         return formatExtractedText(body)
+    }
+
+    private func extractTextFromPPTXArchive(url: URL) -> String {
+        // Unzip PPTX to temp folder and read ppt/slides/slide*.xml
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pptx_extract_\(UUID().uuidString)", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true) } catch {
+            print("📄 DocumentManager: Failed to create temp dir: \(error.localizedDescription)")
+            return ""
+        }
+
+        var unzipError: NSError?
+        let ok = SSZipArchive.unzipFile(atPath: url.path,
+                        toDestination: tempDir.path,
+                        preserveAttributes: false,
+                        overwrite: true,
+                        password: nil,
+                        error: &unzipError,
+                        delegate: nil)
+        if !ok {
+            if let unzipError = unzipError { print("📄 DocumentManager: Unzip failed: \(unzipError.localizedDescription)") }
+            try? FileManager.default.removeItem(at: tempDir)
+            return ""
+        }
+
+        let slidesDir = tempDir.appendingPathComponent("ppt/slides", isDirectory: true)
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: slidesDir, includingPropertiesForKeys: nil) else {
+            print("📄 DocumentManager: ppt/slides missing or unreadable")
+            try? FileManager.default.removeItem(at: tempDir)
+            return ""
+        }
+
+        let slideFiles = files
+            .filter { $0.lastPathComponent.lowercased().hasPrefix("slide") && $0.pathExtension.lowercased() == "xml" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        if slideFiles.isEmpty {
+            try? FileManager.default.removeItem(at: tempDir)
+            return ""
+        }
+
+        var collected: [String] = []
+        for slideURL in slideFiles {
+            guard let xmlData = try? Data(contentsOf: slideURL),
+                  let xml = String(data: xmlData, encoding: .utf8) else { continue }
+
+            var body = ""
+            do {
+                let re = try NSRegularExpression(pattern: "<a:t[^>]*>(.*?)</a:t>", options: [.dotMatchesLineSeparators])
+                let ns = xml as NSString
+                let matches = re.matches(in: xml, range: NSRange(location: 0, length: ns.length))
+                for m in matches {
+                    if m.numberOfRanges >= 2 {
+                        let t = ns.substring(with: m.range(at: 1))
+                            .replacingOccurrences(of: "&amp;", with: "&")
+                            .replacingOccurrences(of: "&lt;", with: "<")
+                            .replacingOccurrences(of: "&gt;", with: ">")
+                            .replacingOccurrences(of: "&quot;", with: "\"")
+                            .replacingOccurrences(of: "&apos;", with: "'")
+                        body += t + " "
+                    }
+                }
+            } catch {
+                print("📄 DocumentManager: PPTX regex failed: \(error.localizedDescription)")
+            }
+
+            let cleaned = formatExtractedText(body)
+            if !cleaned.isEmpty {
+                collected.append(cleaned)
+            }
+        }
+
+        try? FileManager.default.removeItem(at: tempDir)
+        return collected.joined(separator: "\n\n")
     }
     
     private func formatExtractedText(_ text: String) -> String {
@@ -1062,6 +1501,8 @@ class DocumentManager: ObservableObject {
                         ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
+                        tags: old.tags,
+                        sourceDocumentId: old.sourceDocumentId,
                         dateCreated: old.dateCreated,
                         folderId: old.folderId,
                         sortOrder: i,
@@ -1110,7 +1551,8 @@ class DocumentManager: ObservableObject {
             document.content.lowercased().contains(lowercaseQuery) ||
             document.summary.lowercased().contains(lowercaseQuery) ||
             document.category.rawValue.lowercased().contains(lowercaseQuery) ||
-            document.keywordsResume.lowercased().contains(lowercaseQuery)
+            document.keywordsResume.lowercased().contains(lowercaseQuery) ||
+            document.tags.joined(separator: " ").lowercased().contains(lowercaseQuery)
         }
     }
 
@@ -1131,6 +1573,8 @@ class DocumentManager: ObservableObject {
             ocrPages: doc.ocrPages,
             category: inferredCategory,
             keywordsResume: inferredKeywords,
+            tags: doc.tags,
+            sourceDocumentId: doc.sourceDocumentId,
             dateCreated: doc.dateCreated,
             folderId: doc.folderId,
             sortOrder: doc.sortOrder,
@@ -1366,5 +1810,77 @@ class DocumentManager: ObservableObject {
         if joined.count <= 50 { return joined }
         let idx = joined.index(joined.startIndex, offsetBy: 50)
         return String(joined[..<idx])
+    }
+
+    static func parseTags(from text: String) -> [String] {
+        let cleaned = text
+            .replacingOccurrences(of: "[\\[\\]\\(\\)\"'“”`]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9,\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let parts = cleaned
+            .split { $0 == "," || $0 == "\n" || $0 == ";" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var seen = Set<String>()
+        var tags: [String] = []
+        for part in parts {
+            let word = part.split(separator: " ").first.map(String.init) ?? ""
+            if word.isEmpty { continue }
+            let key = word.lowercased()
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            tags.append(word)
+            if tags.count == 4 { break }
+        }
+        return tags
+    }
+
+    static func truncateText(_ text: String, maxChars: Int) -> String {
+        if text.count <= maxChars { return text }
+        return String(text.prefix(maxChars))
+    }
+
+    private func shouldAutoOCR(for type: Document.DocumentType) -> Bool {
+        switch type {
+        case .pdf, .docx, .ppt, .pptx, .xls, .xlsx, .text, .scanned, .image:
+            return true
+        case .zip:
+            return false
+        }
+    }
+
+    private func buildPseudoOCRPages(from text: String) -> [OCRPage]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let bbox = OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+        let block = OCRBlock(text: trimmed, confidence: 1.0, bbox: bbox, order: 0)
+        return [OCRPage(pageIndex: 0, blocks: [block])]
+    }
+
+    private func handleSourceDeletion(sourceId: UUID) {
+        let derived = documents.filter { $0.sourceDocumentId == sourceId }
+        for doc in derived {
+            if doc.ocrPages == nil || doc.ocrPages?.isEmpty == true {
+                let trimmed = Self.truncateText(doc.content, maxChars: maxOCRChars)
+                let pages = buildPseudoOCRPages(from: trimmed)
+                if let pages = pages, !pages.isEmpty {
+                    updateOCRPages(for: doc.id, to: pages)
+                }
+            }
+            updateSourceDocumentId(for: doc.id, to: nil)
+            let updated = getDocument(by: doc.id) ?? doc
+            if updated.tags.isEmpty {
+                generateTags(for: updated)
+            }
+            if updated.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                updated.summary == "Processing..." ||
+                updated.summary == "Processing summary..." ||
+                updated.summary == Self.summaryUnavailableMessage {
+                generateSummary(for: updated)
+            }
+        }
     }
 }

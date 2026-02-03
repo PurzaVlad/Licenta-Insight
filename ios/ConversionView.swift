@@ -758,15 +758,25 @@ struct ConversionResultSheet: View {
                     }
                 }
             }
+            let ocrPages = (documentType == .pdf || documentType == .image)
+                ? (self.documentManager.buildVisionOCRPages(from: outputData, type: documentType)
+                    ?? self.buildPseudoOCRPages(from: content))
+                : self.buildPseudoOCRPages(from: content)
+            let summaryText = self.sourceDocument == nil
+                ? "Converted document - Processing summary..."
+                : DocumentManager.summaryUnavailableMessage
             
             // Create the document
             let cleanedTitle = normalizedTitle(from: self.result.filename)
             let document = Document(
                 title: cleanedTitle,
                 content: content,
-                summary: "Converted document - Processing summary...",
+                summary: summaryText,
+                ocrPages: ocrPages,
                 category: .general,
                 keywordsResume: "",
+                tags: [],
+                sourceDocumentId: self.sourceDocument?.id,
                 dateCreated: Date(),
                 type: documentType,
                 imageData: documentType == .image ? [outputData] : nil,
@@ -847,6 +857,14 @@ struct ConversionResultSheet: View {
         default:
             return "Converted document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
         }
+    }
+
+    private func buildPseudoOCRPages(from text: String) -> [OCRPage]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let bbox = OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+        let block = OCRBlock(text: trimmed, confidence: 1.0, bbox: bbox, order: 0)
+        return [OCRPage(pageIndex: 0, blocks: [block])]
     }
 }
 

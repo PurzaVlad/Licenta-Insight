@@ -10,6 +10,7 @@ struct TabContainerView: View {
     @State private var currentSummaryDocId: UUID? = nil
     @State private var canceledSummaryIds: Set<UUID> = []
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
+    @AppStorage("modelReady") private var modelReady = false
     @AppStorage("useFaceID") private var useFaceID = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var isLocked = false
@@ -102,10 +103,19 @@ struct TabContainerView: View {
         }
         .onAppear {
             applyUserInterfaceStyle()
-            for doc in documentManager.documents where isSummaryPlaceholder(doc.summary) && doc.type != .zip {
+            for doc in documentManager.documents
+            where isSummaryPlaceholder(doc.summary) && shouldAutoSummarize(doc) {
                 documentManager.generateSummary(for: doc)
             }
+            if modelReady {
+                generateMissingTagsIfNeeded()
+            }
             lockIfNeeded(force: true)
+        }
+        .onChange(of: modelReady) { ready in
+            if ready {
+                generateMissingTagsIfNeeded()
+            }
         }
         .onChange(of: appThemeRaw) { _ in
             applyUserInterfaceStyle()
@@ -145,7 +155,7 @@ struct TabContainerView: View {
                 return
             }
             if !force, let doc = documentManager.getDocument(by: docId),
-               !isSummaryPlaceholder(doc.summary) {
+               (!isSummaryPlaceholder(doc.summary) || !shouldAutoSummarize(doc)) {
                 return
             }
 
@@ -162,11 +172,21 @@ struct TabContainerView: View {
         return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
     }
 
+    private func shouldAutoSummarize(_ doc: Document) -> Bool {
+        if doc.type == .zip { return false }
+        if let sourceId = doc.sourceDocumentId,
+           documentManager.getDocument(by: sourceId) != nil {
+            return false
+        }
+        return true
+    }
+
     private func processNextSummaryIfNeeded() {
         guard !isSummarizing else { return }
         guard let next = summaryQueue.first else { return }
         guard let doc = documentManager.getDocument(by: next.documentId),
-              isSummaryPlaceholder(doc.summary) else {
+              isSummaryPlaceholder(doc.summary),
+              shouldAutoSummarize(doc) else {
             summaryQueue.removeFirst()
             processNextSummaryIfNeeded()
             return
@@ -196,6 +216,25 @@ struct TabContainerView: View {
                 self.finishSummary(for: next.documentId)
             }
         })
+    }
+
+    private func generateMissingTagsIfNeeded() {
+        for doc in documentManager.documents {
+            if !doc.tags.isEmpty { continue }
+            if !shouldAutoTag(doc) { continue }
+            documentManager.generateTags(for: doc)
+        }
+    }
+
+    private func shouldAutoTag(_ doc: Document) -> Bool {
+        if let sourceId = doc.sourceDocumentId,
+           documentManager.getDocument(by: sourceId) != nil {
+            return false
+        }
+        if doc.type == .zip {
+            return false
+        }
+        return true
     }
 
     private func finishSummary(for documentId: UUID) {

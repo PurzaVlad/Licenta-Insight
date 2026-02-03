@@ -23,6 +23,9 @@ const SUMMARY_SYSTEM_PROMPT = `
 
   Rules:
   Output only the summary text.
+  English only. Always respond in English.
+  If the input is not English, translate the summary to English.
+  Do not output any non-English words or sentences.
   No title, no label, no introduction, no headings, no bullet points.
   Do not repeat any idea.
   Do not rephrase earlier sentences.
@@ -38,8 +41,19 @@ const SUMMARY_SYSTEM_PROMPT = `
 const SUMMARY_CHUNK_PROMPT = `${SUMMARY_SYSTEM_PROMPT}\n  Extract only the most important points; ignore minor details.`;
 const SUMMARY_COMBINE_PROMPT = `${SUMMARY_SYSTEM_PROMPT}\n  Merge and deduplicate; prefer omission over repetition.`;
 
+const TAG_SYSTEM_PROMPT = `
+  You will receive a short excerpt from a document.
+  Extract 4 single-word tags that capture the topic.
+
+  Rules:
+  Output tags as a comma-separated list.
+  Use plain words only; no punctuation, no numbering, no labels.
+  Prefer specific topics or names over generic words.
+  Do not repeat words.
+  `;
+
 const CHAT_SYSTEM_PROMPT =
-  'Answer from the provided ACTIVE_CONTEXT. Do not list documents unless the context has no relevant info. If needed, ask a brief clarification or suggest a document. Keep document references concise and do not include content unless explicitly asked for summary or quotes, or confirmed. Respond in English. Always finish your last sentence; do not trail off.';
+  'You are VaultAI, a proactive, concise assistant. Answer from the provided ACTIVE_CONTEXT and recent chat. Do not reveal internal reasoning; provide the final answer only. If the context is insufficient, ask a brief clarifying question or suggest a document. Never say you cannot access information; ask for the missing document or clarification instead. Cite document titles when using their content. Respond in English. Always finish your last sentence; do not trail off.';
 
 const CONTINUATION_SYSTEM_PROMPT =
   'You will receive a draft assistant response. Continue and complete only the final sentence. Output only the missing continuation. Do not add new sentences. Do not repeat any text from the draft. If the final sentence is already complete, output nothing.';
@@ -49,6 +63,7 @@ const CHAT_BRIEF_MARKER = '<<<CHAT_BRIEF>>>';
 const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
 const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
 const NAME_MARKER = '<<<NAME_REQUEST>>>';
+const TAG_MARKER = '<<<TAG_REQUEST>>>';
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -68,7 +83,7 @@ function App(): React.JSX.Element {
   // Serialize AI requests to avoid "context is busy" errors
   const queueRef = useRef<Array<{ requestId: string; prompt: string }>>([]);
   const isRunningRef = useRef(false);
-  const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'chat' } | null>(null);
+  const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'tag' | 'chat' } | null>(null);
   const abortCurrentRef = useRef(false);
   const canceledRequestIdsRef = useRef<Set<string>>(new Set());
   const pendingSummaryRestartRef = useRef<{ requestId: string; prompt: string } | null>(null);
@@ -201,7 +216,7 @@ useEffect(() => {
     } else if (text.startsWith(CHAT_BRIEF_MARKER)) {
       text = text.slice(CHAT_BRIEF_MARKER.length).trimStart();
     }
-    return !(text.startsWith(SUMMARY_MARKER) || text.startsWith(NAME_MARKER));
+    return !(text.startsWith(SUMMARY_MARKER) || text.startsWith(NAME_MARKER) || text.startsWith(TAG_MARKER));
   };
 
   const processQueue = async () => {
@@ -241,12 +256,16 @@ useEffect(() => {
         }
         const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
         const isName = rawPrompt.startsWith(NAME_MARKER);
+        const isTag = rawPrompt.startsWith(TAG_MARKER);
         const userContent = isSummary
           ? rawPrompt.slice(SUMMARY_MARKER.length).trim()
           : isName
           ? rawPrompt.slice(NAME_MARKER.length).trim()
+          : isTag
+          ? rawPrompt.slice(TAG_MARKER.length).trim()
           : rawPrompt;
-        const modeLabel: 'summary' | 'name' | 'chat' = isSummary ? 'summary' : isName ? 'name' : 'chat';
+        const summaryContentMaxChars = 50000;
+        const modeLabel: 'summary' | 'name' | 'tag' | 'chat' = isSummary ? 'summary' : isName ? 'name' : isTag ? 'tag' : 'chat';
         const jobType = modeLabel;
         console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
         currentJobRef.current = { requestId, prompt, type: modeLabel };
@@ -258,6 +277,8 @@ useEffect(() => {
           ? [{ role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
           : isName
           ? [userMessage]
+          : isTag
+          ? [{ role: 'system', content: TAG_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
           : noHistory
           ? [userMessage]
           : [...conversationRef.current, userMessage];
@@ -372,9 +393,13 @@ useEffect(() => {
 
           let text = "";
           if (isSummary) {
+            const summaryInput =
+              userContent.length > summaryContentMaxChars
+                ? userContent.slice(0, summaryContentMaxChars)
+                : userContent;
             const chunkSize = 4000;
             const chunks: string[] = [];
-            const paragraphs = userContent.split(/\n\s*\n/);
+            const paragraphs = summaryInput.split(/\n\s*\n/);
             let current = '';
             for (const para of paragraphs) {
               const trimmed = para.trim();
@@ -392,7 +417,7 @@ useEffect(() => {
             }
 
             if (chunks.length <= 1) {
-              text = await runSummary(userContent, 320);
+              text = await runSummary(summaryInput, 320);
             } else {
               const chunkSummaries: string[] = [];
               for (let i = 0; i < chunks.length; i++) {
@@ -425,13 +450,29 @@ useEffect(() => {
               () => {}
             );
             text = (nameResult?.text ?? '').trim();
+          } else if (isTag) {
+            const tagPrompt = formatPrompt(messagesForAI);
+            const tagResult = await context.completion(
+              {
+                prompt: tagPrompt,
+                n_predict: 60,
+                temperature: 0.3,
+                top_p: 0.9,
+                repeat_penalty: 1.25,
+                repeat_last_n: 128,
+                min_p: 0.05,
+                stop: stopTokens
+              },
+              () => {}
+            );
+            text = (tagResult?.text ?? '').trim();
           } else {
             const completionParams = {
               prompt: promptText,
-              n_predict: chatDetail ? 650 : 240,
-              temperature: 0.3,
-              top_p: 0.8,
-              repeat_penalty: 1.45,
+              n_predict: chatDetail ? 480 : 220,
+              temperature: 0.25,
+              top_p: 0.85,
+              repeat_penalty: 1.4,
               repeat_last_n: 256,
               min_p: 0.05,
               stop: stopTokens
@@ -721,7 +762,8 @@ useEffect(() => {
     console.log('[EdgeAI] Adding to queue. Current queue length:', queueRef.current.length);
     const isName = prompt.startsWith(NAME_MARKER);
     const isSummary = prompt.startsWith(SUMMARY_MARKER);
-    const isUserPrompt = !isSummary && !isName;
+    const isTag = prompt.startsWith(TAG_MARKER);
+    const isUserPrompt = !isSummary && !isName && !isTag;
     let enqueued = false;
 
     if (isUserPrompt) {
@@ -739,15 +781,9 @@ useEffect(() => {
       }
     }
 
-    if (!enqueued && isName && isRunningRef.current && currentJobRef.current?.type === 'summary') {
-      abortCurrentRef.current = true;
-      context?.stopCompletion().catch((err: any) => {
-        console.warn('[EdgeAI] Failed to stop summary completion:', err);
-      });
-      queueRef.current.unshift({ requestId, prompt });
-      enqueued = true;
-    } else if (!enqueued && isName) {
-      queueRef.current.unshift({ requestId, prompt });
+    if (!enqueued && (isName || isTag)) {
+      // Let summaries finish; name/tag can wait.
+      queueRef.current.push({ requestId, prompt });
       enqueued = true;
     }
 

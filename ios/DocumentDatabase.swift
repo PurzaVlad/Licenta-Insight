@@ -19,6 +19,8 @@ extension DocumentEntity {
     @NSManaged public var summary: String
     @NSManaged public var category: String
     @NSManaged public var keywordsResume: String
+    @NSManaged public var tags: String?
+    @NSManaged public var sourceDocumentId: UUID?
     @NSManaged public var dateCreated: Date
     @NSManaged public var documentType: String
     @NSManaged public var fileData: Data?
@@ -64,6 +66,8 @@ class DocumentDatabase: ObservableObject {
         entity.summary = document.summary
         entity.category = document.category.rawValue
         entity.keywordsResume = document.keywordsResume
+        entity.tags = document.tags.joined(separator: ", ")
+        entity.sourceDocumentId = document.sourceDocumentId
         entity.dateCreated = document.dateCreated
         entity.documentType = document.type.rawValue
         
@@ -128,6 +132,8 @@ class DocumentDatabase: ObservableObject {
                     summary: entity.summary,
                     category: Document.DocumentCategory(rawValue: entity.category) ?? .general,
                     keywordsResume: entity.keywordsResume,
+                    tags: (entity.tags ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                    sourceDocumentId: entity.sourceDocumentId,
                     dateCreated: entity.dateCreated,
                     type: type,
                     imageData: imageData,
@@ -160,6 +166,7 @@ class DocumentDatabase: ObservableObject {
             Type: \(document.type.rawValue)
             Date: \(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .short, timeStyle: .none))
             Summary: \(document.summary)
+            Tags: \(document.tags.joined(separator: ", "))
             
             Content:
             \(document.content)
@@ -175,7 +182,8 @@ class DocumentDatabase: ObservableObject {
         return documents.filter { document in
             document.title.lowercased().contains(lowercaseQuery) ||
             document.content.lowercased().contains(lowercaseQuery) ||
-            document.summary.lowercased().contains(lowercaseQuery)
+            document.summary.lowercased().contains(lowercaseQuery) ||
+            document.tags.joined(separator: " ").lowercased().contains(lowercaseQuery)
         }
     }
 }

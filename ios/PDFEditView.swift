@@ -186,7 +186,7 @@ struct SignPDFView: View {
         let workItem = DispatchWorkItem {
             let base = baseTitle(for: document.title)
             let title = "\(base)_Signed.pdf"
-            let newDoc = makePDFDocument(title: title, data: outData)
+            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -970,7 +970,7 @@ struct MergePDFsView: View {
             }
 
             let title = "Merged PDF \(shortDateString())"
-            let newDoc = makePDFDocument(title: title, data: data)
+            let newDoc = makePDFDocument(title: title, data: data, sourceDocumentId: nil)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -1100,7 +1100,7 @@ struct SplitPDFView: View {
                 guard let outData = newPDF.dataRepresentation() else { continue }
                 let base = baseTitle(for: document.title)
                 let title = "\(base)_Part\(idx + 1).pdf"
-                let newDoc = makePDFDocument(title: title, data: outData)
+                let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
                 DispatchQueue.main.async {
                     documentManager.addDocument(newDoc)
                 }
@@ -1243,7 +1243,7 @@ struct RearrangePDFView: View {
 
             let base = baseTitle(for: document.title)
             let title = "\(base)_Rearranged.pdf"
-            let newDoc = makePDFDocument(title: title, data: outData)
+            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -1403,7 +1403,7 @@ struct RotatePDFView: View {
 
             let base = baseTitle(for: document.title)
             let title = "\(base)_Rotated.pdf"
-            let newDoc = makePDFDocument(title: title, data: outData)
+            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -1536,12 +1536,18 @@ private func pdfData(from document: Document) -> Data? {
     return nil
 }
 
-private func makePDFDocument(title: String, data: Data) -> Document {
+private func makePDFDocument(title: String, data: Data, sourceDocumentId: UUID?) -> Document {
     let text = extractText(from: data)
+    let summaryText = sourceDocumentId == nil
+        ? "Processing summary..."
+        : DocumentManager.summaryUnavailableMessage
     return Document(
         title: title,
         content: text,
-        summary: "Processing summary...",
+        summary: summaryText,
+        ocrPages: nil,
+        tags: [],
+        sourceDocumentId: sourceDocumentId,
         dateCreated: Date(),
         type: .pdf,
         imageData: nil,

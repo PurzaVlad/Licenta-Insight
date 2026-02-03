@@ -10,7 +10,9 @@
         <attribute name="keywordsResume" optional="YES" attributeType="String"/>
         <attribute name="ocrText" optional="YES" attributeType="String"/>
         <attribute name="summary" optional="YES" attributeType="String"/>
+        <attribute name="tags" optional="YES" attributeType="String"/>
         <attribute name="thumbnailData" optional="YES" attributeType="Binary"/>
         <attribute name="title" optional="YES" attributeType="String"/>
+        <attribute name="sourceDocumentId" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
     </entity>
 </model>

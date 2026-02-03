@@ -248,7 +248,7 @@ struct DocumentDetailView: View {
         print("🧠 DocumentRowView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
-        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document in English only. Focus on the main topics, key points, and important details:\n\n\(document.content)"
         
         print("🧠 DocumentRowView: Sending summary request, content length: \(document.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
@@ -480,6 +480,7 @@ struct OldDocumentPreviewView: View {
                         InfoRow(label: "Date Added", value: DateFormatter.shortDate.string(from: document.dateCreated))
                         InfoRow(label: "Source", value: document.type == .scanned ? "Scanned" : "Manually Added")
                         InfoRow(label: "Type", value: document.type.rawValue)
+                        InfoRow(label: "Tags", value: tagsText)
                         
                         if let imageData = document.imageData {
                             InfoRow(label: "Pages", value: "\(imageData.count)")
@@ -556,7 +557,7 @@ struct OldDocumentPreviewView: View {
         print("🧠 OldDocumentPreviewView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
-        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document. Focus on the main topics, key points, and important details:\n\n\(document.content)"
+        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document in English only. Focus on the main topics, key points, and important details:\n\n\(document.content)"
         
         print("🧠 OldDocumentPreviewView: Sending summary request, content length: \(document.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
@@ -602,6 +603,12 @@ struct OldDocumentPreviewView: View {
                 }
             }
         })
+    }
+
+    private var tagsText: String {
+        let tags = document.tags
+        if tags.isEmpty { return "None" }
+        return tags.joined(separator: ", ")
     }
 }
 
@@ -1184,6 +1191,7 @@ struct DocumentInfoView: View {
                     infoRow("Source", sourceLabel)
                     infoRow("Extension", fileExtension)
                     infoRow("Date Added", dateAdded)
+                    infoRow("Tags", tagsText)
                 }
 
                 Section("Extracted OCR") {
@@ -1260,9 +1268,13 @@ struct DocumentInfoView: View {
         DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .short)
     }
 
+    private var tagsText: String {
+        let tags = document.tags
+        if tags.isEmpty { return "None" }
+        return tags.joined(separator: ", ")
+    }
+
     private var ocrText: String {
-        let trimmed = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
         guard let pages = document.ocrPages, !pages.isEmpty else { return "" }
         return buildStructuredText(from: pages, includePageLabels: true)
     }
@@ -1327,6 +1339,18 @@ struct DocumentSummaryView: View {
     private var supportsAISummary: Bool {
         document.type != .image
     }
+
+    private var hasLiveSource: Bool {
+        if let sourceId = currentDoc.sourceDocumentId,
+           documentManager.getDocument(by: sourceId) != nil {
+            return true
+        }
+        return false
+    }
+
+    private var isSummaryUnavailable: Bool {
+        hasLiveSource && (summary.isEmpty || summary == DocumentManager.summaryUnavailableMessage || isSummaryPlaceholder(summary))
+    }
     
     var body: some View {
         NavigationView {
@@ -1345,6 +1369,8 @@ struct DocumentSummaryView: View {
                                     Button("Cancel") { cancelSummary() }
                                 } else if hasUsableSummary {
                                     Button("Regenerate") { generateAISummary(force: true) }
+                                } else if isSummaryUnavailable {
+                                    Button("Generate Anyway") { generateAISummary(force: true) }
                                 } else {
                                     Button("Generate") { generateAISummary(force: false) }
                                 }
@@ -1363,6 +1389,10 @@ struct DocumentSummaryView: View {
                                     .foregroundColor(.secondary)
                             }
                             .padding(.vertical)
+                        } else if isSummaryUnavailable {
+                            Text(DocumentManager.summaryUnavailableMessage)
+                                .foregroundColor(.secondary)
+                                .padding(.vertical)
                         } else if summary.isEmpty {
                             Text("No summary.")
                                 .foregroundColor(.secondary)
@@ -1431,7 +1461,7 @@ struct DocumentSummaryView: View {
     }
 
     private var hasUsableSummary: Bool {
-        !isSummaryPlaceholder(summary)
+        !isSummaryPlaceholder(summary) && !isSummaryUnavailable
     }
 
     private func isSummaryPlaceholder(_ text: String) -> Bool {

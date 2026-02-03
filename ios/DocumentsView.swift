@@ -631,6 +631,8 @@ struct DocumentsView: View {
                         ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
+                        tags: old.tags,
+                        sourceDocumentId: old.sourceDocumentId,
                         dateCreated: old.dateCreated,
                         folderId: old.folderId,
                         sortOrder: old.sortOrder,
@@ -830,6 +832,8 @@ struct DocumentsView: View {
                             ocrPages: document.ocrPages,
                             category: cat,
                             keywordsResume: kw,
+                            tags: current.tags,
+                            sourceDocumentId: current.sourceDocumentId,
                             dateCreated: document.dateCreated,
                             folderId: current.folderId,
                             sortOrder: current.sortOrder,
@@ -912,11 +916,15 @@ struct DocumentsView: View {
     
     private func processScannedText(_ text: String) {
         isProcessing = true
+
+        let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
         
         let document = Document(
-            title: titleCaseFromOCR(text),
-            content: text,
+            title: titleCaseFromOCR(cappedText),
+            content: cappedText,
             summary: "Processing summary...",
+            tags: [],
+            sourceDocumentId: nil,
             dateCreated: Date(),
             type: .scanned,
             imageData: nil,
@@ -1194,14 +1202,22 @@ struct DocumentsView: View {
         
         // Generate PDF from images
         let pdfData = createPDF(from: scannedImages)
-        
+        let cappedText = DocumentManager.truncateText(extractedText, maxChars: 50000)
+        let cappedPages: [OCRPage]? = {
+            if pendingOCRPages.isEmpty { return nil }
+            return [OCRPage(pageIndex: 0, blocks: [OCRBlock(text: cappedText, confidence: 1.0, bbox: OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0), order: 0)])]
+        }()
+        let pagesToStore = pendingOCRPages.isEmpty ? cappedPages : pendingOCRPages
+
         let document = Document(
             title: name,
-            content: extractedText,
+            content: cappedText,
             summary: "Processing summary...",
-            ocrPages: pendingOCRPages.isEmpty ? nil : pendingOCRPages,
+            ocrPages: pagesToStore,
             category: pendingCategory,
             keywordsResume: pendingKeywordsResume,
+            tags: [],
+            sourceDocumentId: nil,
             dateCreated: Date(),
             type: .scanned,
             imageData: imageDataArray,
@@ -2120,6 +2136,8 @@ struct FolderDocumentsView: View {
                         ocrPages: old.ocrPages,
                         category: old.category,
                         keywordsResume: old.keywordsResume,
+                        tags: old.tags,
+                        sourceDocumentId: old.sourceDocumentId,
                         dateCreated: old.dateCreated,
                         folderId: old.folderId,
                         sortOrder: old.sortOrder,

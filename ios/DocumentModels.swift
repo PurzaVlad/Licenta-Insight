@@ -8,6 +8,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let ocrPages: [OCRPage]?
     let category: DocumentCategory
     let keywordsResume: String
+    let tags: [String]
+    let sourceDocumentId: UUID?
     let dateCreated: Date
     let folderId: UUID?
     let sortOrder: Int
@@ -48,6 +50,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         ocrPages: [OCRPage]? = nil,
         category: DocumentCategory = .general,
         keywordsResume: String = "",
+        tags: [String] = [],
+        sourceDocumentId: UUID? = nil,
         dateCreated: Date = Date(),
         folderId: UUID? = nil,
         sortOrder: Int = 0,
@@ -63,6 +67,8 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.ocrPages = ocrPages
         self.category = category
         self.keywordsResume = keywordsResume
+        self.tags = tags
+        self.sourceDocumentId = sourceDocumentId
         self.dateCreated = dateCreated
         self.folderId = folderId
         self.sortOrder = sortOrder
@@ -70,6 +76,65 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.imageData = imageData
         self.pdfData = pdfData
         self.originalFileData = originalFileData
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case content
+        case summary
+        case ocrPages
+        case category
+        case keywordsResume
+        case tags
+        case sourceDocumentId
+        case dateCreated
+        case folderId
+        case sortOrder
+        case type
+        case imageData
+        case pdfData
+        case originalFileData
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        content = try container.decode(String.self, forKey: .content)
+        summary = try container.decode(String.self, forKey: .summary)
+        ocrPages = try container.decodeIfPresent([OCRPage].self, forKey: .ocrPages)
+        category = try container.decode(DocumentCategory.self, forKey: .category)
+        keywordsResume = try container.decodeIfPresent(String.self, forKey: .keywordsResume) ?? ""
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        sourceDocumentId = try container.decodeIfPresent(UUID.self, forKey: .sourceDocumentId)
+        dateCreated = try container.decode(Date.self, forKey: .dateCreated)
+        folderId = try container.decodeIfPresent(UUID.self, forKey: .folderId)
+        sortOrder = try container.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        type = try container.decode(DocumentType.self, forKey: .type)
+        imageData = try container.decodeIfPresent([Data].self, forKey: .imageData)
+        pdfData = try container.decodeIfPresent(Data.self, forKey: .pdfData)
+        originalFileData = try container.decodeIfPresent(Data.self, forKey: .originalFileData)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(content, forKey: .content)
+        try container.encode(summary, forKey: .summary)
+        try container.encodeIfPresent(ocrPages, forKey: .ocrPages)
+        try container.encode(category, forKey: .category)
+        try container.encode(keywordsResume, forKey: .keywordsResume)
+        try container.encode(tags, forKey: .tags)
+        try container.encodeIfPresent(sourceDocumentId, forKey: .sourceDocumentId)
+        try container.encode(dateCreated, forKey: .dateCreated)
+        try container.encodeIfPresent(folderId, forKey: .folderId)
+        try container.encode(sortOrder, forKey: .sortOrder)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(imageData, forKey: .imageData)
+        try container.encodeIfPresent(pdfData, forKey: .pdfData)
+        try container.encodeIfPresent(originalFileData, forKey: .originalFileData)
     }
 }
 

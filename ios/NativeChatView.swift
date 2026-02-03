@@ -15,11 +15,24 @@ struct NativeChatView: View {
     @State private var isThinkingPulseOn: Bool = false
     @State private var activeChatGenerationId: UUID? = nil
     @FocusState private var isFocused: Bool
+    @EnvironmentObject private var documentManager: DocumentManager
 
     // Preprompt (edit this text to change assistant behavior)
     private let chatPreprompt = """
-    You are a helpful assistant. You have access to all document titles, summaries and ocrs. You can give that information to the user.
+    You are VaultAI, a deeply helpful, proactive, and concise assistant.
+    You can use the ACTIVE_CONTEXT below, which includes folder structure, document titles, summaries, categories, keywords, and full extracted/OCR text for selected files.
+    Do not reveal internal reasoning, analysis, or chain-of-thought. Provide the final answer only.
+    Use the provided context and recent chat. If the context is insufficient, ask a brief clarifying question.
+    Be helpful and to the point; answer concisely unless the user explicitly asks for deep detail.
+    When you use document content, cite the document title inline.
+    Never say you "can't access" information; instead ask for the missing document or clarification.
+    Prefer precise facts from the context over speculation. If unsure, ask a question.
+    Focus heavily on document-based answers. If relevant info exists in documents, use it as the primary source.
+    If multiple documents match, either compare/summarize both briefly and ask which to focus on, or ask the user to choose.
+    Keep balance: avoid excessive questions; keep answers grounded and concise.
     """
+    private let historyLimit = 4
+    private let selectionMaxDocs = 18
 
     var body: some View {
         NavigationView {
@@ -122,6 +135,13 @@ struct NativeChatView: View {
         startGeneration(question: trimmed)
     }
 
+    private func resetConversation() {
+        input = ""
+        messages = []
+        isGenerating = false
+        activeChatGenerationId = nil
+    }
+
     private func stopGeneration() {
         guard isGenerating else { return }
         isGenerating = false
@@ -168,6 +188,303 @@ struct NativeChatView: View {
         }
     }
 
+    private func recentChatContext(excludingLastUser: Bool, question: String) -> String {
+        let history = excludingLastUser ? Array(messages.dropLast()) : messages
+        if history.isEmpty { return "None." }
+
+        let topicShifted = isTopicShift(question: question, history: history)
+        let sliceCount = topicShifted ? min(2, history.count) : min(historyLimit, history.count)
+        let tail = Array(history.suffix(sliceCount))
+        if tail.isEmpty { return "None." }
+        return tail.map { msg in
+            let role = msg.role.capitalized
+            let text = cleanLine(msg.text)
+            return "\(role): \(text)"
+        }.joined(separator: "\n")
+    }
+
+    private func recentExchangeContext(question: String) -> String {
+        let history = messages
+        if history.isEmpty { return "None." }
+        let topicShifted = isTopicShift(question: question, history: history)
+        if topicShifted { return "None." }
+
+        let lastUsers = history.filter { $0.role == "user" }.suffix(3)
+        let lastAssistant = history.last(where: { $0.role == "assistant" })
+
+        let userLines = lastUsers.map { cleanLine(String($0.text.prefix(220))) }
+        let assistantLine = lastAssistant.map { cleanLine(String($0.text.prefix(320))) } ?? ""
+
+        if userLines.isEmpty && assistantLine.isEmpty { return "None." }
+        let usersBlock = userLines.isEmpty ? "" : userLines.enumerated().map { idx, text in
+            "LastUser\(idx + 1): \(text)"
+        }.joined(separator: "\n")
+        let assistantBlock = assistantLine.isEmpty ? "" : "LastAssistant: \(assistantLine)"
+
+        if usersBlock.isEmpty { return assistantBlock }
+        if assistantBlock.isEmpty { return usersBlock }
+        return """
+        \(usersBlock)
+        \(assistantBlock)
+        """
+    }
+
+    private func isTopicShift(question: String, history: [ChatMessage]) -> Bool {
+        guard let lastUser = history.last(where: { $0.role == "user" }) else { return true }
+        let recent = cleanLine(lastUser.text)
+        let qTokens = tokenSet(question)
+        let rTokens = tokenSet(recent)
+        if qTokens.isEmpty || rTokens.isEmpty { return false }
+        let overlap = qTokens.intersection(rTokens).count
+        let union = qTokens.union(rTokens).count
+        if union == 0 { return false }
+        let jaccard = Double(overlap) / Double(union)
+        return jaccard < 0.12
+    }
+
+    private func tokenSet(_ text: String) -> Set<String> {
+        let tokens = cleanLine(text)
+            .lowercased()
+            .split(separator: " ")
+            .map(String.init)
+            .filter { $0.count > 3 }
+        return Set(tokens)
+    }
+
+    private func cleanLine(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func folderPathMap() -> [UUID: String] {
+        let byId = Dictionary(uniqueKeysWithValues: documentManager.folders.map { ($0.id, $0) })
+        var cache: [UUID: String] = [:]
+
+        func path(for folderId: UUID) -> String {
+            if let cached = cache[folderId] { return cached }
+            var parts: [String] = []
+            var currentId: UUID? = folderId
+            var safety = 0
+            while let cid = currentId, let folder = byId[cid], safety < 20 {
+                parts.append(folder.name)
+                currentId = folder.parentId
+                safety += 1
+            }
+            let fullPath = parts.reversed().joined(separator: "/")
+            cache[folderId] = fullPath
+            return fullPath
+        }
+
+        for folder in documentManager.folders {
+            _ = path(for: folder.id)
+        }
+        return cache
+    }
+
+    private func buildFolderIndex() -> String {
+        if documentManager.folders.isEmpty { return "No folders." }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        let pathMap = folderPathMap()
+        return documentManager.folders.map { folder in
+            let path = pathMap[folder.id] ?? folder.name
+            return """
+            FolderId: \(folder.id.uuidString)
+            Path: \(path)
+            Created: \(formatter.string(from: folder.dateCreated))
+            """
+        }.joined(separator: "\n---\n")
+    }
+
+    private func buildDocumentIndex() -> String {
+        if documentManager.documents.isEmpty { return "No documents." }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        let pathMap = folderPathMap()
+        return documentManager.documents.map { doc in
+            let folderPath = doc.folderId.flatMap { pathMap[$0] } ?? "Root"
+            return """
+            DocId: \(doc.id.uuidString)
+            Title: \(doc.title)
+            Folder: \(folderPath)
+            Tags: \(doc.tags.joined(separator: ", "))
+            Date: \(formatter.string(from: doc.dateCreated))
+            """
+        }.joined(separator: "\n---\n")
+    }
+
+    private func buildStructuredOCRText(from pages: [OCRPage]) -> String {
+        guard !pages.isEmpty else { return "" }
+        var output: [String] = []
+        for page in pages {
+            let blocks = page.blocks.sorted { $0.order < $1.order }
+            let combined = blocks.map { $0.text }.joined(separator: " ")
+            output.append("Page \(page.pageIndex + 1):\n\(combined)")
+        }
+        return output.joined(separator: "\n\n")
+    }
+
+    private func shouldIncludeOCR(question: String) -> Bool {
+        let q = cleanLine(question).lowercased()
+        let triggers = ["ocr", "text", "verbatim", "quote", "exact", "page", "line", "paragraph"]
+        return triggers.contains { q.contains($0) }
+    }
+
+    private func buildSelectedDocumentContext(selected: [Document], question: String) -> String {
+        if selected.isEmpty { return "No relevant documents selected." }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        let pathMap = folderPathMap()
+        let includeOCR = shouldIncludeOCR(question: question)
+        return selected.map { doc in
+            let folderPath = doc.folderId.flatMap { pathMap[$0] } ?? "Root"
+            let maxChars = 50000
+            let contentText = String(doc.content.prefix(maxChars))
+            let ocrText = includeOCR ? (doc.ocrPages.map { buildStructuredOCRText(from: $0) } ?? "") : ""
+            let trimmedOCR = includeOCR ? String(ocrText.prefix(maxChars)) : ""
+            return """
+            DocId: \(doc.id.uuidString)
+            Title: \(doc.title)
+            Folder: \(folderPath)
+            Type: \(doc.type.rawValue)
+            Tags: \(doc.tags.joined(separator: ", "))
+            Date: \(formatter.string(from: doc.dateCreated))
+            Summary: \(doc.summary)
+
+            Content:
+            \(contentText)
+
+            OCR:
+            \(trimmedOCR)
+            """
+        }.joined(separator: "\n---\n")
+    }
+
+    private func buildSelectionPrompt(question: String) -> String {
+        let recent = recentChatContext(excludingLastUser: true, question: question)
+        let folders = buildFolderIndex()
+        let docs = buildDocumentIndex()
+        return """
+        SYSTEM:
+        You are selecting possibly relevant documents for a user question.
+        Use only the doc index below (tags, titles, folder info).
+        Think about the subject and include borderline matches to avoid missing relevant files.
+        Detect topic shifts: if the current question is about a different topic than recent chat, prefer fresh matches and avoid sticking to prior documents.
+        If the question is broad, include a wider set of possibly relevant docs.
+        If the question is about app stats (counts, totals, number of documents/folders), return an empty array.
+        Output ONLY valid JSON in this exact shape:
+        {"include_ids":["UUID", "..."]}
+        If none match, return an empty array.
+
+        RECENT_CHAT:
+        \(recent)
+
+        FOLDERS:
+        \(folders)
+
+        DOC_INDEX:
+        \(docs)
+
+        QUESTION:
+        \(question)
+        """
+    }
+
+    private func extractFirstJSONObject(from text: String) -> String? {
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}") else { return nil }
+        return String(text[start...end])
+    }
+
+    private func parseSelectionIds(_ text: String, question: String, allDocs: [Document]) -> [UUID] {
+        struct Selection: Decodable { let include_ids: [String] }
+        if let json = extractFirstJSONObject(from: text),
+           let data = json.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(Selection.self, from: data) {
+            let ids = decoded.include_ids.compactMap { UUID(uuidString: $0) }
+            return ids
+        }
+
+        let uuidPattern = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+        if let regex = try? NSRegularExpression(pattern: uuidPattern) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            let matches = regex.matches(in: text, range: range)
+            let ids = matches.compactMap { match -> UUID? in
+                guard let r = Range(match.range, in: text) else { return nil }
+                return UUID(uuidString: String(text[r]))
+            }
+            if !ids.isEmpty { return ids }
+        }
+
+        let questionTokens = Set(
+            cleanLine(question)
+                .lowercased()
+                .split(separator: " ")
+                .map(String.init)
+                .filter { $0.count > 3 }
+        )
+        if questionTokens.isEmpty { return allDocs.map(\.id) }
+        return allDocs.filter { doc in
+            let tagText = doc.tags.joined(separator: " ")
+            let haystack = "\(doc.title) \(tagText)".lowercased()
+            return questionTokens.contains { haystack.contains($0) }
+        }.map(\.id)
+    }
+
+    private func fallbackSelection(question: String, allDocs: [Document]) -> [Document] {
+        if allDocs.isEmpty { return [] }
+        let q = cleanLine(question).lowercased()
+        let tokens = q.split(separator: " ").map(String.init).filter { $0.count > 3 }
+        let scored = allDocs.map { doc -> (Document, Int) in
+            let tagText = doc.tags.joined(separator: " ")
+            let haystack = "\(doc.title) \(tagText)".lowercased()
+            var score = 0
+            for t in tokens where haystack.contains(t) { score += 1 }
+            if !tokens.isEmpty && score == 0 { score = 0 }
+            return (doc, score)
+        }
+        let sorted = scored.sorted { a, b in
+            if a.1 != b.1 { return a.1 > b.1 }
+            return a.0.dateCreated > b.0.dateCreated
+        }
+        let top = sorted.prefix(6).map { $0.0 }
+        return top.isEmpty ? Array(allDocs.prefix(6)) : top
+    }
+
+    private func buildAnswerPrompt(question: String, selectedDocs: [Document]) -> String {
+        let recent = recentChatContext(excludingLastUser: true, question: question)
+        let recentExchange = recentExchangeContext(question: question)
+        let folders = buildFolderIndex()
+        let selectedContext = buildSelectedDocumentContext(selected: selectedDocs, question: question)
+        return """
+        SYSTEM:
+        \(chatPreprompt)
+        Always prioritize the user's latest message as the primary instruction and topic.
+        Give a concise, document-first response. Prefer facts from the selected documents.
+        If multiple documents clearly match, mention both briefly and ask which one to focus on, or ask a single clarifying question.
+        If the question is broad, surface the most relevant facts from the selected documents and folders.
+        If there is not enough info, ask for the missing document or a clarifying detail.
+        Assume relevant information is likely in the documents; prioritize using them over generic responses.
+
+        RECENT_CHAT:
+        \(recent)
+
+        RECENT_EXCHANGE:
+        \(recentExchange)
+
+        ACTIVE_CONTEXT:
+        FOLDERS:
+        \(folders)
+
+        DOCUMENTS:
+        \(selectedContext)
+
+        USER_QUESTION:
+        \(question)
+        """
+    }
+
     private func buildPrompt(for question: String) -> String {
         """
         SYSTEM:
@@ -179,11 +496,49 @@ struct NativeChatView: View {
     }
 
     private func callChatLLM(edgeAI: EdgeAI, question: String) async throws -> String {
-        let prompt = buildPrompt(for: question)
+        if let statsAnswer = buildStatsAnswerIfNeeded(for: question) {
+            return statsAnswer
+        }
+        let selectionPrompt = buildSelectionPrompt(question: question)
+        let selectionRaw = try await callLLM(edgeAI: edgeAI, prompt: wrapSelectionPrompt(selectionPrompt))
+        let selectedIds = parseSelectionIds(selectionRaw, question: question, allDocs: documentManager.documents)
+        var selectedDocs = documentManager.documents.filter { selectedIds.contains($0.id) }
+        if selectedDocs.isEmpty {
+            selectedDocs = fallbackSelection(question: question, allDocs: documentManager.documents)
+        }
+        if selectedDocs.count > selectionMaxDocs {
+            selectedDocs = Array(selectedDocs.prefix(selectionMaxDocs))
+        }
+
+        let prompt = buildAnswerPrompt(question: question, selectedDocs: selectedDocs)
         return try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
     }
 
+    private func buildStatsAnswerIfNeeded(for question: String) -> String? {
+        let q = question.lowercased()
+        let wantsCount = q.contains("how many") || q.contains("number of") || q.contains("count of") || q.contains("total")
+        let mentionsDocs = q.contains("document") || q.contains("docs") || q.contains("files") || q.contains("uploaded")
+        let mentionsFolders = q.contains("folder")
+        if !wantsCount { return nil }
+        if mentionsDocs || mentionsFolders {
+            let docCount = documentManager.documents.count
+            let folderCount = documentManager.folders.count
+            if mentionsDocs && mentionsFolders {
+                return "You currently have \(docCount) documents and \(folderCount) folders."
+            }
+            if mentionsDocs {
+                return "You currently have \(docCount) documents."
+            }
+            return "You currently have \(folderCount) folders."
+        }
+        return nil
+    }
+
     private func wrapChatPrompt(_ prompt: String) -> String {
+        "<<<CHAT_DETAIL>>>" + prompt
+    }
+
+    private func wrapSelectionPrompt(_ prompt: String) -> String {
         "<<<CHAT_BRIEF>>>" + prompt
     }
 
