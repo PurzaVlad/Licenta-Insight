@@ -131,15 +131,31 @@ struct TabContainerView: View {
         if #available(iOS 18.0, *) {
             TabView {
                 Tab("Documents", systemImage: "folder") {
-                    DocumentsView(
-                        onOpenPreview: { document, url in
-                            previewItem = PreviewItem(id: document.id, url: url, document: document)
-                        },
-                        onShowSummary: { document in
-                            summaryDocument = document
+                    if #available(iOS 16.0, *) {
+                        NavigationStack {
+                            DocumentsView(
+                                onOpenPreview: { document, url in
+                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
+                                },
+                                onShowSummary: { document in
+                                    summaryDocument = document
+                                }
+                            )
+                            .environmentObject(documentManager)
                         }
-                    )
-                    .environmentObject(documentManager)
+                    } else {
+                        NavigationView {
+                            DocumentsView(
+                                onOpenPreview: { document, url in
+                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
+                                },
+                                onShowSummary: { document in
+                                    summaryDocument = document
+                                }
+                            )
+                            .environmentObject(documentManager)
+                        }
+                    }
                 }
 
                 Tab("Chat", systemImage: "bubble.left") {
@@ -173,19 +189,37 @@ struct TabContainerView: View {
             .accentColor(Color("Primary"))
         } else {
             TabView {
-                DocumentsView(
-                    onOpenPreview: { document, url in
-                        previewItem = PreviewItem(id: document.id, url: url, document: document)
-                    },
-                    onShowSummary: { document in
-                        summaryDocument = document
+                Group {
+                    if #available(iOS 16.0, *) {
+                        NavigationStack {
+                            DocumentsView(
+                                onOpenPreview: { document, url in
+                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
+                                },
+                                onShowSummary: { document in
+                                    summaryDocument = document
+                                }
+                            )
+                            .environmentObject(documentManager)
+                        }
+                    } else {
+                        NavigationView {
+                            DocumentsView(
+                                onOpenPreview: { document, url in
+                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
+                                },
+                                onShowSummary: { document in
+                                    summaryDocument = document
+                                }
+                            )
+                            .environmentObject(documentManager)
+                        }
                     }
-                )
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "folder")
-                        Text("Documents")
-                    }
+                }
+                .tabItem {
+                    Image(systemName: "folder")
+                    Text("Documents")
+                }
 
                 NativeChatView()
                     .environmentObject(documentManager)

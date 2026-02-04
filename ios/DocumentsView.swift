@@ -238,6 +238,8 @@ struct DocumentsView: View {
                 }
             }
             .listStyle(.plain)
+            .navigationTitle("Documents")
+            .navigationBarTitleDisplayMode(.large)
             .environment(\.editMode, $editMode)
         )
     }
@@ -299,26 +301,21 @@ struct DocumentsView: View {
 
     @ViewBuilder
     private var rootBrowserView: some View {
-        ZStack {
+        if layoutMode == .list {
             rootListView
-                .opacity(layoutMode == .list ? 1 : 0)
-                .allowsHitTesting(layoutMode == .list)
-
+        } else {
             rootGridView
-                .opacity(layoutMode == .grid ? 1 : 0)
-                .allowsHitTesting(layoutMode == .grid)
-
-            if isOpeningPreview {
-                ZStack {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .ignoresSafeArea()
-                    VStack(spacing: 12) {
-                        ProgressView()
-                            .scaleEffect(1.2)
-                        Text("Opening preview...")
-                            .foregroundColor(.secondary)
-                    }
+        }
+        if isOpeningPreview {
+            ZStack {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .ignoresSafeArea()
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                    Text("Opening preview...")
+                        .foregroundColor(.secondary)
                 }
             }
         }
@@ -348,6 +345,119 @@ struct DocumentsView: View {
                 }
             }
         )
+    }
+
+    private var documentsRootContent: some View {
+        documentsMainStack
+            .navigationTitle("Documents")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if isSelectionMode {
+                        Menu {
+                            Button("Share Selected") {
+                                shareSelectedDocuments()
+                            }
+                            Button("Delete Selected", role: .destructive) {
+                                showingBulkDeleteDialog = true
+                            }
+                            Button("Move Selected") {
+                                showingBulkMoveSheet = true
+                            }
+                            Button("Create Zip") {
+                                showingZipExportSheet = true
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .foregroundColor(.primary)
+                        }
+
+                        Button("Cancel") {
+                            clearSelection()
+                        }
+                    } else {
+                        Menu {
+                            Button("New Folder") {
+                                newFolderName = ""
+                                showingNewFolderDialog = true
+                            }
+
+                            Button("Create Zip") {
+                                showingZipExportSheet = true
+                            }
+
+                            Button("Scan Document") {
+                                startScan()
+                            }
+                            Button("Import Files") {
+                                showingDocumentPicker = true
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .foregroundColor(.primary)
+                        }
+
+                        Menu {
+                            Button {
+                                isSelectionMode = true
+                            } label: {
+                                Label("Select", systemImage: "checkmark.circle")
+                            }
+
+                            Button {
+                                showingSettings = true
+                            } label: {
+                                Label("Preferences", systemImage: "gearshape")
+                            }
+
+                            Divider()
+
+                            Text("View")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Button {
+                                documentManager.setPrefersGridLayout(false)
+                            } label: {
+                                Label("List", systemImage: "list.bullet")
+                            }
+
+                            Button {
+                                documentManager.setPrefersGridLayout(true)
+                            } label: {
+                                Label("Grid", systemImage: "square.grid.2x2")
+                            }
+
+                            Divider()
+
+                            Text("Sort")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Button {
+                                documentsSortModeRaw = DocumentsSortMode.alphabetically.rawValue
+                            } label: {
+                                Label("Name", systemImage: "textformat")
+                            }
+
+                            Button {
+                                documentsSortModeRaw = DocumentsSortMode.oldest.rawValue
+                            } label: {
+                                Label("Date", systemImage: "calendar")
+                            }
+
+                            Button {
+                                documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+                            } label: {
+                                Label("Recent", systemImage: "clock")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .foregroundColor(.primary)
+                        }
+                    }
+                }
+            }
     }
 
     @ViewBuilder
@@ -386,119 +496,7 @@ struct DocumentsView: View {
     }
     
     var body: some View {
-        NavigationView {
-            documentsMainStack
-                .navigationTitle("Documents")
-                .navigationBarTitleDisplayMode(.large)
-                .toolbar {
-                    ToolbarItemGroup(placement: .navigationBarTrailing) {
-                        if isSelectionMode {
-                            Menu {
-                                Button("Share Selected") {
-                                    shareSelectedDocuments()
-                                }
-                                Button("Delete Selected", role: .destructive) {
-                                    showingBulkDeleteDialog = true
-                                }
-                                Button("Move Selected") {
-                                    showingBulkMoveSheet = true
-                                }
-                                Button("Create Zip") {
-                                    showingZipExportSheet = true
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis")
-                                  .foregroundColor(.primary)
-                            }
-
-                            Button("Cancel") {
-                                clearSelection()
-                            }
-                        } else {
-                            Menu {
-                                Button("New Folder") {
-                                    newFolderName = ""
-                                    showingNewFolderDialog = true
-                                }
-
-                                Button("Create Zip") {
-                                    showingZipExportSheet = true
-                                }
-
-                                Button("Scan Document") {
-                                    startScan()
-                                }
-                                Button("Import Files") {
-                                    showingDocumentPicker = true
-                                }
-                            } label: {
-                                Image(systemName: "plus")
-                                  .foregroundColor(.primary)
-                            }
-
-                            Menu {
-                                Button {
-                                    isSelectionMode = true
-                                } label: {
-                                    Label("Select", systemImage: "checkmark.circle")
-                                }
-
-                                Button {
-                                    showingSettings = true
-                                } label: {
-                                    Label("Preferences", systemImage: "gearshape")
-                                }
-
-                                Divider()
-
-                                Text("View")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                Button {
-                                    documentManager.setPrefersGridLayout(false)
-                                } label: {
-                                    Label("List", systemImage: "list.bullet")
-                                }
-
-                                Button {
-                                    documentManager.setPrefersGridLayout(true)
-                                } label: {
-                                    Label("Grid", systemImage: "square.grid.2x2")
-                                }
-
-                                Divider()
-
-                                Text("Sort")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                Button {
-                                    documentsSortModeRaw = DocumentsSortMode.alphabetically.rawValue
-                                } label: {
-                                    Label("Name", systemImage: "textformat")
-                                }
-
-                                Button {
-                                    documentsSortModeRaw = DocumentsSortMode.oldest.rawValue
-                                } label: {
-                                    Label("Date", systemImage: "calendar")
-                                }
-
-                                Button {
-                                    documentsSortModeRaw = DocumentsSortMode.newest.rawValue
-                                } label: {
-                                    Label("Recent", systemImage: "clock")
-                                }
-                            } label: {
-                                Image(systemName: "ellipsis")
-                                .foregroundColor(.primary)
-                            }
-                        }
-                    }
-                }
-        }
-        .navigationViewStyle(StackNavigationViewStyle())
+        documentsRootContent
         .onChange(of: isSelectionMode) { active in
             editMode = active ? .active : .inactive
         }
