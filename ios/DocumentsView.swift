@@ -407,7 +407,8 @@ struct DocumentsView: View {
                                     showingZipExportSheet = true
                                 }
                             } label: {
-                                Image(systemName: "ellipsis.circle")
+                                Image(systemName: "ellipsis")
+                                  .foregroundColor(.primary)
                             }
 
                             Button("Cancel") {
@@ -432,6 +433,7 @@ struct DocumentsView: View {
                                 }
                             } label: {
                                 Image(systemName: "plus")
+                                  .foregroundColor(.primary)
                             }
 
                             Menu {
@@ -490,11 +492,13 @@ struct DocumentsView: View {
                                 }
                             } label: {
                                 Image(systemName: "ellipsis")
+                                .foregroundColor(.primary)
                             }
                         }
                     }
                 }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
         .onChange(of: isSelectionMode) { active in
             editMode = active ? .active : .inactive
         }
@@ -1631,7 +1635,7 @@ struct DocumentRowView: View {
                 if isSelectionMode && !usesNativeSelection {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                        .foregroundColor(isSelected ? Color("Primary") : .secondary)
                         .frame(width: 28, height: 28)
                 } else if !isSelectionMode {
                     Menu {
@@ -1817,7 +1821,7 @@ struct FolderRowView: View {
                 if isSelectionMode && !usesNativeSelection {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                        .foregroundColor(isSelected ? Color("Primary") : .secondary)
                         .frame(width: 28, height: 28)
                 } else if !isSelectionMode {
                     Menu {

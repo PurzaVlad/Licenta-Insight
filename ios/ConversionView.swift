@@ -679,7 +679,7 @@ struct DocumentPickerSheet: View {
                         }) {
                             HStack {
                                 Image(systemName: iconForDocumentType(document.type))
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(Color("Primary"))
                             
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(document.title)
@@ -708,6 +708,7 @@ struct DocumentPickerSheet: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .foregroundColor(.primary)
                 }
             }
         }

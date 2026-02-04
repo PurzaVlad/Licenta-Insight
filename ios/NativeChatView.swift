@@ -659,11 +659,12 @@ struct NativeChatView: View {
                             } label: {
                                 HStack {
                                     Image(systemName: iconForDocumentType(document.type))
-                                        .foregroundColor(.blue)
+                                        .foregroundColor(Color("Primary"))
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(document.title)
                                             .font(.headline)
                                             .lineLimit(1)
+                                            .foregroundColor(.primary)
                                         Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
@@ -672,9 +673,9 @@ struct NativeChatView: View {
                                     Image(systemName: selectedIds.contains(document.id) ? "checkmark.circle.fill" : "circle")
                                         .foregroundColor(selectedIds.contains(document.id) ? Color("Primary") : .secondary)
                                 }
+                                }
                             }
                         }
-                    }
                 }
                 .navigationTitle("Scope Documents")
                 .navigationBarTitleDisplayMode(.inline)
@@ -683,9 +684,11 @@ struct NativeChatView: View {
                         Button("Clear") {
                             selectedIds.removeAll()
                         }
+                        .foregroundColor(.primary)
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button("Done") { dismiss() }
+                            .foregroundColor(.primary)
                     }
                 }
             }

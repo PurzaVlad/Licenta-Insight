@@ -39,56 +39,7 @@ struct TabContainerView: View {
 
     var body: some View {
         ZStack {
-        TabView {
-            DocumentsView(
-                onOpenPreview: { document, url in
-                    previewItem = PreviewItem(id: document.id, url: url, document: document)
-                },
-                onShowSummary: { document in
-                    summaryDocument = document
-                }
-            )
-                .environmentObject(documentManager)
-                .tabItem {
-                    Image(systemName: "folder")
-                    Text("Documents")
-                }
-
-            NativeChatView()
-                .environmentObject(documentManager)
-                .tabItem {
-                    Image(systemName: "bubble.left")
-                    Text("Chat")
-                }
-
-            ToolsView()
-                .environmentObject(documentManager)
-                .tabItem {
-                    Image(systemName: "wand.and.stars")
-                    Text("Tools")
-                }
-
-            ConvertView()
-                .environmentObject(documentManager)
-                .tabItem {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                    Text("Convert")
-                }
-
-            SearchView(
-                onOpenPreview: { document, url in
-                    previewItem = PreviewItem(id: document.id, url: url, document: document)
-                },
-                onShowSummary: { document in
-                    summaryDocument = document
-                }
-            )
-                .environmentObject(documentManager)
-                .tabItem {
-                    Image(systemName: "magnifyingglass")
-                    Text("Search")
-                }
-        }
+        tabRoot
         .fullScreenCover(item: $previewItem) { item in
             let shouldShowSummary = item.document.type != .image
             DocumentPreviewContainerView(
@@ -172,6 +123,107 @@ struct TabContainerView: View {
             let job = SummaryJob(documentId: docId, prompt: prompt)
             summaryQueue.append(job)
             processNextSummaryIfNeeded()
+        }
+    }
+
+    @ViewBuilder
+    private var tabRoot: some View {
+        if #available(iOS 18.0, *) {
+            TabView {
+                Tab("Documents", systemImage: "folder") {
+                    DocumentsView(
+                        onOpenPreview: { document, url in
+                            previewItem = PreviewItem(id: document.id, url: url, document: document)
+                        },
+                        onShowSummary: { document in
+                            summaryDocument = document
+                        }
+                    )
+                    .environmentObject(documentManager)
+                }
+
+                Tab("Chat", systemImage: "bubble.left") {
+                    NativeChatView()
+                        .environmentObject(documentManager)
+                }
+
+                Tab("Tools", systemImage: "wand.and.stars") {
+                    ToolsView()
+                        .environmentObject(documentManager)
+                }
+
+                Tab("Convert", systemImage: "arrow.triangle.2.circlepath") {
+                    ConvertView()
+                        .environmentObject(documentManager)
+                }
+
+                Tab(role: .search) {
+                    SearchView(
+                        onOpenPreview: { document, url in
+                            previewItem = PreviewItem(id: document.id, url: url, document: document)
+                        },
+                        onShowSummary: { document in
+                            summaryDocument = document
+                        }
+                    )
+                    .environmentObject(documentManager)
+                }
+            }
+            .tint(Color("Primary"))
+            .accentColor(Color("Primary"))
+        } else {
+            TabView {
+                DocumentsView(
+                    onOpenPreview: { document, url in
+                        previewItem = PreviewItem(id: document.id, url: url, document: document)
+                    },
+                    onShowSummary: { document in
+                        summaryDocument = document
+                    }
+                )
+                    .environmentObject(documentManager)
+                    .tabItem {
+                        Image(systemName: "folder")
+                        Text("Documents")
+                    }
+
+                NativeChatView()
+                    .environmentObject(documentManager)
+                    .tabItem {
+                        Image(systemName: "bubble.left")
+                        Text("Chat")
+                    }
+
+                ToolsView()
+                    .environmentObject(documentManager)
+                    .tabItem {
+                        Image(systemName: "wand.and.stars")
+                        Text("Tools")
+                    }
+
+                ConvertView()
+                    .environmentObject(documentManager)
+                    .tabItem {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                        Text("Convert")
+                    }
+
+                SearchView(
+                    onOpenPreview: { document, url in
+                        previewItem = PreviewItem(id: document.id, url: url, document: document)
+                    },
+                    onShowSummary: { document in
+                        summaryDocument = document
+                    }
+                )
+                    .environmentObject(documentManager)
+                    .tabItem {
+                        Image(systemName: "magnifyingglass")
+                        Text("Search")
+                    }
+            }
+            .tint(Color("Primary"))
+            .accentColor(Color("Primary"))
         }
     }
 

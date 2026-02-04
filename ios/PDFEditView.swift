@@ -1509,10 +1509,11 @@ struct PDFSinglePickerSheet: View {
                         } label: {
                             HStack {
                                 Image(systemName: iconForDocumentType(document.type))
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(Color("Primary"))
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(document.title)
                                         .font(.headline)
+                                        .foregroundColor(.primary)
                                     Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
@@ -1527,6 +1528,7 @@ struct PDFSinglePickerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Cancel") { dismiss() }
+                        .foregroundColor(.primary)
                 }
             }
         }
@@ -1552,10 +1554,11 @@ struct PDFMultiPickerSheet: View {
                         } label: {
                             HStack {
                                 Image(systemName: iconForDocumentType(document.type))
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(Color("Primary"))
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(document.title)
                                         .font(.headline)
+                                        .foregroundColor(.primary)
                                     Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
@@ -1563,7 +1566,7 @@ struct PDFMultiPickerSheet: View {
                                 Spacer()
                                 if selectedIds.contains(document.id) {
                                     Image(systemName: "checkmark")
-                                        .foregroundColor(.blue)
+                                        .foregroundColor(Color("Primary"))
                                 }
                             }
                         }
@@ -1575,6 +1578,7 @@ struct PDFMultiPickerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
+                        .foregroundColor(.primary)
                 }
             }
         }
