@@ -60,6 +60,7 @@ struct PDFEditView: View {
 
 struct SignPDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
     @StateObject private var signatureStore = SignatureStore()
     @StateObject private var pdfController = PDFSigningController()
     @State private var selectedDocument: Document?
@@ -68,6 +69,11 @@ struct SignPDFView: View {
     @State private var isSaving = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var didAutoPresent = false
+
+    init(autoPresentPicker: Bool = false) {
+        self.autoPresentPicker = autoPresentPicker
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -113,6 +119,13 @@ struct SignPDFView: View {
         .sheet(isPresented: $showingSignatureSheet) {
             SignatureCaptureSheet { image in
                 signatureStore.addSignature(image: image)
+            }
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
             }
         }
         .onChange(of: selectedDocument) { newDoc in
@@ -875,11 +888,17 @@ final class SignatureStore: ObservableObject {
 
 struct MergePDFsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
     @State private var selectedIds: Set<UUID> = []
     @State private var showingPicker = false
     @State private var isSaving = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var didAutoPresent = false
+
+    init(autoPresentPicker: Bool = false) {
+        self.autoPresentPicker = autoPresentPicker
+    }
 
     private var pdfDocuments: [Document] {
         documentManager.documents.filter { isPDFDocument($0) }
@@ -933,6 +952,13 @@ struct MergePDFsView: View {
                 selectedIds: $selectedIds,
                 maxSelection: 3
             )
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
+            }
         }
         .alert("Merge PDFs", isPresented: $showingAlert) {
             Button("OK", role: .cancel) {}
@@ -988,12 +1014,18 @@ struct MergePDFsView: View {
 
 struct SplitPDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
     @State private var selectedDocument: Document?
     @State private var showingPicker = false
     @State private var ranges: [PageRangeInput] = [PageRangeInput()]
     @State private var isSaving = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var didAutoPresent = false
+
+    init(autoPresentPicker: Bool = false) {
+        self.autoPresentPicker = autoPresentPicker
+    }
 
     private var pageCount: Int {
         guard let doc = selectedDocument,
@@ -1063,6 +1095,13 @@ struct SplitPDFView: View {
                 documents: documentManager.documents.filter { isPDFDocument($0) },
                 selectedDocument: $selectedDocument
             )
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
+            }
         }
         .alert("Split PDF", isPresented: $showingAlert) {
             Button("OK", role: .cancel) {}
@@ -1135,6 +1174,7 @@ struct PageRangeInput {
 
 struct RearrangePDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
     @State private var selectedDocument: Document?
     @State private var showingPicker = false
     @State private var pageItems: [PDFPageItem] = []
@@ -1142,6 +1182,11 @@ struct RearrangePDFView: View {
     @State private var isSaving = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var didAutoPresent = false
+
+    init(autoPresentPicker: Bool = false) {
+        self.autoPresentPicker = autoPresentPicker
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1190,6 +1235,13 @@ struct RearrangePDFView: View {
                 documents: documentManager.documents.filter { isPDFDocument($0) },
                 selectedDocument: $selectedDocument
             )
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
+            }
         }
         .onChange(of: selectedDocument) { newDoc in
             loadPages(for: newDoc)
@@ -1266,12 +1318,18 @@ struct PDFPageItem: Identifiable {
 
 struct RotatePDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
     @State private var selectedDocument: Document?
     @State private var showingPicker = false
     @State private var pageItems: [RotatePageItem] = []
     @State private var isSaving = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var didAutoPresent = false
+
+    init(autoPresentPicker: Bool = false) {
+        self.autoPresentPicker = autoPresentPicker
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1330,6 +1388,13 @@ struct RotatePDFView: View {
                 documents: documentManager.documents.filter { isPDFDocument($0) },
                 selectedDocument: $selectedDocument
             )
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
+            }
         }
         .onChange(of: selectedDocument) { newDoc in
             loadPages(for: newDoc)

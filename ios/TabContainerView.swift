@@ -50,35 +50,43 @@ struct TabContainerView: View {
             )
                 .environmentObject(documentManager)
                 .tabItem {
-                    Image(systemName: "doc.text")
+                    Image(systemName: "folder")
                     Text("Documents")
                 }
 
             NativeChatView()
                 .environmentObject(documentManager)
                 .tabItem {
-                    Image(systemName: "message")
+                    Image(systemName: "bubble.left")
                     Text("Chat")
                 }
 
-            PDFEditView()
+            ToolsView()
                 .environmentObject(documentManager)
                 .tabItem {
-                    Image(systemName: "doc.richtext")
-                    Text("PDFEdit")
+                    Image(systemName: "wand.and.stars")
+                    Text("Tools")
                 }
 
-            ConversionView()
+            ConvertView()
                 .environmentObject(documentManager)
                 .tabItem {
                     Image(systemName: "arrow.triangle.2.circlepath")
                     Text("Convert")
                 }
 
-            SettingsView()
+            SearchView(
+                onOpenPreview: { document, url in
+                    previewItem = PreviewItem(id: document.id, url: url, document: document)
+                },
+                onShowSummary: { document in
+                    summaryDocument = document
+                }
+            )
+                .environmentObject(documentManager)
                 .tabItem {
-                    Image(systemName: "gear")
-                    Text("Settings")
+                    Image(systemName: "magnifyingglass")
+                    Text("Search")
                 }
         }
         .fullScreenCover(item: $previewItem) { item in

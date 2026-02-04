@@ -97,11 +97,25 @@ struct DocumentsView: View {
     @State private var showingBulkMoveSheet = false
     @State private var showingNameSearch = false
     @State private var nameSearchText = ""
+    @State private var showingSettings = false
+    @State private var editMode: EditMode = .inactive
     @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.newest.rawValue
 
     private var documentsSortMode: DocumentsSortMode {
         get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .newest }
         set { documentsSortModeRaw = newValue.rawValue }
+    }
+
+    private var listSelectionBinding: Binding<Set<UUID>> {
+        Binding(
+            get: { selectedDocumentIds.union(selectedFolderIds) },
+            set: { newValue in
+                let docIds = Set(documentManager.documents.map { $0.id })
+                let folderIds = Set(documentManager.folders.map { $0.id })
+                selectedDocumentIds = newValue.filter { docIds.contains($0) }
+                selectedFolderIds = newValue.filter { folderIds.contains($0) }
+            }
+        )
     }
 
     private var rootFolders: [DocumentFolder] { documentManager.folders(in: nil) }
@@ -156,7 +170,7 @@ struct DocumentsView: View {
 
     private var rootListView: AnyView {
         AnyView(
-            List {
+            List(selection: isSelectionMode ? listSelectionBinding : .constant([])) {
                 ForEach(mixedRootItems()) { item in
                     switch item.kind {
                     case .folder(let folder):
@@ -165,6 +179,7 @@ struct DocumentsView: View {
                             docCount: documentManager.documents(in: folder.id).count,
                             isSelected: selectedFolderIds.contains(folder.id),
                             isSelectionMode: isSelectionMode,
+                            usesNativeSelection: isSelectionMode,
                             onSelectToggle: { toggleFolderSelection(folder.id) },
                             onLongPress: { beginSelection(folderId: folder.id) },
                             onOpen: { activeFolder = folder },
@@ -182,11 +197,16 @@ struct DocumentsView: View {
                                 showingDeleteFolderDialog = true
                             }
                         )
+                        .tag(folder.id)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets())
                     case .document(let document):
                         DocumentRowView(
                             document: document,
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
+                            usesNativeSelection: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
                             onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { openDocumentPreview(document: document) },
@@ -198,7 +218,10 @@ struct DocumentsView: View {
                             onConvert: { convertDocument(document) },
                             onShare: { shareDocuments([document]) }
                         )
+                        .tag(document.id)
                         .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets())
                     }
                 }
                 .onDelete { offsets in
@@ -215,6 +238,7 @@ struct DocumentsView: View {
                 }
             }
             .listStyle(.plain)
+            .environment(\.editMode, $editMode)
         )
     }
 
@@ -364,30 +388,9 @@ struct DocumentsView: View {
     var body: some View {
         NavigationView {
             documentsMainStack
-                .navigationBarTitleDisplayMode(.inline)
-                .overlay(alignment: .bottomTrailing) {
-                    Button {
-                        nameSearchText = ""
-                        showingNameSearch = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 52, height: 52)
-                            .background(Color.accentColor)
-                            .clipShape(Circle())
-                            .shadow(radius: 4, y: 2)
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 12)
-                }
+                .navigationTitle("Documents")
+                .navigationBarTitleDisplayMode(.large)
                 .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Text(" Documents ")
-                            .font(.headline)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
                     ToolbarItemGroup(placement: .navigationBarTrailing) {
                         if isSelectionMode {
                             Menu {
@@ -407,19 +410,10 @@ struct DocumentsView: View {
                                 Image(systemName: "ellipsis.circle")
                             }
 
-                            Button("Done") {
+                            Button("Cancel") {
                                 clearSelection()
                             }
                         } else {
-                            Button {
-                                documentManager.setPrefersGridLayout(layoutMode == .list)
-                            } label: {
-                                Image(systemName: layoutMode == .grid ? "list.bullet" : "square.grid.3x3")
-                                    .font(.system(size: 16, weight: .semibold))
-                            }
-
-                            sortMenu
-
                             Menu {
                                 Button("New Folder") {
                                     newFolderName = ""
@@ -439,9 +433,73 @@ struct DocumentsView: View {
                             } label: {
                                 Image(systemName: "plus")
                             }
+
+                            Menu {
+                                Button {
+                                    isSelectionMode = true
+                                } label: {
+                                    Label("Select", systemImage: "checkmark.circle")
+                                }
+
+                                Button {
+                                    showingSettings = true
+                                } label: {
+                                    Label("Preferences", systemImage: "gearshape")
+                                }
+
+                                Divider()
+
+                                Text("View")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                Button {
+                                    documentManager.setPrefersGridLayout(false)
+                                } label: {
+                                    Label("List", systemImage: "list.bullet")
+                                }
+
+                                Button {
+                                    documentManager.setPrefersGridLayout(true)
+                                } label: {
+                                    Label("Grid", systemImage: "square.grid.2x2")
+                                }
+
+                                Divider()
+
+                                Text("Sort")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                Button {
+                                    documentsSortModeRaw = DocumentsSortMode.alphabetically.rawValue
+                                } label: {
+                                    Label("Name", systemImage: "textformat")
+                                }
+
+                                Button {
+                                    documentsSortModeRaw = DocumentsSortMode.oldest.rawValue
+                                } label: {
+                                    Label("Date", systemImage: "calendar")
+                                }
+
+                                Button {
+                                    documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+                                } label: {
+                                    Label("Recent", systemImage: "clock")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                            }
                         }
                     }
                 }
+        }
+        .onChange(of: isSelectionMode) { active in
+            editMode = active ? .active : .inactive
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
         }
         .alert("New Folder", isPresented: $showingNewFolderDialog) {
             TextField("Folder name", text: $newFolderName)
@@ -1524,6 +1582,7 @@ struct DocumentRowView: View {
     let document: Document
     let isSelected: Bool
     let isSelectionMode: Bool
+    let usesNativeSelection: Bool
     let onSelectToggle: () -> Void
     let onLongPress: () -> Void
 
@@ -1536,63 +1595,74 @@ struct DocumentRowView: View {
     
     var body: some View {
         let parts = splitDisplayTitle(document.title)
+        let dateText = DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .none)
+        let typeText = fileTypeLabel(documentType: document.type, titleParts: parts)
 
-        ZStack(alignment: .trailing) {
-            HStack(spacing: 10) {
-                Image(systemName: iconForDocumentType(document.type))
-                    .foregroundColor(.blue)
-                    .frame(width: 24)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ZStack {
+                    CheckeredPatternView()
+                        .frame(width: 50, height: 50)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Image(systemName: "doc.text")
+                        .foregroundColor(.gray)
+                        .font(.system(size: 20))
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(parts.base)
-                        .font(.headline)
-                        .lineLimit(2)
-                    Text("\(DateFormatter.localizedString(from: document.dateCreated, dateStyle: .medium, timeStyle: .none)) • \(fileTypeLabel(documentType: document.type, titleParts: parts))")
-                        .font(.caption)
-                        .foregroundColor(Color(.tertiaryLabel))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.trailing, 34)
-
-            if isSelectionMode {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(isSelected ? .blue : .secondary)
-                    .frame(width: 28, height: 28)
-            } else {
-                Menu {
-                    Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
-                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                    Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                    Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                } label: {
-                    Image(systemName: "ellipsis")
                         .font(.system(size: 16, weight: .medium))
-                        .frame(width: 28, height: 28)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+
+                    HStack(spacing: 4) {
+                        Text(dateText)
+                        Text("•")
+                        Text(typeText)
+                    }
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
                 }
-                .buttonStyle(PlainButtonStyle())
+
+                Spacer()
+
+                if isSelectionMode && !usesNativeSelection {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                        .frame(width: 28, height: 28)
+                } else if !isSelectionMode {
+                    Menu {
+                        Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
+                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                        Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+                        Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
+                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(width: 28, height: 28)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+
+            Divider()
+                .padding(.horizontal, 24)
         }
-        .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .onTapGesture {
-            if isSelectionMode {
-                onSelectToggle()
-            } else {
-                onOpen()
-            }
-        }
-        .simultaneousGesture(
-            LongPressGesture().onEnded { _ in
-                onLongPress()
-            }
-        )
+        .modifier(SelectionTapModifier(
+            isSelectionMode: isSelectionMode,
+            usesNativeSelection: usesNativeSelection,
+            onSelectToggle: onSelectToggle,
+            onOpen: onOpen,
+            onLongPress: onLongPress
+        ))
     }
     
 }
@@ -1702,6 +1772,7 @@ struct FolderRowView: View {
     let docCount: Int
     let isSelected: Bool
     let isSelectionMode: Bool
+    let usesNativeSelection: Bool
     let onSelectToggle: () -> Void
     let onLongPress: () -> Void
     let onOpen: () -> Void
@@ -1710,58 +1781,127 @@ struct FolderRowView: View {
     let onDelete: () -> Void
 
     var body: some View {
-        ZStack(alignment: .trailing) {
-            Button(action: {
-                if isSelectionMode {
-                    onSelectToggle()
-                } else {
-                    onOpen()
-                }
-            }) {
-                HStack(spacing: 10) {
-                    Image(systemName: "folder")
-                        .foregroundColor(.blue)
-                        .frame(width: 24)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(folder.name)
-                            .font(.headline)
-                        Text("\(docCount) item\(docCount == 1 ? "" : "s")")
-                            .font(.caption)
-                            .foregroundColor(Color(.tertiaryLabel))
-                    }
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 34)
-            }
-            .buttonStyle(PlainButtonStyle())
+        let dateText = DateFormatter.localizedString(from: folder.dateCreated, dateStyle: .medium, timeStyle: .none)
+        let countText = "\(docCount) item\(docCount == 1 ? "" : "s")"
 
-            if isSelectionMode {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(isSelected ? .blue : .secondary)
-                    .frame(width: 28, height: 28)
-            } else {
-                Menu {
-                    Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                    Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                    Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 16, weight: .medium))
-                        .frame(width: 28, height: 28)
-                        .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color("Primary"))
+                        .frame(width: 50, height: 50)
+
+                    Image(systemName: "folder.fill")
+                        .foregroundColor(.white)
+                        .font(.system(size: 20))
                 }
-                .buttonStyle(PlainButtonStyle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(folder.name)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
+
+                    HStack(spacing: 4) {
+                        Text(dateText)
+                        Text("•")
+                        Text(countText)
+                    }
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                }
+
+                Spacer()
+
+                if isSelectionMode && !usesNativeSelection {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                        .frame(width: 28, height: 28)
+                } else if !isSelectionMode {
+                    Menu {
+                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+                        Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(width: 28, height: 28)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+
+            Divider()
+                .padding(.horizontal, 24)
+        }
+        .contentShape(Rectangle())
+        .modifier(SelectionTapModifier(
+            isSelectionMode: isSelectionMode,
+            usesNativeSelection: usesNativeSelection,
+            onSelectToggle: onSelectToggle,
+            onOpen: onOpen,
+            onLongPress: onLongPress
+        ))
+    }
+}
+
+private struct SelectionTapModifier: ViewModifier {
+    let isSelectionMode: Bool
+    let usesNativeSelection: Bool
+    let onSelectToggle: () -> Void
+    let onOpen: () -> Void
+    let onLongPress: () -> Void
+
+    func body(content: Content) -> some View {
+        if usesNativeSelection {
+            content
+        } else {
+            content
+                .onTapGesture {
+                    if isSelectionMode {
+                        onSelectToggle()
+                    } else {
+                        onOpen()
+                    }
+                }
+                .simultaneousGesture(
+                    LongPressGesture().onEnded { _ in
+                        onLongPress()
+                    }
+                )
+        }
+    }
+}
+
+struct CheckeredPatternView: View {
+    var body: some View {
+        Canvas { context, size in
+            let tileSize: CGFloat = 4
+            let rows = Int(ceil(size.height / tileSize))
+            let cols = Int(ceil(size.width / tileSize))
+
+            for row in 0..<rows {
+                for col in 0..<cols {
+                    let isEven = (row + col) % 2 == 0
+                    let rect = CGRect(
+                        x: CGFloat(col) * tileSize,
+                        y: CGFloat(row) * tileSize,
+                        width: tileSize,
+                        height: tileSize
+                    )
+
+                    context.fill(
+                        Path(rect),
+                        with: .color(isEven ? .gray.opacity(0.3) : .gray.opacity(0.1))
+                    )
+                }
             }
         }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .highPriorityGesture(
-            LongPressGesture().onEnded { _ in
-                onLongPress()
-            }
-        )
     }
 }
 
@@ -1932,6 +2072,7 @@ struct FolderDocumentsView: View {
                                 docCount: documentManager.documents(in: sub.id).count,
                                 isSelected: selectedFolderIds.contains(sub.id),
                                 isSelectionMode: isSelectionMode,
+                                usesNativeSelection: false,
                                 onSelectToggle: { toggleFolderSelection(sub.id) },
                                 onLongPress: { beginSelection(folderId: sub.id) },
                                 onOpen: { activeSubfolder = sub },
@@ -1949,11 +2090,15 @@ struct FolderDocumentsView: View {
                                     showingDeleteFolderDialog = true
                                 }
                             )
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets())
                         case .document(let document):
                             DocumentRowView(
                                 document: document,
                                 isSelected: selectedDocumentIds.contains(document.id),
                                 isSelectionMode: isSelectionMode,
+                                usesNativeSelection: false,
                                 onSelectToggle: { toggleDocumentSelection(document.id) },
                                 onLongPress: { beginSelection(documentId: document.id) },
                                 onOpen: { onOpenDocument(document) },
@@ -1966,6 +2111,8 @@ struct FolderDocumentsView: View {
                                 onShare: { shareDocuments([document]) }
                             )
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets())
                         }
                     }
                 }

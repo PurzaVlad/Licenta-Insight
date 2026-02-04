@@ -4,6 +4,10 @@ import Foundation
 
 struct ConversionView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    let initialTargetFormat: DocumentFormat?
+    let autoPresentPicker: Bool
+    let showsNavigation: Bool
+    let allowedSourceTypes: Set<Document.DocumentType>?
     @State private var selectedDocument: Document? = nil
     @State private var sourceFormat: DocumentFormat = .pdf
     @State private var selectedTargetFormat: DocumentFormat? = nil
@@ -12,6 +16,7 @@ struct ConversionView: View {
     @State private var showingResult = false
     @State private var conversionResult: ConversionResult? = nil
     @State private var showingDocumentPicker = false
+    @State private var didAutoPresentPicker = false
     
     enum DocumentFormat: String, CaseIterable {
         case pdf = "PDF"
@@ -48,11 +53,41 @@ struct ConversionView: View {
         let message: String
     }
     
+    init(
+        initialTargetFormat: DocumentFormat? = nil,
+        autoPresentPicker: Bool = false,
+        showsNavigation: Bool = true,
+        allowedSourceTypes: Set<Document.DocumentType>? = nil
+    ) {
+        self.initialTargetFormat = initialTargetFormat
+        self.autoPresentPicker = autoPresentPicker
+        self.showsNavigation = showsNavigation
+        self.allowedSourceTypes = allowedSourceTypes
+    }
+
     var body: some View {
-        NavigationView {
-            GeometryReader { proxy in
-                ScrollView {
-                    VStack(spacing: 24) {
+        Group {
+            if showsNavigation {
+                NavigationView {
+                    conversionBody
+                }
+            } else {
+                conversionBody
+            }
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresentPicker else { return }
+            didAutoPresentPicker = true
+            DispatchQueue.main.async {
+                showingDocumentPicker = true
+            }
+        }
+    }
+
+    private var conversionBody: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: 24) {
                     // Header
 
                     if selectedDocument == nil {
@@ -181,9 +216,12 @@ struct ConversionView: View {
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
-        }
         .sheet(isPresented: $showingDocumentPicker) {
-            DocumentPickerSheet(selectedDocument: $selectedDocument, documentManager: documentManager)
+            DocumentPickerSheet(
+                selectedDocument: $selectedDocument,
+                documentManager: documentManager,
+                allowedTypes: allowedSourceTypes
+            )
         }
         .sheet(isPresented: $showingResult) {
             if let result = conversionResult {
@@ -204,7 +242,11 @@ struct ConversionView: View {
                     documentManager.refreshContentIfNeeded(for: document.id)
                 }
                 sourceFormat = formatFromDocumentType(document.type)
-                selectedTargetFormat = nil
+                if let initial = initialTargetFormat, allowedTargetFormats.contains(initial) {
+                    selectedTargetFormat = initial
+                } else {
+                    selectedTargetFormat = nil
+                }
             } else {
                 selectedTargetFormat = nil
             }
@@ -217,12 +259,18 @@ struct ConversionView: View {
     }
 
     private var allowedTargetFormats: [DocumentFormat] {
+        let base: [DocumentFormat]
         switch sourceFormat {
         case .pdf:
-            return [.docx, .xlsx, .pptx, .image]
+            base = [.docx, .xlsx, .pptx, .image]
         case .docx, .xlsx, .pptx, .image:
-            return [.pdf]
+            base = [.pdf]
         }
+
+        if let fixed = initialTargetFormat {
+            return base.contains(fixed) ? [fixed] : []
+        }
+        return base
     }
     
     private func formatFromDocumentType(_ type: Document.DocumentType) -> DocumentFormat {
@@ -607,13 +655,16 @@ struct FormatSelectionChip: View {
 struct DocumentPickerSheet: View {
     @Binding var selectedDocument: Document?
     let documentManager: DocumentManager
+    let allowedTypes: Set<Document.DocumentType>?
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         NavigationView {
             List {
                 let supportedTypes: Set<Document.DocumentType> = [.pdf, .docx, .ppt, .pptx, .xls, .xlsx, .image, .scanned]
-                let supportedDocuments = documentManager.documents.filter { supportedTypes.contains($0.type) }
+                let filterTypes = allowedTypes ?? supportedTypes
+                let effectiveTypes = supportedTypes.intersection(filterTypes)
+                let supportedDocuments = documentManager.documents.filter { effectiveTypes.contains($0.type) }
 
                 if supportedDocuments.isEmpty {
                     Text("No supported documents yet.")

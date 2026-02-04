@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UIKit
 
 struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
@@ -14,8 +15,17 @@ struct NativeChatView: View {
     @State private var isGenerating: Bool = false
     @State private var isThinkingPulseOn: Bool = false
     @State private var activeChatGenerationId: UUID? = nil
-    @FocusState private var isFocused: Bool
     @EnvironmentObject private var documentManager: DocumentManager
+    @State private var showingSettings = false
+    @State private var showingScopePicker = false
+    @State private var scopedDocumentIds: Set<UUID> = []
+
+    private let inputLineHeight: CGFloat = 22
+    private let inputMinLines = 1
+    private let inputMaxLines = 6
+    @State private var inputHeight: CGFloat = 22
+    private let inputMaxCornerRadius: CGFloat = 25
+    private let inputMinCornerRadius: CGFloat = 12
 
     // Preprompt (edit this text to change assistant behavior)
     private let chatPreprompt = """
@@ -36,10 +46,12 @@ struct NativeChatView: View {
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
+            ZStack {
+                Color(.systemGroupedBackground).ignoresSafeArea()
+
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 12) {
+                        LazyVStack(alignment: .leading, spacing: 10) {
                             if messages.isEmpty {
                                 Text("Model Ready.")
                                     .font(.footnote)
@@ -59,8 +71,9 @@ struct NativeChatView: View {
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                        .padding(.top, 8)
                     }
+                    .scrollDismissesKeyboardIfAvailable()
                     .onChange(of: messages) { newValue in
                         if let last = newValue.last {
                             withAnimation(.easeOut(duration: 0.2)) {
@@ -69,54 +82,120 @@ struct NativeChatView: View {
                         }
                     }
                 }
-
-                Divider()
-
-                VStack(spacing: 0) {
-                    HStack(spacing: 8) {
-                        HStack(spacing: 8) {
-                            TextField("Message", text: $input)
-                                .focused($isFocused)
-                                .disabled(isGenerating)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                        }
-                        .background(Color(.tertiarySystemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .stroke(Color(.separator), lineWidth: 0.33)
-                        )
-
-                        Button {
-                            send()
-                        } label: {
-                            Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
-                                .font(.system(size: 30, weight: .medium))
-                                .foregroundColor(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? .secondary : .white)
-                                .background(
-                                    Circle()
-                                        .fill(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? Color(.systemFill) : Color.accentColor)
-                                )
-                        }
-                        .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isGenerating)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
-                }
-                .background(Color(.systemBackground))
             }
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Chat")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Text(" Chat ")
-                        .font(.headline)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("Preferences", systemImage: "gearshape")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.primary)
+                    }
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
+            .sheet(isPresented: $showingScopePicker) {
+                ScopePickerSheet(
+                    documents: documentManager.documents,
+                    selectedIds: $scopedDocumentIds
+                )
+            }
+            .safeAreaInset(edge: .bottom) {
+                inputBar
             }
         }
+    }
+
+    private var scopedDocuments: [Document] {
+        documentManager.documents.filter { scopedDocumentIds.contains($0.id) }
+    }
+
+    private var isScopeActive: Bool {
+        !scopedDocumentIds.isEmpty
+    }
+
+    private var inputCornerRadius: CGFloat {
+        let lines = max(inputMinLines, min(inputMaxLines, Int(round(inputHeight / inputLineHeight))))
+        let t = CGFloat(lines - 1) / CGFloat(max(inputMaxLines - 1, 1))
+        return inputMaxCornerRadius - (inputMaxCornerRadius - inputMinCornerRadius) * t
+    }
+
+    private var inputBar: some View {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasText = !trimmed.isEmpty
+
+        return HStack(spacing: 12) {
+            Button {
+                showingScopePicker = true
+            } label: {
+                Image(systemName: "scope")
+                    .foregroundColor(isScopeActive ? Color("Primary") : .primary)
+                    .frame(width: 44, height: 44)
+                    .background(
+                        Group {
+                            if isScopeActive {
+                                Circle().fill(Color("Primary").opacity(0.12))
+                            } else {
+                                Circle().fill(.ultraThinMaterial)
+                            }
+                        }
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(isScopeActive ? Color("Primary") : Color(.systemGray4).opacity(0.35), lineWidth: 1)
+                    )
+            }
+
+            HStack(spacing: 4) {
+                AutoGrowingTextView(
+                    text: $input,
+                    height: $inputHeight,
+                    minHeight: inputLineHeight * CGFloat(inputMinLines),
+                    maxHeight: inputLineHeight * CGFloat(inputMaxLines),
+                    font: UIFont.systemFont(ofSize: 17),
+                    isEditable: !isGenerating
+                )
+                .frame(height: inputHeight)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .leading) {
+                    if input.isEmpty {
+                        Text("Ask anything")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 17))
+                            .padding(.top, 2)
+                    }
+                }
+
+                Button {
+                    send()
+                } label: {
+                    Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundColor(hasText || isGenerating ? Color("Primary") : .gray)
+                }
+                .disabled(!hasText && !isGenerating)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
+                    .fill(Color(.systemGroupedBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
+                            .stroke(Color(.systemGray4).opacity(0.5), lineWidth: 1)
+                    )
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     private func send() {
@@ -499,6 +578,16 @@ struct NativeChatView: View {
         if let statsAnswer = buildStatsAnswerIfNeeded(for: question) {
             return statsAnswer
         }
+
+        if !scopedDocumentIds.isEmpty {
+            var scopedDocs = documentManager.documents.filter { scopedDocumentIds.contains($0.id) }
+            if scopedDocs.count > selectionMaxDocs {
+                scopedDocs = Array(scopedDocs.prefix(selectionMaxDocs))
+            }
+            let prompt = buildAnswerPrompt(question: question, selectedDocs: scopedDocs)
+            return try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+        }
+
         let selectionPrompt = buildSelectionPrompt(question: question)
         let selectionRaw = try await callLLM(edgeAI: edgeAI, prompt: wrapSelectionPrompt(selectionPrompt))
         let selectedIds = parseSelectionIds(selectionRaw, question: question, allDocs: documentManager.documents)
@@ -552,6 +641,126 @@ struct NativeChatView: View {
         }
     }
 
+    private struct ScopePickerSheet: View {
+        let documents: [Document]
+        @Binding var selectedIds: Set<UUID>
+        @Environment(\.dismiss) private var dismiss
+
+        var body: some View {
+            NavigationView {
+                List {
+                    if documents.isEmpty {
+                        Text("No documents available.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(documents.sorted { $0.dateCreated > $1.dateCreated }) { document in
+                            Button {
+                                toggleSelection(document.id)
+                            } label: {
+                                HStack {
+                                    Image(systemName: iconForDocumentType(document.type))
+                                        .foregroundColor(.blue)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(document.title)
+                                            .font(.headline)
+                                            .lineLimit(1)
+                                        Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: selectedIds.contains(document.id) ? "checkmark.circle.fill" : "circle")
+                                        .foregroundColor(selectedIds.contains(document.id) ? Color("Primary") : .secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Scope Documents")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Clear") {
+                            selectedIds.removeAll()
+                        }
+                    }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
+        }
+
+        private func toggleSelection(_ id: UUID) {
+            if selectedIds.contains(id) {
+                selectedIds.remove(id)
+            } else {
+                selectedIds.insert(id)
+            }
+        }
+    }
+
+    private struct AutoGrowingTextView: UIViewRepresentable {
+        @Binding var text: String
+        @Binding var height: CGFloat
+        let minHeight: CGFloat
+        let maxHeight: CGFloat
+        let font: UIFont
+        let isEditable: Bool
+
+        func makeUIView(context: Context) -> UITextView {
+            let textView = UITextView()
+            textView.isScrollEnabled = false
+            textView.backgroundColor = .clear
+            textView.font = font
+            textView.textContainerInset = .zero
+            textView.textContainer.lineFragmentPadding = 0
+            textView.textContainer.lineBreakMode = .byWordWrapping
+            textView.textContainer.widthTracksTextView = true
+            textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            textView.delegate = context.coordinator
+            return textView
+        }
+
+        func updateUIView(_ uiView: UITextView, context: Context) {
+            if uiView.text != text {
+                uiView.text = text
+            }
+            uiView.font = font
+            uiView.isEditable = isEditable
+            uiView.isScrollEnabled = false
+            recalcHeight(view: uiView)
+        }
+
+        func makeCoordinator() -> Coordinator {
+            Coordinator(parent: self)
+        }
+
+        private func recalcHeight(view: UITextView) {
+            let size = view.sizeThatFits(CGSize(width: view.bounds.width, height: .greatestFiniteMagnitude))
+            let clamped = min(maxHeight, max(minHeight, size.height))
+            if height != clamped {
+                DispatchQueue.main.async {
+                    height = clamped
+                    view.isScrollEnabled = size.height > maxHeight
+                }
+            }
+        }
+
+        class Coordinator: NSObject, UITextViewDelegate {
+            let parent: AutoGrowingTextView
+
+            init(parent: AutoGrowingTextView) {
+                self.parent = parent
+            }
+
+            func textViewDidChange(_ textView: UITextView) {
+                parent.text = textView.text
+                parent.recalcHeight(view: textView)
+            }
+        }
+    }
+
 
     private struct ThinkingRow: View {
         @Binding var isPulseOn: Bool
@@ -577,6 +786,17 @@ struct NativeChatView: View {
     }
 }
 
+private extension View {
+    @ViewBuilder
+    func scrollDismissesKeyboardIfAvailable() -> some View {
+        if #available(iOS 16.0, *) {
+            scrollDismissesKeyboard(.interactively)
+        } else {
+            self
+        }
+    }
+}
+
 private struct MessageRow: View {
     let msg: ChatMessage
 
@@ -594,15 +814,15 @@ private struct MessageRow: View {
 
     private var bubble: some View {
         Text(formatMarkdownText(msg.text))
-            .font(.body)
+            .font(.system(size: 18))
             .foregroundStyle(msg.role == "user" ? Color.white : Color.primary)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(msg.role == "user" ? Color.accentColor : Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(msg.role == "user" ? Color("Primary") : Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(msg.role == "user" ? Color.clear : Color(.separator), lineWidth: msg.role == "user" ? 0 : 0.5)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(msg.role == "user" ? Color.clear : Color(.systemGray4).opacity(0.35), lineWidth: 1)
             )
     }
 }
