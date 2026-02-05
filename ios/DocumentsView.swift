@@ -8,6 +8,48 @@ import QuickLookThumbnailing
 import Foundation
 import AVFoundation
 
+// MARK: - Drag & Drop modifiers for iOS 16+
+extension View {
+    @ViewBuilder
+    func folderDraggable(_ id: UUID) -> some View {
+        if #available(iOS 16.0, *) {
+            self.draggable(id.uuidString)
+        } else {
+            self
+        }
+    }
+    
+    @ViewBuilder
+    func folderDropDestination(
+        folderId: UUID,
+        documentManager: DocumentManager,
+        dropTargetedFolderId: Binding<UUID?>
+    ) -> some View {
+        if #available(iOS 16.0, *) {
+            self.dropDestination(for: String.self) { items, _ in
+                guard let uuidString = items.first, let id = UUID(uuidString: uuidString) else { return false }
+                if id == folderId { return false }
+                if documentManager.documents.contains(where: { $0.id == id }) {
+                    documentManager.moveDocument(documentId: id, toFolder: folderId)
+                    return true
+                } else if documentManager.folders.contains(where: { $0.id == id }) {
+                    documentManager.moveFolder(folderId: id, toParent: folderId)
+                    return true
+                }
+                return false
+            } isTargeted: { isTargeted in
+                if isTargeted {
+                    dropTargetedFolderId.wrappedValue = folderId
+                } else if dropTargetedFolderId.wrappedValue == folderId {
+                    dropTargetedFolderId.wrappedValue = nil
+                }
+            }
+        } else {
+            self
+        }
+    }
+}
+
 private enum DocumentLayoutMode {
     case list
     case grid
@@ -19,23 +61,30 @@ private enum ScannerMode {
 }
 
 private enum DocumentsSortMode: String, CaseIterable {
-    case newest
-    case oldest
-    case alphabetically
+    case dateNewest = "newest"
+    case dateOldest = "oldest"
+    case nameAsc = "alphabetically"
+    case nameDesc = "alphabetically_desc"
+    case accessNewest = "access_newest"
+    case accessOldest = "access_oldest"
 
     var title: String {
         switch self {
-        case .newest: return "Newest"
-        case .oldest: return "Oldest"
-        case .alphabetically: return "Alphabetically"
+        case .dateNewest: return "Newest"
+        case .dateOldest: return "Oldest"
+        case .nameAsc: return "A → Z"
+        case .nameDesc: return "Z → A"
+        case .accessNewest: return "Most Recent"
+        case .accessOldest: return "Least Recent"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .newest: return "arrow.down"
-        case .oldest: return "arrow.up"
-        case .alphabetically: return "textformat"
+        case .dateNewest: return "arrow.down"
+        case .dateOldest: return "arrow.up"
+        case .nameAsc, .nameDesc: return "textformat"
+        case .accessNewest, .accessOldest: return "clock"
         }
     }
 }
@@ -50,6 +99,36 @@ private struct MixedItem: Identifiable {
     let kind: MixedItemKind
     let name: String
     let dateCreated: Date
+}
+
+private func makeDocumentDragProvider(_ id: UUID) -> NSItemProvider {
+    let provider = NSItemProvider()
+    let text = id.uuidString
+    provider.registerDataRepresentation(forTypeIdentifier: UTType.plainText.identifier, visibility: .all) { completion in
+        completion(text.data(using: .utf8), nil)
+        return nil
+    }
+    provider.registerDataRepresentation(forTypeIdentifier: UTType.data.identifier, visibility: .all) { completion in
+        completion(text.data(using: .utf8), nil)
+        return nil
+    }
+    provider.registerObject(text as NSString, visibility: .all)
+    return provider
+}
+
+private func makeFolderDragProvider(_ id: UUID) -> NSItemProvider {
+    let provider = NSItemProvider()
+    let text = id.uuidString
+    provider.registerDataRepresentation(forTypeIdentifier: UTType.plainText.identifier, visibility: .all) { completion in
+        completion(text.data(using: .utf8), nil)
+        return nil
+    }
+    provider.registerDataRepresentation(forTypeIdentifier: UTType.data.identifier, visibility: .all) { completion in
+        completion(text.data(using: .utf8), nil)
+        return nil
+    }
+    provider.registerObject(text as NSString, visibility: .all)
+    return provider
 }
 struct DocumentsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -100,11 +179,24 @@ struct DocumentsView: View {
     @State private var nameSearchText = ""
     @State private var showingSettings = false
     @State private var editMode: EditMode = .inactive
-    @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+    @State private var dropTargetedFolderId: UUID? = nil
+    @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
 
     private var documentsSortMode: DocumentsSortMode {
-        get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .newest }
-        set { documentsSortModeRaw = newValue.rawValue }
+        get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .dateNewest }
+        nonmutating set { documentsSortModeRaw = newValue.rawValue }
+    }
+
+    private func toggleNameSort() {
+        documentsSortMode = (documentsSortMode == .nameAsc) ? .nameDesc : .nameAsc
+    }
+
+    private func toggleDateSort() {
+        documentsSortMode = (documentsSortMode == .dateNewest) ? .dateOldest : .dateNewest
+    }
+
+    private func toggleAccessSort() {
+        documentsSortMode = (documentsSortMode == .accessNewest) ? .accessOldest : .accessNewest
     }
 
     private var listSelectionBinding: Binding<Set<UUID>> {
@@ -169,36 +261,33 @@ struct DocumentsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    @ViewBuilder
     private var rootListView: some View {
-        List(selection: isSelectionMode ? listSelectionBinding : .constant([])) {
-            if isSelectionMode {
+        if isSelectionMode {
+            // Use List for native selection support
+            List(selection: listSelectionBinding) {
                 ForEach(mixedRootItems()) { item in
                     rootListRow(item)
                 }
-            } else {
-                ForEach(mixedRootItems()) { item in
-                    rootListRow(item)
-                }
-                .onDelete { offsets in
-                    let items = mixedRootItems()
-                    for i in offsets {
-                        guard i < items.count else { continue }
-                        switch items[i].kind {
-                        case .folder(let folder):
-                            documentManager.deleteFolder(folderId: folder.id, mode: .deleteAllItems)
-                        case .document(let document):
-                            documentManager.deleteDocument(document)
-                        }
+            }
+            .listStyle(.plain)
+            .hideScrollBackground()
+            .environment(\.editMode, $editMode)
+        } else {
+            // Use ScrollView + LazyVStack for drag and drop support
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(mixedRootItems()) { item in
+                        rootScrollRow(item)
                     }
                 }
             }
+            .hideScrollBackground()
         }
-        .listStyle(.plain)
-        .environment(\.editMode, $editMode)
     }
 
     @ViewBuilder
-    private func rootListRow(_ item: MixedItem) -> some View {
+    private func rootScrollRow(_ item: MixedItem) -> some View {
         switch item.kind {
         case .folder(let folder):
             FolderRowView(
@@ -206,10 +295,12 @@ struct DocumentsView: View {
                 docCount: documentManager.documents(in: folder.id).count,
                 isSelected: selectedFolderIds.contains(folder.id),
                 isSelectionMode: isSelectionMode,
-                usesNativeSelection: isSelectionMode,
+                usesNativeSelection: false,
                 onSelectToggle: { toggleFolderSelection(folder.id) },
-                onLongPress: { beginSelection(folderId: folder.id) },
-                onOpen: { activeFolder = folder },
+                onOpen: {
+                    documentManager.updateLastAccessed(id: folder.id)
+                    activeFolder = folder
+                },
                 onRename: {
                     folderToRename = folder
                     renameFolderText = folder.name
@@ -222,7 +313,69 @@ struct DocumentsView: View {
                 onDelete: {
                     folderToDelete = folder
                     showingDeleteFolderDialog = true
-                }
+                },
+                isDropTargeted: dropTargetedFolderId == folder.id
+            )
+            .padding(.horizontal, 8)
+            .onDrag { makeFolderDragProvider(folder.id) }
+            .onDrop(
+                of: [UTType.plainText, UTType.text, UTType.data],
+                delegate: ListFolderDropDelegate(
+                    folderId: folder.id,
+                    documentManager: documentManager,
+                    dropTargetedFolderId: $dropTargetedFolderId
+                )
+            )
+        case .document(let document):
+            DocumentRowView(
+                document: document,
+                isSelected: selectedDocumentIds.contains(document.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: false,
+                onSelectToggle: { toggleDocumentSelection(document.id) },
+                onOpen: { openDocumentPreview(document: document) },
+                onRename: { renameDocument(document) },
+                onMoveToFolder: {
+                    documentToMove = document
+                },
+                onDelete: { deleteDocument(document) },
+                onConvert: { convertDocument(document) },
+                onShare: { shareDocuments([document]) }
+            )
+            .padding(.horizontal, 8)
+            .onDrag { makeDocumentDragProvider(document.id) }
+        }
+    }
+
+    @ViewBuilder
+    private func rootListRow(_ item: MixedItem) -> some View {
+        switch item.kind {
+        case .folder(let folder):
+            FolderRowView(
+                folder: folder,
+                docCount: documentManager.documents(in: folder.id).count,
+                isSelected: selectedFolderIds.contains(folder.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: true,
+                onSelectToggle: { toggleFolderSelection(folder.id) },
+                onOpen: {
+                    documentManager.updateLastAccessed(id: folder.id)
+                    activeFolder = folder
+                },
+                onRename: {
+                    folderToRename = folder
+                    renameFolderText = folder.name
+                    showingRenameFolderDialog = true
+                },
+                onMove: {
+                    folderToMove = folder
+                    showingMoveFolderSheet = true
+                },
+                onDelete: {
+                    folderToDelete = folder
+                    showingDeleteFolderDialog = true
+                },
+                isDropTargeted: false
             )
             .tag(folder.id)
             .listRowBackground(Color.clear)
@@ -233,9 +386,8 @@ struct DocumentsView: View {
                 document: document,
                 isSelected: selectedDocumentIds.contains(document.id),
                 isSelectionMode: isSelectionMode,
-                usesNativeSelection: isSelectionMode,
+                usesNativeSelection: true,
                 onSelectToggle: { toggleDocumentSelection(document.id) },
-                onLongPress: { beginSelection(documentId: document.id) },
                 onOpen: { openDocumentPreview(document: document) },
                 onRename: { renameDocument(document) },
                 onMoveToFolder: {
@@ -264,8 +416,10 @@ struct DocumentsView: View {
                             isSelected: selectedFolderIds.contains(folder.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleFolderSelection(folder.id) },
-                            onLongPress: { beginSelection(folderId: folder.id) },
-                            onOpen: { activeFolder = folder },
+                            onOpen: {
+                                documentManager.updateLastAccessed(id: folder.id)
+                                activeFolder = folder
+                            },
                             onRename: {
                                 folderToRename = folder
                                 renameFolderText = folder.name
@@ -280,13 +434,21 @@ struct DocumentsView: View {
                                 showingDeleteFolderDialog = true
                             }
                         )
+                        .onDrag { makeFolderDragProvider(folder.id) }
+                        .onDrop(
+                            of: [UTType.plainText, UTType.text, UTType.data],
+                            delegate: FolderDropDelegate(
+                                folderId: folder.id,
+                                documentManager: documentManager,
+                                onHoverChange: { _ in }
+                            )
+                        )
                     case .document(let document):
                         DocumentGridItemView(
                             document: document,
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
-                            onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { openDocumentPreview(document: document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
@@ -296,6 +458,7 @@ struct DocumentsView: View {
                             onConvert: { convertDocument(document) },
                             onShare: { shareDocuments([document]) }
                         )
+                        .onDrag { makeDocumentDragProvider(document.id) }
                     }
                 }
             }
@@ -303,6 +466,7 @@ struct DocumentsView: View {
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
+        .hideScrollBackground()
     }
 
     @ViewBuilder
@@ -406,19 +570,21 @@ struct DocumentsView: View {
     
     var body: some View {
         NavigationView {
-            ZStack {
-                VStack {
-                    if documentManager.documents.isEmpty && !isProcessing {
-                        emptyStateView
-                    } else {
-                        rootBrowserView
-                    }
+            Group {
+                if documentManager.documents.isEmpty && !isProcessing {
+                    emptyStateView
+                } else {
+                    rootBrowserView
                 }
-
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
+            .overlay {
                 if isProcessing {
                     processingOverlayView
                 }
-
+            }
+            .overlay {
                 NavigationLink(
                     destination: activeFolderDestinationView,
                     isActive: isShowingActiveFolder
@@ -432,21 +598,29 @@ struct DocumentsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("New Folder") {
+                        Button {
                             newFolderName = ""
                             showingNewFolderDialog = true
+                        } label: {
+                            Label("New Folder", systemImage: "folder.badge.plus")
                         }
 
-                        Button("Scan Document") {
+                        Button {
                             startScan()
+                        } label: {
+                            Label("Scan Document", systemImage: "doc.viewfinder")
                         }
                         
-                        Button("Import Files") {
+                        Button {
                             showingDocumentPicker = true
+                        } label: {
+                            Label("Import Files", systemImage: "square.and.arrow.down")
                         }
                         
-                        Button("Create Zip") {
+                        Button {
                             showingZipExportSheet = true
+                        } label: {
+                            Label("Create Zip", systemImage: "archivebox")
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -497,13 +671,31 @@ struct DocumentsView: View {
                             Button {
                                 documentManager.setPrefersGridLayout(false)
                             } label: {
-                                Label("List", systemImage: "list.bullet")
+                                HStack {
+                                    Image(systemName: "list.bullet")
+                                    Text("List")
+                                    Spacer()
+                                    if !documentManager.prefersGridLayout {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
                             Button {
                                 documentManager.setPrefersGridLayout(true)
                             } label: {
-                                Label("Grid", systemImage: "square.grid.2x2")
+                                HStack {
+                                    Image(systemName: "square.grid.2x2")
+                                    Text("Grid")
+                                    Spacer()
+                                    if documentManager.prefersGridLayout {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
                             Divider()
@@ -513,21 +705,60 @@ struct DocumentsView: View {
                                 .foregroundStyle(.secondary)
 
                             Button {
-                                documentsSortModeRaw = DocumentsSortMode.alphabetically.rawValue
+                                toggleNameSort()
                             } label: {
-                                Label("Name", systemImage: "textformat")
+                                HStack {
+                                    Image(systemName: "textformat")
+                                    Text("Name")
+                                    Spacer()
+                                    if documentsSortMode == .nameAsc {
+                                        Image(systemName: "arrow.down")
+                                            .foregroundColor(.secondary)
+                                    } else if documentsSortMode == .nameDesc {
+                                        Image(systemName: "arrow.up")
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
                             Button {
-                                documentsSortModeRaw = DocumentsSortMode.oldest.rawValue
+                                toggleDateSort()
                             } label: {
-                                Label("Date", systemImage: "calendar")
+                                HStack {
+                                    Image(systemName: "calendar")
+                                    Text("Date")
+                                    Spacer()
+                                    if documentsSortMode == .dateNewest {
+                                        Image(systemName: "arrow.down")
+                                            .foregroundColor(.secondary)
+                                    } else if documentsSortMode == .dateOldest {
+                                        Image(systemName: "arrow.up")
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
 
                             Button {
-                                documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+                                toggleAccessSort()
                             } label: {
-                                Label("Recent", systemImage: "clock")
+                                HStack {
+                                    Label {
+                                        Text("Recent")
+                                    } icon: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "clock")
+                                            if documentsSortMode == .accessNewest {
+                                                Image(systemName: "arrow.down")
+                                            } else if documentsSortMode == .accessOldest {
+                                                Image(systemName: "arrow.up")
+                                            }
+                                        }
+                                    }
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     } label: {
@@ -1161,21 +1392,41 @@ struct DocumentsView: View {
 
     private func sortMixedItems(_ items: [MixedItem]) -> [MixedItem] {
         switch documentsSortMode {
-        case .newest:
+        case .dateNewest:
             return items.sorted {
                 if $0.dateCreated != $1.dateCreated { return $0.dateCreated > $1.dateCreated }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-        case .oldest:
+        case .dateOldest:
             return items.sorted {
                 if $0.dateCreated != $1.dateCreated { return $0.dateCreated < $1.dateCreated }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-        case .alphabetically:
+        case .nameAsc:
             return items.sorted {
                 let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
                 if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
                 return $0.dateCreated > $1.dateCreated
+            }
+        case .nameDesc:
+            return items.sorted {
+                let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+                if nameOrder != .orderedSame { return nameOrder == .orderedDescending }
+                return $0.dateCreated > $1.dateCreated
+            }
+        case .accessNewest:
+            return items.sorted {
+                let a = documentManager.lastAccessedDate(for: $0.id, fallback: $0.dateCreated)
+                let b = documentManager.lastAccessedDate(for: $1.id, fallback: $1.dateCreated)
+                if a != b { return a > b }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .accessOldest:
+            return items.sorted {
+                let a = documentManager.lastAccessedDate(for: $0.id, fallback: $0.dateCreated)
+                let b = documentManager.lastAccessedDate(for: $1.id, fallback: $1.dateCreated)
+                if a != b { return a < b }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
         }
     }
@@ -1405,6 +1656,7 @@ struct DocumentsView: View {
     }
     
     private func openDocumentPreview(document: Document) {
+        documentManager.updateLastAccessed(id: document.id)
         isOpeningPreview = true
         let tempDirectory = FileManager.default.temporaryDirectory
         let fileExt = getFileExtension(for: document.type)
@@ -1514,7 +1766,6 @@ struct DocumentRowView: View {
     let isSelectionMode: Bool
     let usesNativeSelection: Bool
     let onSelectToggle: () -> Void
-    let onLongPress: () -> Void
 
     let onOpen: () -> Void
     let onRename: () -> Void
@@ -1532,15 +1783,20 @@ struct DocumentRowView: View {
             HStack(spacing: 12) {
                 Group {
                     if document.type == .zip {
-                        Image(systemName: iconForDocumentType(document.type))
-                            .foregroundColor(.gray)
-                            .font(.system(size: 20))
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color("Primary"))
+
+                            Image(systemName: "archivebox.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 20))
+                        }
                     } else {
                         DocumentThumbnailView(document: document, size: CGSize(width: 50, height: 50))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
                 .frame(width: 50, height: 50)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(parts.base)
@@ -1565,20 +1821,6 @@ struct DocumentRowView: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(isSelected ? Color("Primary") : .secondary)
                         .frame(width: 28, height: 28)
-                } else if !isSelectionMode {
-                    Menu {
-                        Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
-                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                        Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                        Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(width: 28, height: 28)
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(PlainButtonStyle())
                 }
             }
             .padding(.horizontal, 16)
@@ -1592,9 +1834,15 @@ struct DocumentRowView: View {
             isSelectionMode: isSelectionMode,
             usesNativeSelection: usesNativeSelection,
             onSelectToggle: onSelectToggle,
-            onOpen: onOpen,
-            onLongPress: onLongPress
+            onOpen: onOpen
         ))
+        .contextMenu {
+            Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
+            Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+            Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+            Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+        }
+        .onDrag { makeDocumentDragProvider(document.id) }
     }
     
 }
@@ -1604,7 +1852,6 @@ struct DocumentGridItemView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
-    let onLongPress: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMoveToFolder: () -> Void
@@ -1617,28 +1864,25 @@ struct DocumentGridItemView: View {
         let previewHeight: CGFloat = 120
 
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(.tertiarySystemBackground))
-
-                Group {
-                    if let pdfData = document.pdfData {
-                        PDFThumbnailView(data: pdfData)
-                    } else if let imageDataArray = document.imageData,
-                              !imageDataArray.isEmpty,
-                              let firstImageData = imageDataArray.first,
-                              let uiImage = UIImage(data: firstImageData) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
+            GeometryReader { proxy in
+                let side = proxy.size.width
+                ZStack {
+                    if document.type == .zip {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color("Primary"))
+                        Image(systemName: "archivebox.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.white)
                     } else {
-                        Image(systemName: iconForDocumentType(document.type))
-                            .font(.system(size: 34))
-                            .foregroundColor(.blue)
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color(.tertiarySystemBackground))
+                        DocumentThumbnailView(document: document, size: CGSize(width: side, height: side))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+                .frame(width: side, height: side)
             }
             .frame(height: previewHeight)
             .cornerRadius(10)
@@ -1650,23 +1894,6 @@ struct DocumentGridItemView: View {
                         .foregroundColor(isSelected ? .blue : .secondary)
                         .padding(.top, 6)
                         .padding(.trailing, 6)
-                } else {
-                    Menu {
-                        Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
-                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                        Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
-                        Button(action: onConvert) { Label("Convert", systemImage: "arrow.2.circlepath") }
-                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .padding(.top, 6)
-                    .padding(.trailing, 6)
                 }
             }
 
@@ -1691,26 +1918,28 @@ struct DocumentGridItemView: View {
                 onOpen()
             }
         }
-        .simultaneousGesture(
-            LongPressGesture().onEnded { _ in
-                onLongPress()
-            }
-        )
+        .contextMenu {
+            Button(action: onShare) { Label("Share", systemImage: "square.and.arrow.up") }
+            Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+            Button(action: onMoveToFolder) { Label("Move to folder", systemImage: "folder") }
+            Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+        }
     }
 }
 
 struct FolderRowView: View {
+    @EnvironmentObject private var documentManager: DocumentManager
     let folder: DocumentFolder
     let docCount: Int
     let isSelected: Bool
     let isSelectionMode: Bool
     let usesNativeSelection: Bool
     let onSelectToggle: () -> Void
-    let onLongPress: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMove: () -> Void
     let onDelete: () -> Void
+    var isDropTargeted: Bool = false
 
     var body: some View {
         let dateText = DateFormatter.localizedString(from: folder.dateCreated, dateStyle: .medium, timeStyle: .none)
@@ -1751,18 +1980,6 @@ struct FolderRowView: View {
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(isSelected ? Color("Primary") : .secondary)
                         .frame(width: 28, height: 28)
-                } else if !isSelectionMode {
-                    Menu {
-                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                        Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(width: 28, height: 28)
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(PlainButtonStyle())
                 }
             }
             .padding(.horizontal, 16)
@@ -1776,9 +1993,17 @@ struct FolderRowView: View {
             isSelectionMode: isSelectionMode,
             usesNativeSelection: usesNativeSelection,
             onSelectToggle: onSelectToggle,
-            onOpen: onOpen,
-            onLongPress: onLongPress
+            onOpen: onOpen
         ))
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(isDropTargeted ? Color("Primary").opacity(0.18) : Color.clear)
+        )
+        .contextMenu {
+            Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+            Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+            Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+        }
     }
 }
 
@@ -1787,7 +2012,6 @@ private struct SelectionTapModifier: ViewModifier {
     let usesNativeSelection: Bool
     let onSelectToggle: () -> Void
     let onOpen: () -> Void
-    let onLongPress: () -> Void
 
     func body(content: Content) -> some View {
         if usesNativeSelection {
@@ -1801,12 +2025,115 @@ private struct SelectionTapModifier: ViewModifier {
                         onOpen()
                     }
                 }
-                .simultaneousGesture(
-                    LongPressGesture().onEnded { _ in
-                        onLongPress()
-                    }
-                )
         }
+    }
+}
+
+private struct FolderDropDelegate: DropDelegate {
+    let folderId: UUID
+    let documentManager: DocumentManager
+    let onHoverChange: (Bool) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [UTType.plainText, UTType.text, UTType.data])
+    }
+
+    func dropEntered(info: DropInfo) {
+        DispatchQueue.main.async {
+            onHoverChange(true)
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        DispatchQueue.main.async {
+            onHoverChange(false)
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let provider = info.itemProviders(for: [UTType.plainText, UTType.text, UTType.data]).first else { return false }
+        let preferredType = provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+            ? UTType.plainText.identifier
+            : (provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) ? UTType.text.identifier : UTType.data.identifier)
+
+        provider.loadDataRepresentation(forTypeIdentifier: preferredType) { data, _ in
+            let uuidString: String? = {
+                if let data { return String(data: data, encoding: .utf8) }
+                return nil
+            }()
+
+            guard let uuidString, let id = UUID(uuidString: uuidString) else { return }
+            DispatchQueue.main.async {
+                onHoverChange(false)
+                // Check if it's a document or a folder and move accordingly
+                if documentManager.documents.contains(where: { $0.id == id }) {
+                    documentManager.moveDocument(documentId: id, toFolder: folderId)
+                } else if documentManager.folders.contains(where: { $0.id == id }) {
+                    // Prevent moving folder into itself
+                    if id != folderId {
+                        documentManager.moveFolder(folderId: id, toParent: folderId)
+                    }
+                }
+            }
+        }
+        return true
+    }
+}
+
+private struct ListFolderDropDelegate: DropDelegate {
+    let folderId: UUID
+    let documentManager: DocumentManager
+    @Binding var dropTargetedFolderId: UUID?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [UTType.plainText, UTType.text, UTType.data])
+    }
+
+    func dropEntered(info: DropInfo) {
+        DispatchQueue.main.async {
+            dropTargetedFolderId = folderId
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        DispatchQueue.main.async {
+            if dropTargetedFolderId == folderId {
+                dropTargetedFolderId = nil
+            }
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        return DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let provider = info.itemProviders(for: [UTType.plainText, UTType.text, UTType.data]).first else { return false }
+        let preferredType = provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
+            ? UTType.plainText.identifier
+            : (provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) ? UTType.text.identifier : UTType.data.identifier)
+
+        provider.loadDataRepresentation(forTypeIdentifier: preferredType) { data, _ in
+            let uuidString: String? = {
+                if let data { return String(data: data, encoding: .utf8) }
+                return nil
+            }()
+
+            guard let uuidString, let id = UUID(uuidString: uuidString) else { return }
+            DispatchQueue.main.async {
+                dropTargetedFolderId = nil
+                // Check if it's a document or a folder and move accordingly
+                if documentManager.documents.contains(where: { $0.id == id }) {
+                    documentManager.moveDocument(documentId: id, toFolder: folderId)
+                } else if documentManager.folders.contains(where: { $0.id == id }) {
+                    // Prevent moving folder into itself
+                    if id != folderId {
+                        documentManager.moveFolder(folderId: id, toParent: folderId)
+                    }
+                }
+            }
+        }
+        return true
     }
 }
 
@@ -1843,7 +2170,6 @@ struct FolderGridItemView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
-    let onLongPress: () -> Void
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMove: () -> Void
@@ -1854,12 +2180,16 @@ struct FolderGridItemView: View {
         let parts = splitDisplayTitle(folder.name)
 
         VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(.tertiarySystemBackground))
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(.blue)
+            GeometryReader { proxy in
+                let side = proxy.size.width
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color("Primary"))
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(.white)
+                }
+                .frame(width: side, height: side)
             }
             .frame(height: previewHeight)
             .cornerRadius(10)
@@ -1871,21 +2201,6 @@ struct FolderGridItemView: View {
                         .foregroundColor(isSelected ? .blue : .secondary)
                         .padding(.top, 6)
                         .padding(.trailing, 6)
-                } else {
-                    Menu {
-                        Button(action: onRename) { Label("Rename", systemImage: "pencil") }
-                        Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
-                        Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(width: 24, height: 24)
-                            .foregroundColor(.secondary)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .padding(.top, 6)
-                    .padding(.trailing, 6)
                 }
             }
 
@@ -1910,11 +2225,11 @@ struct FolderGridItemView: View {
                 onOpen()
             }
         }
-        .highPriorityGesture(
-            LongPressGesture().onEnded { _ in
-                onLongPress()
-            }
-        )
+        .contextMenu {
+            Button(action: onRename) { Label("Rename", systemImage: "pencil") }
+            Button(action: onMove) { Label("Move to folder", systemImage: "folder") }
+            Button(role: .destructive, action: onDelete) { Label("Delete", systemImage: "trash") }
+        }
     }
 }
 
@@ -1923,10 +2238,10 @@ struct FolderDocumentsView: View {
     let onOpenDocument: (Document) -> Void
     @EnvironmentObject private var documentManager: DocumentManager
     private var layoutMode: DocumentLayoutMode { documentManager.prefersGridLayout ? .grid : .list }
-    @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+    @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
     private var documentsSortMode: DocumentsSortMode {
-        get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .newest }
-        set { documentsSortModeRaw = newValue.rawValue }
+        get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .dateNewest }
+        nonmutating set { documentsSortModeRaw = newValue.rawValue }
     }
     @State private var documentToMove: Document?
 
@@ -1970,6 +2285,19 @@ struct FolderDocumentsView: View {
 
     @State private var showingNewFolderDialog = false
     @State private var newFolderName = ""
+    @State private var dropTargetedFolderId: UUID? = nil
+
+    private func toggleNameSort() {
+        documentsSortMode = (documentsSortMode == .nameAsc) ? .nameDesc : .nameAsc
+    }
+
+    private func toggleDateSort() {
+        documentsSortMode = (documentsSortMode == .dateNewest) ? .dateOldest : .dateNewest
+    }
+
+    private func toggleAccessSort() {
+        documentsSortMode = (documentsSortMode == .accessNewest) ? .accessOldest : .accessNewest
+    }
 
     private var sortMenu: some View {
         Menu {
@@ -2007,61 +2335,144 @@ struct FolderDocumentsView: View {
         }
     }
 
+    @ViewBuilder
     private var folderListContent: some View {
-        List {
-            ForEach(mixedFolderItems()) { item in
-                switch item.kind {
-                case .folder(let sub):
-                    FolderRowView(
-                        folder: sub,
-                        docCount: documentManager.documents(in: sub.id).count,
-                        isSelected: selectedFolderIds.contains(sub.id),
-                        isSelectionMode: isSelectionMode,
-                        usesNativeSelection: false,
-                        onSelectToggle: { toggleFolderSelection(sub.id) },
-                        onLongPress: { beginSelection(folderId: sub.id) },
-                        onOpen: { activeSubfolder = sub },
-                        onRename: {
-                            folderToRename = sub
-                            renameFolderText = sub.name
-                            showingRenameFolderDialog = true
-                        },
-                        onMove: {
-                            folderToMove = sub
-                            showingMoveFolderSheet = true
-                        },
-                        onDelete: {
-                            folderToDelete = sub
-                            showingDeleteFolderDialog = true
-                        }
-                    )
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets())
-                case .document(let document):
-                    DocumentRowView(
-                        document: document,
-                        isSelected: selectedDocumentIds.contains(document.id),
-                        isSelectionMode: isSelectionMode,
-                        usesNativeSelection: false,
-                        onSelectToggle: { toggleDocumentSelection(document.id) },
-                        onLongPress: { beginSelection(documentId: document.id) },
-                        onOpen: { onOpenDocument(document) },
-                        onRename: { renameDocument(document) },
-                        onMoveToFolder: {
-                            documentToMove = document
-                        },
-                        onDelete: { documentManager.deleteDocument(document) },
-                        onConvert: { },
-                        onShare: { shareDocuments([document]) }
-                    )
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets())
+        if isSelectionMode {
+            // Use List for native selection support
+            List {
+                ForEach(mixedFolderItems()) { item in
+                    folderListRowForSelection(item)
                 }
             }
+            .listStyle(.plain)
+            .hideScrollBackground()
+        } else {
+            // Use ScrollView for drag and drop support
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(mixedFolderItems()) { item in
+                        folderScrollRow(item)
+                    }
+                }
+            }
+            .hideScrollBackground()
         }
-        .listStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func folderListRowForSelection(_ item: MixedItem) -> some View {
+        switch item.kind {
+        case .folder(let sub):
+            FolderRowView(
+                folder: sub,
+                docCount: documentManager.documents(in: sub.id).count,
+                isSelected: selectedFolderIds.contains(sub.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: true,
+                onSelectToggle: { toggleFolderSelection(sub.id) },
+                onOpen: {
+                    documentManager.updateLastAccessed(id: sub.id)
+                    activeSubfolder = sub
+                },
+                onRename: {
+                    folderToRename = sub
+                    renameFolderText = sub.name
+                    showingRenameFolderDialog = true
+                },
+                onMove: {
+                    folderToMove = sub
+                    showingMoveFolderSheet = true
+                },
+                onDelete: {
+                    folderToDelete = sub
+                    showingDeleteFolderDialog = true
+                },
+                isDropTargeted: false
+            )
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+        case .document(let document):
+            DocumentRowView(
+                document: document,
+                isSelected: selectedDocumentIds.contains(document.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: true,
+                onSelectToggle: { toggleDocumentSelection(document.id) },
+                onOpen: { onOpenDocument(document) },
+                onRename: { renameDocument(document) },
+                onMoveToFolder: {
+                    documentToMove = document
+                },
+                onDelete: { documentManager.deleteDocument(document) },
+                onConvert: { },
+                onShare: { shareDocuments([document]) }
+            )
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+        }
+    }
+
+    @ViewBuilder
+    private func folderScrollRow(_ item: MixedItem) -> some View {
+        switch item.kind {
+        case .folder(let sub):
+            FolderRowView(
+                folder: sub,
+                docCount: documentManager.documents(in: sub.id).count,
+                isSelected: selectedFolderIds.contains(sub.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: false,
+                onSelectToggle: { toggleFolderSelection(sub.id) },
+                onOpen: {
+                    documentManager.updateLastAccessed(id: sub.id)
+                    activeSubfolder = sub
+                },
+                onRename: {
+                    folderToRename = sub
+                    renameFolderText = sub.name
+                    showingRenameFolderDialog = true
+                },
+                onMove: {
+                    folderToMove = sub
+                    showingMoveFolderSheet = true
+                },
+                onDelete: {
+                    folderToDelete = sub
+                    showingDeleteFolderDialog = true
+                },
+                isDropTargeted: dropTargetedFolderId == sub.id
+            )
+            .padding(.horizontal, 8)
+            .onDrag { makeFolderDragProvider(sub.id) }
+            .onDrop(
+                of: [UTType.plainText, UTType.text, UTType.data],
+                delegate: ListFolderDropDelegate(
+                    folderId: sub.id,
+                    documentManager: documentManager,
+                    dropTargetedFolderId: $dropTargetedFolderId
+                )
+            )
+        case .document(let document):
+            DocumentRowView(
+                document: document,
+                isSelected: selectedDocumentIds.contains(document.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: false,
+                onSelectToggle: { toggleDocumentSelection(document.id) },
+                onOpen: { onOpenDocument(document) },
+                onRename: { renameDocument(document) },
+                onMoveToFolder: {
+                    documentToMove = document
+                },
+                onDelete: { documentManager.deleteDocument(document) },
+                onConvert: { },
+                onShare: { shareDocuments([document]) }
+            )
+            .padding(.horizontal, 8)
+            .onDrag { makeDocumentDragProvider(document.id) }
+        }
     }
 
     private var folderGridContent: some View {
@@ -2077,8 +2488,10 @@ struct FolderDocumentsView: View {
                             isSelected: selectedFolderIds.contains(sub.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleFolderSelection(sub.id) },
-                            onLongPress: { beginSelection(folderId: sub.id) },
-                            onOpen: { activeSubfolder = sub },
+                            onOpen: {
+                                documentManager.updateLastAccessed(id: sub.id)
+                                activeSubfolder = sub
+                            },
                             onRename: {
                                 folderToRename = sub
                                 renameFolderText = sub.name
@@ -2093,13 +2506,21 @@ struct FolderDocumentsView: View {
                                 showingDeleteFolderDialog = true
                             }
                         )
+                        .onDrag { makeFolderDragProvider(sub.id) }
+                        .onDrop(
+                            of: [UTType.plainText, UTType.text, UTType.data],
+                            delegate: FolderDropDelegate(
+                                folderId: sub.id,
+                                documentManager: documentManager,
+                                onHoverChange: { _ in }
+                            )
+                        )
                     case .document(let document):
                         DocumentGridItemView(
                             document: document,
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
-                            onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { onOpenDocument(document) },
                             onRename: { renameDocument(document) },
                             onMoveToFolder: {
@@ -2109,6 +2530,7 @@ struct FolderDocumentsView: View {
                             onConvert: { },
                             onShare: { shareDocuments([document]) }
                         )
+                        .onDrag { makeDocumentDragProvider(document.id) }
                     }
                 }
             }
@@ -2116,6 +2538,7 @@ struct FolderDocumentsView: View {
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
+        .hideScrollBackground()
     }
 
     private var folderBaseContent: some View {
@@ -2126,7 +2549,9 @@ struct FolderDocumentsView: View {
                 folderGridContent
             }
         }
-        .overlay(
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+        .overlay {
             NavigationLink(
                 destination: activeSubfolderDestinationView,
                 isActive: isShowingActiveSubfolder
@@ -2134,7 +2559,7 @@ struct FolderDocumentsView: View {
                 EmptyView()
             }
             .hidden()
-        )
+        }
         .navigationTitle(folder.name)
     }
 
@@ -2143,21 +2568,29 @@ struct FolderDocumentsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("New Folder") {
+                        Button {
                             newFolderName = ""
                             showingNewFolderDialog = true
+                        } label: {
+                            Label("New Folder", systemImage: "folder.badge.plus")
                         }
 
-                        Button("Scan Document") {
+                        Button {
                             startScan()
+                        } label: {
+                            Label("Scan Document", systemImage: "doc.viewfinder")
                         }
 
-                        Button("Import Files") {
+                        Button {
                             showingDocumentPicker = true
+                        } label: {
+                            Label("Import Files", systemImage: "square.and.arrow.down")
                         }
 
-                        Button("Create Zip") {
+                        Button {
                             showingZipExportSheet = true
+                        } label: {
+                            Label("Create Zip", systemImage: "archivebox")
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -2198,21 +2631,29 @@ struct FolderDocumentsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("New Folder") {
+                        Button {
                             newFolderName = ""
                             showingNewFolderDialog = true
+                        } label: {
+                            Label("New Folder", systemImage: "folder.badge.plus")
                         }
 
-                        Button("Scan Document") {
+                        Button {
                             startScan()
+                        } label: {
+                            Label("Scan Document", systemImage: "doc.viewfinder")
                         }
 
-                        Button("Import Files") {
+                        Button {
                             showingDocumentPicker = true
+                        } label: {
+                            Label("Import Files", systemImage: "square.and.arrow.down")
                         }
 
-                        Button("Create Zip") {
+                        Button {
                             showingZipExportSheet = true
+                        } label: {
+                            Label("Create Zip", systemImage: "archivebox")
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -2243,13 +2684,31 @@ struct FolderDocumentsView: View {
                         Button {
                             documentManager.setPrefersGridLayout(false)
                         } label: {
-                            Label("List", systemImage: "list.bullet")
+                            HStack {
+                                Image(systemName: "list.bullet")
+                                Text("List")
+                                Spacer()
+                                if !documentManager.prefersGridLayout {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         
                         Button {
                             documentManager.setPrefersGridLayout(true)
                         } label: {
-                            Label("Grid", systemImage: "square.grid.2x2")
+                            HStack {
+                                Image(systemName: "square.grid.2x2")
+                                Text("Grid")
+                                Spacer()
+                                if documentManager.prefersGridLayout {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         
                         Divider()
@@ -2259,21 +2718,60 @@ struct FolderDocumentsView: View {
                             .foregroundStyle(.secondary)
 
                         Button {
-                            documentsSortModeRaw = DocumentsSortMode.alphabetically.rawValue
+                            toggleNameSort()
                         } label: {
-                            Label("Name", systemImage: "textformat")
+                            HStack {
+                                Image(systemName: "textformat")
+                                Text("Name")
+                                Spacer()
+                                if documentsSortMode == .nameAsc {
+                                    Image(systemName: "arrow.down")
+                                        .foregroundColor(.secondary)
+                                } else if documentsSortMode == .nameDesc {
+                                    Image(systemName: "arrow.up")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         
                         Button {
-                            documentsSortModeRaw = DocumentsSortMode.oldest.rawValue
+                            toggleDateSort()
                         } label: {
-                            Label("Date", systemImage: "calendar")
+                            HStack {
+                                Image(systemName: "calendar")
+                                Text("Date")
+                                Spacer()
+                                if documentsSortMode == .dateNewest {
+                                    Image(systemName: "arrow.down")
+                                        .foregroundColor(.secondary)
+                                } else if documentsSortMode == .dateOldest {
+                                    Image(systemName: "arrow.up")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         
                         Button {
-                            documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+                            toggleAccessSort()
                         } label: {
-                            Label("Recent", systemImage: "clock")
+                            HStack {
+                                Label {
+                                    Text("Recent")
+                                } icon: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "clock")
+                                        if documentsSortMode == .accessNewest {
+                                            Image(systemName: "arrow.down")
+                                        } else if documentsSortMode == .accessOldest {
+                                            Image(systemName: "arrow.up")
+                                        }
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -2547,21 +3045,41 @@ struct FolderDocumentsView: View {
 
     private func sortMixedItems(_ items: [MixedItem]) -> [MixedItem] {
         switch documentsSortMode {
-        case .newest:
+        case .dateNewest:
             return items.sorted {
                 if $0.dateCreated != $1.dateCreated { return $0.dateCreated > $1.dateCreated }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-        case .oldest:
+        case .dateOldest:
             return items.sorted {
                 if $0.dateCreated != $1.dateCreated { return $0.dateCreated < $1.dateCreated }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
-        case .alphabetically:
+        case .nameAsc:
             return items.sorted {
                 let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
                 if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
                 return $0.dateCreated > $1.dateCreated
+            }
+        case .nameDesc:
+            return items.sorted {
+                let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+                if nameOrder != .orderedSame { return nameOrder == .orderedDescending }
+                return $0.dateCreated > $1.dateCreated
+            }
+        case .accessNewest:
+            return items.sorted {
+                let a = documentManager.lastAccessedDate(for: $0.id, fallback: $0.dateCreated)
+                let b = documentManager.lastAccessedDate(for: $1.id, fallback: $1.dateCreated)
+                if a != b { return a > b }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .accessOldest:
+            return items.sorted {
+                let a = documentManager.lastAccessedDate(for: $0.id, fallback: $0.dateCreated)
+                let b = documentManager.lastAccessedDate(for: $1.id, fallback: $1.dateCreated)
+                if a != b { return a < b }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
         }
     }
@@ -3408,8 +3926,13 @@ struct DocumentThumbnailView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIImageView, context: Context) {
+        if document.type == .scanned, let imageData = document.imageData?.first, let uiImage = UIImage(data: imageData) {
+            uiView.image = renderThumbnail(from: uiImage, size: size)
+            return
+        }
+
         if let imageData = document.imageData?.first, let uiImage = UIImage(data: imageData) {
-            uiView.image = uiImage
+            uiView.image = renderThumbnail(from: uiImage, size: size)
             return
         }
 
@@ -3418,13 +3941,27 @@ struct DocumentThumbnailView: UIViewRepresentable {
             return
         }
 
-        guard let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first ?? document.content.data(using: .utf8) else {
+        var ext = splitDisplayTitle(document.title).ext
+        var data: Data?
+
+        if document.type == .scanned,
+           document.pdfData == nil,
+           document.imageData?.first == nil {
+            data = document.content.data(using: .utf8)
+            ext = "txt"
+        } else {
+            data = document.originalFileData ?? document.pdfData ?? document.imageData?.first ?? document.content.data(using: .utf8)
+            if ext.isEmpty {
+                ext = fileExtension(for: document.type)
+            }
+        }
+
+        guard let data else {
             uiView.image = nil
             return
         }
 
-        let ext = splitDisplayTitle(document.title).ext
-        let fileURL = temporaryFileURL(id: document.id, ext: ext.isEmpty ? fileExtension(for: document.type) : ext)
+        let fileURL = temporaryFileURL(id: document.id, ext: ext.isEmpty ? "dat" : ext)
 
         if !FileManager.default.fileExists(atPath: fileURL.path) {
             try? data.write(to: fileURL, options: [.atomic])
@@ -3448,6 +3985,19 @@ struct DocumentThumbnailView: UIViewRepresentable {
     private func thumbnailFromPDF(data: Data, size: CGSize) -> UIImage? {
         guard let document = PDFDocument(data: data), let firstPage = document.page(at: 0) else { return nil }
         return firstPage.thumbnail(of: size, for: .mediaBox)
+    }
+
+    private func renderThumbnail(from image: UIImage, size: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            let imageSize = image.size
+            let scale = max(size.width / imageSize.width, size.height / imageSize.height)
+            let width = imageSize.width * scale
+            let height = imageSize.height * scale
+            let x = (size.width - width) / 2
+            let y = (size.height - height) / 2
+            image.draw(in: CGRect(x: x, y: y, width: width, height: height))
+        }
     }
 
     private func temporaryFileURL(id: UUID, ext: String) -> URL {

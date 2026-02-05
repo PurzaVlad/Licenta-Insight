@@ -10,9 +10,11 @@ class DocumentManager: ObservableObject {
     @Published var documents: [Document] = []
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
+    @Published private(set) var lastAccessedMap: [UUID: Date] = [:]
     private let maxOCRChars = 50000
     private let documentsKey = "SavedDocuments_v2" // legacy (migration only)
     private let documentsFileName = "SavedDocuments_v2.json"
+    private let lastAccessedKey = "LastAccessedMap_v1"
 
     private struct PersistedState: Codable {
         var documents: [Document]
@@ -22,6 +24,39 @@ class DocumentManager: ObservableObject {
     
     init() {
         loadDocuments()
+        lastAccessedMap = loadLastAccessedMap()
+    }
+
+    func updateLastAccessed(id: UUID) {
+        lastAccessedMap[id] = Date()
+        saveLastAccessedMap()
+    }
+
+    func lastAccessedDate(for id: UUID, fallback: Date) -> Date {
+        lastAccessedMap[id] ?? fallback
+    }
+
+    private func loadLastAccessedMap() -> [UUID: Date] {
+        guard let data = UserDefaults.standard.data(forKey: lastAccessedKey) else { return [:] }
+        do {
+            let raw = try JSONDecoder().decode([String: Date].self, from: data)
+            var map: [UUID: Date] = [:]
+            for (key, value) in raw {
+                if let id = UUID(uuidString: key) {
+                    map[id] = value
+                }
+            }
+            return map
+        } catch {
+            return [:]
+        }
+    }
+
+    private func saveLastAccessedMap() {
+        let raw = Dictionary(uniqueKeysWithValues: lastAccessedMap.map { ($0.key.uuidString, $0.value) })
+        if let data = try? JSONEncoder().encode(raw) {
+            UserDefaults.standard.set(data, forKey: lastAccessedKey)
+        }
     }
 
     func setPrefersGridLayout(_ value: Bool) {

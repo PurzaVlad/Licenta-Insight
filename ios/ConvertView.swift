@@ -6,7 +6,7 @@ struct ConvertView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
+            ScrollView {
                 VStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 12) {
                         ConvertSectionHeader(title: "From PDF")
@@ -96,6 +96,9 @@ struct ConvertView: View {
                 }
                 .padding(.top, 8)
             }
+            .hideScrollBackground()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Convert")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {

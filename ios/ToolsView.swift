@@ -7,7 +7,7 @@ struct ToolsView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
+            ScrollView {
                 VStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 12) {
                         SectionHeader(title: "Organize")
@@ -72,6 +72,9 @@ struct ToolsView: View {
                 }
                 .padding(.top, 8)
             }
+            .hideScrollBackground()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Tools")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {

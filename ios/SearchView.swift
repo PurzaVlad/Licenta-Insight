@@ -28,9 +28,7 @@ struct SearchView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
-                Color(.systemGroupedBackground).ignoresSafeArea()
-
+            Group {
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "magnifyingglass")
@@ -64,8 +62,12 @@ struct SearchView: View {
                         }
                     }
                     .listStyle(.plain)
+                    .hideScrollBackground()
                 }
-
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
+            .overlay {
                 if isOpeningPreview {
                     ZStack {
                         Rectangle()

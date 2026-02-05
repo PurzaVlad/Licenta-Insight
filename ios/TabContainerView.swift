@@ -2,7 +2,52 @@ import SwiftUI
 import UIKit
 import LocalAuthentication
 
+// ViewModifier for navigation bar transparency with iOS 15 compatibility
+struct NavBarBlurModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content
+                .toolbarBackground(.hidden, for: .navigationBar)
+                .toolbarColorScheme(.none, for: .navigationBar)
+        } else {
+            content
+        }
+    }
+}
+
+// ViewModifier for tab bar transparency with iOS 15 compatibility
+struct TabBarBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content
+                .toolbarBackground(.hidden, for: .tabBar)
+        } else {
+            content
+        }
+    }
+}
+
+// ViewModifier for hiding scroll content background with iOS 15 compatibility
+struct HideScrollBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content
+                .scrollContentBackground(.hidden)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func hideScrollBackground() -> some View {
+        self.modifier(HideScrollBackgroundModifier())
+    }
+}
+
 struct TabContainerView: View {
+    // Tab bar and navigation bar appearance is configured in AppDelegate
+
     @StateObject private var documentManager = DocumentManager()
     @State private var summaryRequestsInFlight: Set<UUID> = []
     @State private var summaryQueue: [SummaryJob] = []
@@ -39,7 +84,7 @@ struct TabContainerView: View {
 
     var body: some View {
         ZStack {
-        tabRoot
+            tabRoot
         .fullScreenCover(item: $previewItem) { item in
             let shouldShowSummary = item.document.type != .image
             DocumentPreviewContainerView(
@@ -171,6 +216,7 @@ struct TabContainerView: View {
             }
             .tint(Color("Primary"))
             .accentColor(Color("Primary"))
+            .modifier(TabBarBackgroundModifier())
         } else {
             TabView {
                 DocumentsView(
@@ -224,6 +270,7 @@ struct TabContainerView: View {
             }
             .tint(Color("Primary"))
             .accentColor(Color("Primary"))
+            .modifier(TabBarBackgroundModifier())
         }
     }
 

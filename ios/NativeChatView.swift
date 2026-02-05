@@ -46,41 +46,42 @@ struct NativeChatView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            if messages.isEmpty {
-                                Text("Model Ready.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.top, 24)
-                            }
-
-                            ForEach(messages) { msg in
-                                MessageRow(msg: msg)
-                                    .id(msg.id)
-                            }
-
-                            if isGenerating {
-                                ThinkingRow(isPulseOn: $isThinkingPulseOn)
-                                    .id("thinking")
-                            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if messages.isEmpty {
+                            Text("Model Ready.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 24)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
+
+                        ForEach(messages) { msg in
+                            MessageRow(msg: msg)
+                                .id(msg.id)
+                        }
+
+                        if isGenerating {
+                            ThinkingRow(isPulseOn: $isThinkingPulseOn)
+                                .id("thinking")
+                        }
                     }
-                    .scrollDismissesKeyboardIfAvailable()
-                    .onChange(of: messages) { newValue in
-                        if let last = newValue.last {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(last.id, anchor: .bottom)
-                            }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
+                .hideScrollBackground()
+                .scrollDismissesKeyboardIfAvailable()
+                .onChange(of: messages) { newValue in
+                    if let last = newValue.last {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Chat")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
