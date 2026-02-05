@@ -75,7 +75,7 @@ struct ConvertView: View {
                             )
                                 .environmentObject(documentManager)
                         }
-                        ConvertRow(title: "JPG to PDF", icon: .jpgToPdf) {
+                        ConvertRow(title: "JPG to PDF", icon: .jpgToPdf, showsDivider: false) {
                             ConversionView(
                                 initialTargetFormat: ConversionView.DocumentFormat.pdf,
                                 autoPresentPicker: true,
@@ -98,7 +98,7 @@ struct ConvertView: View {
             }
             .hideScrollBackground()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("Convert")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -126,11 +126,13 @@ struct ConvertRow<Destination: View>: View {
     let title: String
     let icon: ConvertIconType
     let destination: Destination
+    let showsDivider: Bool
 
-    init(title: String, icon: ConvertIconType, @ViewBuilder destination: () -> Destination) {
+    init(title: String, icon: ConvertIconType, showsDivider: Bool = true, @ViewBuilder destination: () -> Destination) {
         self.title = title
         self.icon = icon
         self.destination = destination()
+        self.showsDivider = showsDivider
     }
 
     var body: some View {
@@ -150,7 +152,9 @@ struct ConvertRow<Destination: View>: View {
             }
             .padding(.vertical, 6)
         }
-        Divider()
+        if showsDivider {
+            Divider()
+        }
     }
 }
 

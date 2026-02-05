@@ -84,6 +84,8 @@ struct TabContainerView: View {
 
     var body: some View {
         ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
             tabRoot
         .fullScreenCover(item: $previewItem) { item in
             let shouldShowSummary = item.document.type != .image

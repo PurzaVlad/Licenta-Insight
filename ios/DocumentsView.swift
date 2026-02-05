@@ -578,7 +578,7 @@ struct DocumentsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .overlay {
                 if isProcessing {
                     processingOverlayView

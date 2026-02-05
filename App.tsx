@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
-import {Alert, SafeAreaView, StyleSheet, NativeModules, NativeEventEmitter} from 'react-native';
+import {Alert, StyleSheet, NativeModules, NativeEventEmitter, View} from 'react-native';
 import RNFS from 'react-native-fs';
 import {initLlama, releaseAllLlama} from 'llama.rn';
 import {downloadModel} from './src/api/model';
@@ -820,9 +820,9 @@ useEffect(() => {
 
   // Render native SwiftUI chat UI
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <NativeChatView style={{flex: 1}} />
-    </SafeAreaView>
+    </View>
   );
 }
 

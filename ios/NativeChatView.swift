@@ -81,7 +81,7 @@ struct NativeChatView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("Chat")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {

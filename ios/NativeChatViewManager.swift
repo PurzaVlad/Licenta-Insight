@@ -26,7 +26,7 @@ private final class HostingContainerView<Content: View>: UIView {
         self.hostingController = UIHostingController(rootView: rootView)
         super.init(frame: .zero)
 
-        hostingController.view.backgroundColor = .clear
+        hostingController.view.backgroundColor = UIColor.systemGroupedBackground
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hostingController.view)
         NSLayoutConstraint.activate([

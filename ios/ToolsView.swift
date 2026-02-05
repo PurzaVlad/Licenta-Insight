@@ -48,18 +48,18 @@ struct ToolsView: View {
                             CompressPDFView(autoPresentPicker: true)
                                 .environmentObject(documentManager)
                         }
-                        ToolRow(icon: "pencil", title: "Edit PDF") {
-                            ComingSoonView(title: "Edit PDF")
-                        }
+        ToolRow(icon: "pencil", title: "Edit PDF") {
+            ComingSoonView(title: "Edit PDF")
+        }
 
                         SectionHeader(title: "Protect & Sign")
                         ToolRow(icon: "signature", title: "Sign PDF") {
                             SignPDFView(autoPresentPicker: true)
                                 .environmentObject(documentManager)
                         }
-                        ToolRow(icon: "lock.fill", title: "Protect PDF") {
-                            ComingSoonView(title: "Protect PDF")
-                        }
+        ToolRow(icon: "lock.fill", title: "Protect PDF", showsDivider: false) {
+            ComingSoonView(title: "Protect PDF")
+        }
                     }
                     .padding(16)
                     .background(
@@ -74,7 +74,7 @@ struct ToolsView: View {
             }
             .hideScrollBackground()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.systemGroupedBackground))
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("Tools")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -113,11 +113,13 @@ struct ToolRow<Destination: View>: View {
     let icon: String
     let title: String
     let destination: Destination
+    let showsDivider: Bool
 
-    init(icon: String, title: String, @ViewBuilder destination: () -> Destination) {
+    init(icon: String, title: String, showsDivider: Bool = true, @ViewBuilder destination: () -> Destination) {
         self.icon = icon
         self.title = title
         self.destination = destination()
+        self.showsDivider = showsDivider
     }
 
     var body: some View {
@@ -139,7 +141,9 @@ struct ToolRow<Destination: View>: View {
             }
             .padding(.vertical, 6)
         }
-        Divider()
+        if showsDivider {
+            Divider()
+        }
     }
 }
 

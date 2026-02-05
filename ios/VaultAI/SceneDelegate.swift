@@ -18,6 +18,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     appDelegate.setRootView(rootView, toRootViewController: rootViewController)
 
     let window = UIWindow(windowScene: windowScene)
+    let baseBackground = UIColor.systemGroupedBackground
+    rootView.backgroundColor = baseBackground
+    rootViewController?.view.backgroundColor = baseBackground
+    window.backgroundColor = baseBackground
     window.rootViewController = rootViewController
     self.window = window
     window.makeKeyAndVisible()

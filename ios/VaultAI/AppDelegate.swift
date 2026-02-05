@@ -11,7 +11,6 @@ class AppDelegate: RCTAppDelegate {
     self.automaticallyLoadReactNativeWindow = false
 
     // Ensure standard iOS horizontal margins for nav bar titles and bar buttons.
-    UINavigationBar.appearance().layoutMargins = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
 
     // Configure Tab Bar to be completely transparent
     let tabBarAppearance = UITabBarAppearance()
