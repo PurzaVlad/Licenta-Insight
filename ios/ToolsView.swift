@@ -8,7 +8,6 @@ struct ToolsView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                Color(.systemGroupedBackground).ignoresSafeArea()
                 VStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 12) {
                         SectionHeader(title: "Organize")

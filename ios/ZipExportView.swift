@@ -6,15 +6,17 @@ struct ZipExportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedFolderIds: Set<UUID>
     @State private var selectedDocumentIds: Set<UUID>
+    private let targetFolderId: UUID?
     @State private var isZipping = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
     @State private var showingNamePrompt = false
     @State private var zipName = ""
 
-    init(preselectedDocumentIds: Set<UUID> = [], preselectedFolderIds: Set<UUID> = []) {
+    init(preselectedDocumentIds: Set<UUID> = [], preselectedFolderIds: Set<UUID> = [], targetFolderId: UUID? = nil) {
         _selectedDocumentIds = State(initialValue: preselectedDocumentIds)
         _selectedFolderIds = State(initialValue: preselectedFolderIds)
+        self.targetFolderId = targetFolderId
     }
 
     var body: some View {
@@ -212,11 +214,12 @@ struct ZipExportView: View {
                 let ok = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: stagingURL.path)
 
                 if ok, let zipData = try? Data(contentsOf: zipURL) {
-                    let doc = makeZipDocument(title: fileName, data: zipData)
+                    let doc = makeZipDocument(title: fileName, data: zipData, folderId: targetFolderId)
                     DispatchQueue.main.async {
                         documentManager.addDocument(doc)
                         isZipping = false
-                        alertMessage = "ZIP archive saved to Documents."
+                        let locationText = targetFolderId == nil ? "Documents" : "this folder"
+                        alertMessage = "ZIP archive saved to \(locationText)."
                         showingAlert = true
                         dismiss()
                     }
@@ -298,12 +301,13 @@ struct DocumentRow: Identifiable {
     let path: String
 }
 
-private func makeZipDocument(title: String, data: Data) -> Document {
+private func makeZipDocument(title: String, data: Data, folderId: UUID?) -> Document {
     Document(
         title: title,
         content: "ZIP archive",
         summary: "ZIP archive",
         dateCreated: Date(),
+        folderId: folderId,
         type: .zip,
         imageData: nil,
         pdfData: nil,

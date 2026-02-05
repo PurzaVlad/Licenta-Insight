@@ -131,31 +131,15 @@ struct TabContainerView: View {
         if #available(iOS 18.0, *) {
             TabView {
                 Tab("Documents", systemImage: "folder") {
-                    if #available(iOS 16.0, *) {
-                        NavigationStack {
-                            DocumentsView(
-                                onOpenPreview: { document, url in
-                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
-                                },
-                                onShowSummary: { document in
-                                    summaryDocument = document
-                                }
-                            )
-                            .environmentObject(documentManager)
+                    DocumentsView(
+                        onOpenPreview: { document, url in
+                            previewItem = PreviewItem(id: document.id, url: url, document: document)
+                        },
+                        onShowSummary: { document in
+                            summaryDocument = document
                         }
-                    } else {
-                        NavigationView {
-                            DocumentsView(
-                                onOpenPreview: { document, url in
-                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
-                                },
-                                onShowSummary: { document in
-                                    summaryDocument = document
-                                }
-                            )
-                            .environmentObject(documentManager)
-                        }
-                    }
+                    )
+                    .environmentObject(documentManager)
                 }
 
                 Tab("Chat", systemImage: "bubble.left") {
@@ -189,33 +173,15 @@ struct TabContainerView: View {
             .accentColor(Color("Primary"))
         } else {
             TabView {
-                Group {
-                    if #available(iOS 16.0, *) {
-                        NavigationStack {
-                            DocumentsView(
-                                onOpenPreview: { document, url in
-                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
-                                },
-                                onShowSummary: { document in
-                                    summaryDocument = document
-                                }
-                            )
-                            .environmentObject(documentManager)
-                        }
-                    } else {
-                        NavigationView {
-                            DocumentsView(
-                                onOpenPreview: { document, url in
-                                    previewItem = PreviewItem(id: document.id, url: url, document: document)
-                                },
-                                onShowSummary: { document in
-                                    summaryDocument = document
-                                }
-                            )
-                            .environmentObject(documentManager)
-                        }
+                DocumentsView(
+                    onOpenPreview: { document, url in
+                        previewItem = PreviewItem(id: document.id, url: url, document: document)
+                    },
+                    onShowSummary: { document in
+                        summaryDocument = document
                     }
-                }
+                )
+                .environmentObject(documentManager)
                 .tabItem {
                     Image(systemName: "folder")
                     Text("Documents")

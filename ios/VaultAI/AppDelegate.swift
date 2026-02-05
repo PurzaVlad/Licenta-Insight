@@ -10,6 +10,9 @@ class AppDelegate: RCTAppDelegate {
     self.dependencyProvider = RCTAppDependencyProvider()
     self.automaticallyLoadReactNativeWindow = false
 
+    // Ensure standard iOS horizontal margins for nav bar titles and bar buttons.
+    UINavigationBar.appearance().layoutMargins = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
+
     // You can add your custom initial props in the dictionary below.
     // They will be passed down to the ViewController used by React Native.
     self.initialProps = [:]

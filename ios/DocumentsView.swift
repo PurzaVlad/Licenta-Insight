@@ -4,6 +4,7 @@ import Vision
 import VisionKit
 import UniformTypeIdentifiers
 import PDFKit
+import QuickLookThumbnailing
 import Foundation
 import AVFoundation
 
@@ -63,7 +64,7 @@ struct DocumentsView: View {
     @State private var suggestedName = ""
     @State private var customName = ""
     @State private var scannedImages: [UIImage] = []
-    @State private var extractedText = ""
+    @State private var extractedText: String = ""
     @State private var pendingOCRPages: [OCRPage] = []
     @State private var pendingCategory: Document.DocumentCategory = .general
     @State private var pendingKeywordsResume: String = ""
@@ -168,18 +169,100 @@ struct DocumentsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var rootListView: AnyView {
-        AnyView(
-            List(selection: isSelectionMode ? listSelectionBinding : .constant([])) {
+    private var rootListView: some View {
+        List(selection: isSelectionMode ? listSelectionBinding : .constant([])) {
+            if isSelectionMode {
+                ForEach(mixedRootItems()) { item in
+                    rootListRow(item)
+                }
+            } else {
+                ForEach(mixedRootItems()) { item in
+                    rootListRow(item)
+                }
+                .onDelete { offsets in
+                    let items = mixedRootItems()
+                    for i in offsets {
+                        guard i < items.count else { continue }
+                        switch items[i].kind {
+                        case .folder(let folder):
+                            documentManager.deleteFolder(folderId: folder.id, mode: .deleteAllItems)
+                        case .document(let document):
+                            documentManager.deleteDocument(document)
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, $editMode)
+    }
+
+    @ViewBuilder
+    private func rootListRow(_ item: MixedItem) -> some View {
+        switch item.kind {
+        case .folder(let folder):
+            FolderRowView(
+                folder: folder,
+                docCount: documentManager.documents(in: folder.id).count,
+                isSelected: selectedFolderIds.contains(folder.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: isSelectionMode,
+                onSelectToggle: { toggleFolderSelection(folder.id) },
+                onLongPress: { beginSelection(folderId: folder.id) },
+                onOpen: { activeFolder = folder },
+                onRename: {
+                    folderToRename = folder
+                    renameFolderText = folder.name
+                    showingRenameFolderDialog = true
+                },
+                onMove: {
+                    folderToMove = folder
+                    showingMoveFolderSheet = true
+                },
+                onDelete: {
+                    folderToDelete = folder
+                    showingDeleteFolderDialog = true
+                }
+            )
+            .tag(folder.id)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+        case .document(let document):
+            DocumentRowView(
+                document: document,
+                isSelected: selectedDocumentIds.contains(document.id),
+                isSelectionMode: isSelectionMode,
+                usesNativeSelection: isSelectionMode,
+                onSelectToggle: { toggleDocumentSelection(document.id) },
+                onLongPress: { beginSelection(documentId: document.id) },
+                onOpen: { openDocumentPreview(document: document) },
+                onRename: { renameDocument(document) },
+                onMoveToFolder: {
+                    documentToMove = document
+                },
+                onDelete: { deleteDocument(document) },
+                onConvert: { convertDocument(document) },
+                onShare: { shareDocuments([document]) }
+            )
+            .tag(document.id)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+        }
+    }
+
+    private var rootGridView: some View {
+        ScrollView {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                 ForEach(mixedRootItems()) { item in
                     switch item.kind {
                     case .folder(let folder):
-                        FolderRowView(
+                        FolderGridItemView(
                             folder: folder,
                             docCount: documentManager.documents(in: folder.id).count,
                             isSelected: selectedFolderIds.contains(folder.id),
                             isSelectionMode: isSelectionMode,
-                            usesNativeSelection: isSelectionMode,
                             onSelectToggle: { toggleFolderSelection(folder.id) },
                             onLongPress: { beginSelection(folderId: folder.id) },
                             onOpen: { activeFolder = folder },
@@ -197,16 +280,11 @@ struct DocumentsView: View {
                                 showingDeleteFolderDialog = true
                             }
                         )
-                        .tag(folder.id)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets())
                     case .document(let document):
-                        DocumentRowView(
+                        DocumentGridItemView(
                             document: document,
                             isSelected: selectedDocumentIds.contains(document.id),
                             isSelectionMode: isSelectionMode,
-                            usesNativeSelection: isSelectionMode,
                             onSelectToggle: { toggleDocumentSelection(document.id) },
                             onLongPress: { beginSelection(documentId: document.id) },
                             onOpen: { openDocumentPreview(document: document) },
@@ -218,85 +296,13 @@ struct DocumentsView: View {
                             onConvert: { convertDocument(document) },
                             onShare: { shareDocuments([document]) }
                         )
-                        .tag(document.id)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets())
-                    }
-                }
-                .onDelete { offsets in
-                    let items = mixedRootItems()
-                    for i in offsets {
-                        guard i < items.count else { continue }
-                        switch items[i].kind {
-                        case .folder(let folder):
-                            documentManager.deleteFolder(folderId: folder.id, mode: .deleteAllItems)
-                        case .document(let document):
-                            documentManager.deleteDocument(document)
-                        }
                     }
                 }
             }
-            .listStyle(.plain)
-            .navigationTitle("Documents")
-            .navigationBarTitleDisplayMode(.large)
-            .environment(\.editMode, $editMode)
-        )
-    }
-
-    private var rootGridView: AnyView {
-        AnyView(
-            ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                    ForEach(mixedRootItems()) { item in
-                        switch item.kind {
-                        case .folder(let folder):
-                            FolderGridItemView(
-                                folder: folder,
-                                docCount: documentManager.documents(in: folder.id).count,
-                                isSelected: selectedFolderIds.contains(folder.id),
-                                isSelectionMode: isSelectionMode,
-                                onSelectToggle: { toggleFolderSelection(folder.id) },
-                                onLongPress: { beginSelection(folderId: folder.id) },
-                                onOpen: { activeFolder = folder },
-                                onRename: {
-                                    folderToRename = folder
-                                    renameFolderText = folder.name
-                                    showingRenameFolderDialog = true
-                                },
-                                onMove: {
-                                    folderToMove = folder
-                                    showingMoveFolderSheet = true
-                                },
-                                onDelete: {
-                                    folderToDelete = folder
-                                    showingDeleteFolderDialog = true
-                                }
-                            )
-                        case .document(let document):
-                            DocumentGridItemView(
-                                document: document,
-                                isSelected: selectedDocumentIds.contains(document.id),
-                                isSelectionMode: isSelectionMode,
-                                onSelectToggle: { toggleDocumentSelection(document.id) },
-                                onLongPress: { beginSelection(documentId: document.id) },
-                                onOpen: { openDocumentPreview(document: document) },
-                                onRename: { renameDocument(document) },
-                                onMoveToFolder: {
-                                    documentToMove = document
-                                },
-                                onDelete: { deleteDocument(document) },
-                                onConvert: { convertDocument(document) },
-                                onShare: { shareDocuments([document]) }
-                            )
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-                .padding(.bottom, 24)
-            }
-        )
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+        }
     }
 
     @ViewBuilder
@@ -310,7 +316,6 @@ struct DocumentsView: View {
             ZStack {
                 Rectangle()
                     .fill(.ultraThinMaterial)
-                    .ignoresSafeArea()
                 VStack(spacing: 12) {
                     ProgressView()
                         .scaleEffect(1.2)
@@ -325,7 +330,6 @@ struct DocumentsView: View {
         ZStack {
             Rectangle()
                 .fill(.ultraThinMaterial)
-                .ignoresSafeArea(.all)
             VStack(spacing: 16) {
                 ProgressView()
                     .scaleEffect(1.5)
@@ -348,18 +352,113 @@ struct DocumentsView: View {
     }
 
     private var documentsRootContent: some View {
+        Group {
+            if isSelectionMode {
+                documentsRootContentSelection
+            } else {
+                documentsRootContentNormal
+            }
+        }
+    }
+
+    private var documentsRootContentSelection: some View {
         documentsMainStack
+    }
+
+    private var documentsRootContentNormal: some View {
+        documentsMainStack
+    }
+
+    @ViewBuilder
+    private var activeFolderDestinationView: some View {
+        if let folder = activeFolder {
+            FolderDocumentsView(folder: folder, onOpenDocument: openDocumentPreview)
+                .environmentObject(documentManager)
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var documentsMainStack: some View {
+        ZStack {
+            VStack {
+                if documentManager.documents.isEmpty && !isProcessing {
+                    emptyStateView
+                } else {
+                    rootBrowserView
+                }
+            }
+
+            if isProcessing {
+                processingOverlayView
+            }
+
+            NavigationLink(
+                destination: activeFolderDestinationView,
+                isActive: isShowingActiveFolder
+            ) {
+                EmptyView()
+            }
+            .hidden()
+        }
+    }
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                VStack {
+                    if documentManager.documents.isEmpty && !isProcessing {
+                        emptyStateView
+                    } else {
+                        rootBrowserView
+                    }
+                }
+
+                if isProcessing {
+                    processingOverlayView
+                }
+
+                NavigationLink(
+                    destination: activeFolderDestinationView,
+                    isActive: isShowingActiveFolder
+                ) {
+                    EmptyView()
+                }
+                .hidden()
+            }
             .navigationTitle("Documents")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if isSelectionMode {
-                        Menu {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("New Folder") {
+                            newFolderName = ""
+                            showingNewFolderDialog = true
+                        }
+
+                        Button("Scan Document") {
+                            startScan()
+                        }
+                        
+                        Button("Import Files") {
+                            showingDocumentPicker = true
+                        }
+                        
+                        Button("Create Zip") {
+                            showingZipExportSheet = true
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .foregroundColor(.primary)
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        if isSelectionMode {
                             Button("Share Selected") {
                                 shareSelectedDocuments()
-                            }
-                            Button("Delete Selected", role: .destructive) {
-                                showingBulkDeleteDialog = true
                             }
                             Button("Move Selected") {
                                 showingBulkMoveSheet = true
@@ -367,51 +466,30 @@ struct DocumentsView: View {
                             Button("Create Zip") {
                                 showingZipExportSheet = true
                             }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .foregroundColor(.primary)
-                        }
-
-                        Button("Cancel") {
-                            clearSelection()
-                        }
-                    } else {
-                        Menu {
-                            Button("New Folder") {
-                                newFolderName = ""
-                                showingNewFolderDialog = true
+                            Button("Delete Selected", role: .destructive) {
+                                showingBulkDeleteDialog = true
                             }
-
-                            Button("Create Zip") {
-                                showingZipExportSheet = true
+                            
+                            Divider()
+                            
+                            Button("Cancel") {
+                                clearSelection()
                             }
-
-                            Button("Scan Document") {
-                                startScan()
-                            }
-                            Button("Import Files") {
-                                showingDocumentPicker = true
-                            }
-                        } label: {
-                            Image(systemName: "plus")
-                                .foregroundColor(.primary)
-                        }
-
-                        Menu {
+                        } else {
                             Button {
                                 isSelectionMode = true
                             } label: {
                                 Label("Select", systemImage: "checkmark.circle")
                             }
-
+                            
                             Button {
                                 showingSettings = true
                             } label: {
                                 Label("Preferences", systemImage: "gearshape")
                             }
-
+                            
                             Divider()
-
+                            
                             Text("View")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -451,57 +529,19 @@ struct DocumentsView: View {
                             } label: {
                                 Label("Recent", systemImage: "clock")
                             }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .foregroundColor(.primary)
                         }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.primary)
                     }
                 }
             }
-    }
-
-    @ViewBuilder
-    private var activeFolderDestinationView: some View {
-        if let folder = activeFolder {
-            FolderDocumentsView(folder: folder, onOpenDocument: openDocumentPreview)
-                .environmentObject(documentManager)
-        } else {
-            EmptyView()
-        }
-    }
-
-    @ViewBuilder
-    private var documentsMainStack: some View {
-        ZStack {
-            VStack {
-                if documentManager.documents.isEmpty && !isProcessing {
-                    emptyStateView
-                } else {
-                    rootBrowserView
-                }
-            }
-
-            if isProcessing {
-                processingOverlayView
-            }
-
-            NavigationLink(
-                destination: activeFolderDestinationView,
-                isActive: isShowingActiveFolder
-            ) {
-                EmptyView()
-            }
-            .hidden()
-        }
-    }
-    
-    var body: some View {
-        documentsRootContent
-        .onChange(of: isSelectionMode) { active in
-            editMode = active ? .active : .inactive
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView()
+        }
+        .onChange(of: isSelectionMode) { active in
+            editMode = active ? .active : .inactive
         }
         .alert("New Folder", isPresented: $showingNewFolderDialog) {
             TextField("Folder name", text: $newFolderName)
@@ -777,6 +817,338 @@ struct DocumentsView: View {
         selectedFolderIds.removeAll()
     }
 
+    private func processImportedFiles(_ urls: [URL]) {
+        isProcessing = true
+        var processedCount = 0
+
+        for url in urls {
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+
+            if let document = documentManager.processFile(at: url) {
+                let withFolder = Document(
+                    id: document.id,
+                    title: document.title,
+                    content: document.content,
+                    summary: document.summary,
+                    ocrPages: document.ocrPages,
+                    category: document.category,
+                    keywordsResume: document.keywordsResume,
+                    tags: document.tags,
+                    sourceDocumentId: document.sourceDocumentId,
+                    dateCreated: document.dateCreated,
+                    folderId: activeFolder?.id,
+                    sortOrder: document.sortOrder,
+                    type: document.type,
+                    imageData: document.imageData,
+                    pdfData: document.pdfData,
+                    originalFileData: document.originalFileData
+                )
+
+                documentManager.addDocument(withFolder)
+
+                let fullTextForKeywords = withFolder.content
+                DispatchQueue.global(qos: .utility).async {
+                    let cat = DocumentManager.inferCategory(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+                    let kw = DocumentManager.makeKeywordsResume(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+
+                    DispatchQueue.main.async {
+                        let current = self.documentManager.getDocument(by: withFolder.id) ?? withFolder
+                        let updated = Document(
+                            id: current.id,
+                            title: current.title,
+                            content: current.content,
+                            summary: current.summary,
+                            ocrPages: current.ocrPages,
+                            category: cat,
+                            keywordsResume: kw,
+                            tags: current.tags,
+                            sourceDocumentId: current.sourceDocumentId,
+                            dateCreated: current.dateCreated,
+                            folderId: current.folderId ?? activeFolder?.id,
+                            sortOrder: current.sortOrder,
+                            type: current.type,
+                            imageData: current.imageData,
+                            pdfData: current.pdfData,
+                            originalFileData: current.originalFileData
+                        )
+                        if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
+                            self.documentManager.documents[idx] = updated
+                        }
+                    }
+                }
+
+                processedCount += 1
+            }
+
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        DispatchQueue.main.async {
+            self.isProcessing = false
+        }
+    }
+
+    private func finalizePendingDocument(with name: String) {
+        let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = finalName.isEmpty ? suggestedName : finalName
+        finalizeDocument(with: safeName)
+    }
+
+    private func startScan() {
+        func presentScanner() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                showingScanner = true
+            }
+        }
+        if !VNDocumentCameraViewController.isSupported {
+            scannerMode = .simple
+            presentScanner()
+            return
+        }
+
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            scannerMode = .document
+            presentScanner()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        scannerMode = .document
+                        presentScanner()
+                    } else {
+                        showingCameraPermissionAlert = true
+                    }
+                }
+            }
+        case .denied, .restricted:
+            showingCameraPermissionAlert = true
+        @unknown default:
+            showingCameraPermissionAlert = true
+        }
+    }
+
+    private func processScannedText(_ text: String) {
+        isProcessing = true
+
+        let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
+        let document = Document(
+            title: titleCaseFromOCR(cappedText),
+            content: cappedText,
+            summary: "Processing summary...",
+            tags: [],
+            sourceDocumentId: nil,
+            dateCreated: Date(),
+            folderId: activeFolder?.id,
+            type: .scanned,
+            imageData: nil,
+            pdfData: nil
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            documentManager.addDocument(document)
+            isProcessing = false
+        }
+    }
+
+    private func prepareNamingDialog(for images: [UIImage]) {
+        guard let firstImage = images.first else { return }
+
+        isProcessing = true
+
+        let firstPage = performOCRDetailed(on: firstImage, pageIndex: 0)
+        let firstPageText = firstPage.text
+
+        var ocrPages: [OCRPage] = []
+        for (index, image) in images.enumerated() {
+            let page = performOCRDetailed(on: image, pageIndex: index)
+            ocrPages.append(page.page)
+        }
+        extractedText = buildStructuredText(from: ocrPages, includePageLabels: true)
+        pendingOCRPages = ocrPages
+
+        let fullTextForKeywords = extractedText
+        DispatchQueue.global(qos: .utility).async {
+            let cat = DocumentManager.inferCategory(title: "", content: fullTextForKeywords, summary: "")
+            let kw = DocumentManager.makeKeywordsResume(title: "", content: fullTextForKeywords, summary: "")
+            DispatchQueue.main.async {
+                self.pendingCategory = cat
+                self.pendingKeywordsResume = kw
+            }
+        }
+
+        suggestedName = titleCaseFromOCR(extractedText.isEmpty ? firstPageText : extractedText)
+        customName = suggestedName
+        isProcessing = false
+        showingNamingDialog = true
+    }
+
+    private func titleCaseFromOCR(_ text: String) -> String {
+        let snippet = String(text.prefix(300))
+        return enforceTitleCase(snippet)
+    }
+
+    private func enforceTitleCase(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let normalized = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let words = normalized.lowercased().split(separator: " ").map(String.init)
+        let cased = words.map { word -> String in
+            guard let first = word.first else { return "" }
+            return String(first).uppercased() + word.dropFirst()
+        }
+        return cased.joined()
+    }
+
+    private func finalizeDocument(with name: String) {
+        guard !scannedImages.isEmpty else { return }
+
+        isProcessing = true
+
+        var imageDataArray: [Data] = []
+        for image in scannedImages {
+            if let imageData = image.jpegData(compressionQuality: 0.95) {
+                imageDataArray.append(imageData)
+            }
+        }
+
+        let pdfData = createPDF(from: scannedImages)
+        let cappedText = DocumentManager.truncateText(extractedText, maxChars: 50000)
+        let cappedPages: [OCRPage]? = {
+            if pendingOCRPages.isEmpty { return nil }
+            return [OCRPage(pageIndex: 0, blocks: [OCRBlock(text: cappedText, confidence: 1.0, bbox: OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0), order: 0)])]
+        }()
+        let pagesToStore = pendingOCRPages.isEmpty ? cappedPages : pendingOCRPages
+
+        let document = Document(
+            title: name,
+            content: cappedText,
+            summary: "Processing summary...",
+            ocrPages: pagesToStore,
+            category: pendingCategory,
+            keywordsResume: pendingKeywordsResume,
+            tags: [],
+            sourceDocumentId: nil,
+            dateCreated: Date(),
+            folderId: activeFolder?.id,
+            type: .scanned,
+            imageData: imageDataArray,
+            pdfData: pdfData
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            documentManager.addDocument(document)
+            isProcessing = false
+
+            scannedImages.removeAll()
+            extractedText = ""
+            suggestedName = ""
+            customName = ""
+            pendingCategory = .general
+            pendingKeywordsResume = ""
+            pendingOCRPages = []
+        }
+    }
+
+    private func createPDF(from images: [UIImage]) -> Data? {
+        let pdfData = NSMutableData()
+
+        guard let dataConsumer = CGDataConsumer(data: pdfData) else { return nil }
+        let pageWidth: CGFloat = 612
+        let pageHeight: CGFloat = 792
+        let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        var mediaBox = pageRect
+
+        guard let pdfContext = CGContext(consumer: dataConsumer, mediaBox: &mediaBox, nil) else { return nil }
+
+        for image in images {
+            pdfContext.beginPDFPage(nil)
+            let imageSize = image.size
+            let scale = min(pageWidth / imageSize.width, pageHeight / imageSize.height)
+            let width = imageSize.width * scale
+            let height = imageSize.height * scale
+            let x = (pageWidth - width) / 2
+            let y = (pageHeight - height) / 2
+            let rect = CGRect(x: x, y: y, width: width, height: height)
+            if let cgImage = image.cgImage {
+                pdfContext.draw(cgImage, in: rect)
+            }
+            pdfContext.endPDFPage()
+        }
+
+        pdfContext.closePDF()
+        return pdfData as Data
+    }
+
+    private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
+        guard let processedImage = preprocessImageForOCR(image),
+              let cgImage = processedImage.cgImage else {
+            return ("Could not process image", OCRPage(pageIndex: pageIndex, blocks: []))
+        }
+
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+
+        var recognizedText = ""
+        var blocks: [OCRBlock] = []
+
+        do {
+            try handler.perform([request])
+            if let results = request.results as? [VNRecognizedTextObservation] {
+                for (idx, observation) in results.enumerated() {
+                    guard let candidate = observation.topCandidates(1).first else { continue }
+                    let bbox = observation.boundingBox
+                    let bounding = OCRBoundingBox(x: bbox.origin.x, y: bbox.origin.y, width: bbox.size.width, height: bbox.size.height)
+                    blocks.append(OCRBlock(text: candidate.string, confidence: Double(candidate.confidence), bbox: bounding, order: idx))
+                    recognizedText += candidate.string + "\n"
+                }
+            }
+        } catch {
+            recognizedText = "OCR failed: \(error.localizedDescription)"
+        }
+
+        let page = OCRPage(pageIndex: pageIndex, blocks: blocks)
+        return (recognizedText, page)
+    }
+
+    private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
+        var output: [String] = []
+        for page in pages {
+            if includePageLabels {
+                output.append("Page \(page.pageIndex + 1):")
+            }
+            let sorted = page.blocks.sorted { $0.order < $1.order }
+            for block in sorted {
+                let line = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !line.isEmpty {
+                    output.append(line)
+                }
+            }
+            output.append("")
+        }
+        return output.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func preprocessImageForOCR(_ image: UIImage) -> UIImage? {
+        let targetSize: CGFloat = 2560
+        let scale = min(targetSize / max(image.size.width, 1), targetSize / max(image.size.height, 1))
+        let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+
+        UIGraphicsBeginImageContextWithOptions(newSize, true, 1.0)
+        UIColor.white.setFill()
+        UIRectFill(CGRect(origin: .zero, size: newSize))
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        let result = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return result
+    }
+
     private func mixedRootItems() -> [MixedItem] {
         let folderItems = rootFolders.map { folder in
             MixedItem(id: folder.id, kind: .folder(folder), name: folder.name, dateCreated: folder.dateCreated)
@@ -849,205 +1221,6 @@ struct DocumentsView: View {
         // This will be handled by the dedicated Convert tab
         print("Convert document: \(document.title)")
         // Note: Users should use the Convert tab for full conversion functionality
-    }
-
-    private func processImportedFiles(_ urls: [URL]) {
-        print("📱 UI: Starting to process \\(urls.count) imported files")
-        isProcessing = true
-        
-        // Process each file synchronously to avoid async issues
-        var processedCount = 0
-        
-        for url in urls {
-            print("📱 UI: Processing file: \\(url.lastPathComponent)")
-            print("📱 UI: File URL: \\(url.absoluteString)")
-            print("📱 UI: File exists: \\(FileManager.default.fileExists(atPath: url.path))")
-            
-            // Try to access the security scoped resource
-            let didStartAccess = url.startAccessingSecurityScopedResource()
-            print("📱 UI: Security scoped access: \\(didStartAccess)")
-            
-            // Even if security access fails, try to process the file
-            if let document = documentManager.processFile(at: url) {
-                print("📱 UI: ✅ Successfully created document with original name: \\(document.title)")
-                print("📱 UI: Document content preview: \\(String(document.content.prefix(100)))...")
-
-                // Persist and add to list immediately so it appears in the UI.
-                documentManager.addDocument(document)
-
-                // Generate category and keywords in background but keep original filename
-                let fullTextForKeywords = document.content
-                DispatchQueue.global(qos: .utility).async {
-                    let cat = DocumentManager.inferCategory(title: document.title, content: fullTextForKeywords, summary: document.summary)
-                    let kw = DocumentManager.makeKeywordsResume(title: document.title, content: fullTextForKeywords, summary: document.summary)
-                    
-                    DispatchQueue.main.async {
-                        // Update the document with category and keywords but keep the original title
-                        let current = self.documentManager.getDocument(by: document.id) ?? document
-                        let updatedDocument = Document(
-                            id: document.id,
-                            title: document.title, // Keep original name
-                            content: document.content,
-                            summary: document.summary,
-                            ocrPages: document.ocrPages,
-                            category: cat,
-                            keywordsResume: kw,
-                            tags: current.tags,
-                            sourceDocumentId: current.sourceDocumentId,
-                            dateCreated: document.dateCreated,
-                            folderId: current.folderId,
-                            sortOrder: current.sortOrder,
-                            type: document.type,
-                            imageData: document.imageData,
-                            pdfData: document.pdfData,
-                            originalFileData: document.originalFileData
-                        )
-                        
-                        // Update document in the manager
-                        if let idx = self.documentManager.documents.firstIndex(where: { $0.id == document.id }) {
-                            self.documentManager.documents[idx] = updatedDocument
-                        }
-                    }
-                }
-                
-                processedCount += 1
-            } else {
-                print("❌ UI: Failed to create document for: \\(url.lastPathComponent)")
-            }
-            
-            // Stop accessing security scoped resource if we started it
-            if didStartAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-        
-        print("📱 UI: ✅ Processing complete. Processed \\\(processedCount)/\\\(urls.count) files")
-        
-        // No more AI naming queue - files are processed directly with original names
-        DispatchQueue.main.async {
-            self.isProcessing = false
-        }
-    }
-
-    private func finalizePendingDocument(with name: String) {
-        let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let safeName = finalName.isEmpty ? suggestedName : finalName
-
-        // This function now only handles scanned documents since imported files keep original names
-        finalizeDocument(with: safeName)
-    }
-
-    private func startScan() {
-        func presentScanner() {
-            // Delay to avoid presenting from a context menu hosting controller.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                showingScanner = true
-            }
-        }
-        if !VNDocumentCameraViewController.isSupported {
-            scannerMode = .simple
-            presentScanner()
-            return
-        }
-
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        switch status {
-        case .authorized:
-            scannerMode = .document
-            presentScanner()
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    if granted {
-                        scannerMode = .document
-                        presentScanner()
-                    } else {
-                        showingCameraPermissionAlert = true
-                    }
-                }
-            }
-        case .denied, .restricted:
-            showingCameraPermissionAlert = true
-        @unknown default:
-            showingCameraPermissionAlert = true
-        }
-    }
-
-    
-    private func processScannedText(_ text: String) {
-        isProcessing = true
-
-        let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
-        
-        let document = Document(
-            title: titleCaseFromOCR(cappedText),
-            content: cappedText,
-            summary: "Processing summary...",
-            tags: [],
-            sourceDocumentId: nil,
-            dateCreated: Date(),
-            type: .scanned,
-            imageData: nil,
-            pdfData: nil
-        )
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            documentManager.addDocument(document)
-            isProcessing = false
-        }
-    }
-    
-    private func prepareNamingDialog(for images: [UIImage]) {
-        guard let firstImage = images.first else { return }
-        
-        isProcessing = true
-        
-        // Extract text from first image to get content for AI naming
-        print("Starting OCR extraction for AI naming...")
-        let firstPage = performOCRDetailed(on: firstImage, pageIndex: 0)
-        let firstPageText = firstPage.text
-        print("First page OCR result: \(firstPageText.prefix(100))...") // Log first 100 chars
-
-        // Process all images for full content
-        var allText = ""
-        var ocrPages: [OCRPage] = []
-        for (index, image) in images.enumerated() {
-            print("Processing page \(index + 1) for OCR...")
-            let page = performOCRDetailed(on: image, pageIndex: index)
-            allText += "Page \(index + 1):\n\(page.text)\n\n"
-            ocrPages.append(page.page)
-            print("Page \(index + 1) OCR completed: \(page.text.count) characters")
-        }
-        extractedText = buildStructuredText(from: ocrPages, includePageLabels: true)
-        pendingOCRPages = ocrPages
-        
-        print("Total extracted text: \(extractedText.count) characters")
-        
-        // In the background, infer category + 50-char keywords from the full OCR.
-        // This is stored on the document for fast retrieval later.
-        let fullTextForKeywords = extractedText
-        DispatchQueue.global(qos: .utility).async {
-            let cat = DocumentManager.inferCategory(title: "", content: fullTextForKeywords, summary: "")
-            let kw = DocumentManager.makeKeywordsResume(title: "", content: fullTextForKeywords, summary: "")
-            DispatchQueue.main.async {
-                self.pendingCategory = cat
-                self.pendingKeywordsResume = kw
-            }
-        }
-
-        let namingSeed = extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? firstPageText : extractedText
-
-        // Use AI to suggest document name based on headings + first paragraph
-        if !namingSeed.isEmpty {
-            print("Using AI to generate document name from OCR text")
-            generateAIDocumentName(from: namingSeed)
-        } else {
-            print("OCR extraction failed or returned no text, using default name")
-            suggestedName = titleCaseFromOCR(firstPageText)
-            customName = suggestedName
-            isProcessing = false
-            showingNamingDialog = true
-        }
     }
 
     private func generateAIDocumentName(from text: String) {
@@ -1230,251 +1403,6 @@ struct DocumentsView: View {
         if paragraphs.count == 1 { return paragraphs[0] }
         return paragraphs[0] + "\n\n" + paragraphs[1]
     }
-
-    private func titleCaseFromOCR(_ text: String) -> String {
-        let snippet = String(text.prefix(300))
-        return enforceTitleCase(snippet)
-    }
-
-    private func enforceTitleCase(_ input: String) -> String {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        let normalized = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        let words = normalized.lowercased().split(separator: " ").map(String.init)
-        let cased = words.map { word -> String in
-            guard let first = word.first else { return "" }
-            return String(first).uppercased() + word.dropFirst()
-        }
-        return cased.joined()
-    }
-
-    private func finalizeDocument(with name: String) {
-        guard !scannedImages.isEmpty else { return }
-        
-        isProcessing = true
-        
-        var imageDataArray: [Data] = []
-        for image in scannedImages {
-            if let imageData = image.jpegData(compressionQuality: 0.95) {
-                imageDataArray.append(imageData)
-            }
-        }
-        
-        // Generate PDF from images
-        let pdfData = createPDF(from: scannedImages)
-        let cappedText = DocumentManager.truncateText(extractedText, maxChars: 50000)
-        let cappedPages: [OCRPage]? = {
-            if pendingOCRPages.isEmpty { return nil }
-            return [OCRPage(pageIndex: 0, blocks: [OCRBlock(text: cappedText, confidence: 1.0, bbox: OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0), order: 0)])]
-        }()
-        let pagesToStore = pendingOCRPages.isEmpty ? cappedPages : pendingOCRPages
-
-        let document = Document(
-            title: name,
-            content: cappedText,
-            summary: "Processing summary...",
-            ocrPages: pagesToStore,
-            category: pendingCategory,
-            keywordsResume: pendingKeywordsResume,
-            tags: [],
-            sourceDocumentId: nil,
-            dateCreated: Date(),
-            type: .scanned,
-            imageData: imageDataArray,
-            pdfData: pdfData
-        )
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            documentManager.addDocument(document)
-            isProcessing = false
-            
-            // Clear temporary data
-            scannedImages.removeAll()
-            extractedText = ""
-            suggestedName = ""
-            customName = ""
-            pendingCategory = .general
-            pendingKeywordsResume = ""
-            pendingOCRPages = []
-        }
-    }
-    
-    private func createPDF(from images: [UIImage]) -> Data? {
-        let pdfData = NSMutableData()
-        
-        guard let dataConsumer = CGDataConsumer(data: pdfData) else { return nil }
-        
-        // Use standard US Letter page size (8.5 x 11 inches at 72 DPI)
-        let pageWidth: CGFloat = 612  // 8.5 * 72
-        let pageHeight: CGFloat = 792  // 11 * 72
-        let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
-        var mediaBox = pageRect
-        
-        guard let pdfContext = CGContext(consumer: dataConsumer, mediaBox: &mediaBox, nil) else { return nil }
-        
-        for image in images {
-            pdfContext.beginPDFPage(nil)
-            
-            if let cgImage = image.cgImage {
-                // Calculate scaling to fit image within page while maintaining aspect ratio
-                let imageSize = image.size
-                let imageAspectRatio = imageSize.width / imageSize.height
-                let pageAspectRatio = pageWidth / pageHeight
-                
-                var drawRect: CGRect
-                
-                if imageAspectRatio > pageAspectRatio {
-                    // Image is wider - fit to page width
-                    let scaledHeight = pageWidth / imageAspectRatio
-                    let yOffset = (pageHeight - scaledHeight) / 2
-                    drawRect = CGRect(x: 0, y: yOffset, width: pageWidth, height: scaledHeight)
-                } else {
-                    // Image is taller - fit to page height
-                    let scaledWidth = pageHeight * imageAspectRatio
-                    let xOffset = (pageWidth - scaledWidth) / 2
-                    drawRect = CGRect(x: xOffset, y: 0, width: scaledWidth, height: pageHeight)
-                }
-                
-                pdfContext.draw(cgImage, in: drawRect)
-            }
-            
-            pdfContext.endPDFPage()
-        }
-        
-        pdfContext.closePDF()
-        return pdfData as Data
-    }
-    
-    private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
-        guard let processedImage = preprocessImageForOCR(image),
-              let cgImage = processedImage.cgImage else {
-            print("OCR: Failed to process image")
-            return ("Could not process image", OCRPage(pageIndex: pageIndex, blocks: []))
-        }
-        
-        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["en-US", "en-GB"]
-        
-        var blocks: [OCRBlock] = []
-        var recognizedText = ""
-        
-        do {
-            try requestHandler.perform([request])
-            
-            if let results = request.results {
-                let observations = results.compactMap { observation -> (String, CGRect, Double)? in
-                    guard let topCandidate = observation.topCandidates(1).first else { return nil }
-                    return (topCandidate.string, observation.boundingBox, Double(topCandidate.confidence))
-                }
-                
-                let sorted = observations.sorted { first, second in
-                    let yDiff = abs(first.1.minY - second.1.minY)
-                    if yDiff < 0.02 {
-                        return first.1.minX < second.1.minX
-                    }
-                    return first.1.minY > second.1.minY
-                }
-                
-                for (idx, item) in sorted.enumerated() {
-                    let bbox = OCRBoundingBox(
-                        x: Double(item.1.origin.x),
-                        y: Double(item.1.origin.y),
-                        width: Double(item.1.size.width),
-                        height: Double(item.1.size.height)
-                    )
-                    blocks.append(OCRBlock(text: item.0, confidence: item.2, bbox: bbox, order: idx))
-                }
-                
-                recognizedText = sorted.map { $0.0 }.joined(separator: " ")
-                recognizedText = recognizedText
-                    .replacingOccurrences(of: "\n\n+", with: "\n", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                print("OCR: Successfully extracted \(recognizedText.count) characters")
-            } else {
-                print("OCR: No results returned")
-            }
-        } catch {
-            print("OCR Error: \(error.localizedDescription)")
-            recognizedText = "OCR failed: \(error.localizedDescription)"
-        }
-        
-        let page = OCRPage(pageIndex: pageIndex, blocks: blocks)
-        return (recognizedText.isEmpty ? "No text found in image" : recognizedText, page)
-    }
-
-    private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
-        guard !pages.isEmpty else { return "" }
-
-        func paragraphize(_ lines: [(text: String, y: Double)]) -> String {
-            var output: [String] = []
-            var lastY: Double? = nil
-
-            for line in lines {
-                if let last = lastY, abs(line.y - last) > 0.04 {
-                    output.append("") // paragraph break
-                }
-                output.append(line.text)
-                lastY = line.y
-            }
-
-            return output.joined(separator: "\n").replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
-        }
-
-        var result: [String] = []
-        for page in pages {
-            let sorted = page.blocks.sorted { $0.order < $1.order }
-            var lines: [(text: String, y: Double)] = []
-
-            for block in sorted {
-                if let last = lines.last, abs(block.bbox.y - last.y) < 0.02 {
-                    let combined = last.text.isEmpty ? block.text : "\(last.text) \(block.text)"
-                    lines[lines.count - 1] = (combined, last.y)
-                } else {
-                    lines.append((block.text, block.bbox.y))
-                }
-            }
-
-            let body = paragraphize(lines)
-            if includePageLabels {
-                result.append("Page \(page.pageIndex + 1):\n\(body)")
-            } else {
-                result.append(body)
-            }
-        }
-
-        return result.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    
-    private func preprocessImageForOCR(_ image: UIImage) -> UIImage? {
-        // Ensure proper orientation and size for OCR
-        guard let cgImage = image.cgImage else { return nil }
-        
-        let targetSize: CGFloat = 2560 // Higher detail for OCR while keeping perf reasonable
-        let imageSize = image.size
-        let maxDimension = max(imageSize.width, imageSize.height)
-        
-        // Only resize if image is too large
-        if maxDimension > targetSize {
-            let scale = targetSize / maxDimension
-            let newSize = CGSize(
-                width: imageSize.width * scale,
-                height: imageSize.height * scale
-            )
-            
-            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
-            image.draw(in: CGRect(origin: .zero, size: newSize))
-            let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
-            UIGraphicsEndImageContext()
-            
-            return resizedImage
-        }
-        
-        return image
-    }
     
     private func openDocumentPreview(document: Document) {
         isOpeningPreview = true
@@ -1602,15 +1530,17 @@ struct DocumentRowView: View {
 
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                ZStack {
-                    CheckeredPatternView()
-                        .frame(width: 50, height: 50)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    Image(systemName: "doc.text")
-                        .foregroundColor(.gray)
-                        .font(.system(size: 20))
+                Group {
+                    if document.type == .zip {
+                        Image(systemName: iconForDocumentType(document.type))
+                            .foregroundColor(.gray)
+                            .font(.system(size: 20))
+                    } else {
+                        DocumentThumbnailView(document: document, size: CGSize(width: 50, height: 50))
+                    }
                 }
+                .frame(width: 50, height: 50)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(parts.base)
@@ -1651,11 +1581,11 @@ struct DocumentRowView: View {
                     .buttonStyle(PlainButtonStyle())
                 }
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
             Divider()
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 16)
         }
         .contentShape(Rectangle())
         .modifier(SelectionTapModifier(
@@ -1835,11 +1765,11 @@ struct FolderRowView: View {
                     .buttonStyle(PlainButtonStyle())
                 }
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
             Divider()
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 16)
         }
         .contentShape(Rectangle())
         .modifier(SelectionTapModifier(
@@ -2002,6 +1932,21 @@ struct FolderDocumentsView: View {
 
     @State private var activeSubfolder: DocumentFolder?
 
+    @State private var showingDocumentPicker = false
+    @State private var showingScanner = false
+    @State private var scannerMode: ScannerMode = .document
+    @State private var showingCameraPermissionAlert = false
+    @State private var isProcessing = false
+    @State private var showingNamingDialog = false
+    @State private var suggestedName = ""
+    @State private var customName = ""
+    @State private var scannedImages: [UIImage] = []
+    @State private var extractedText: String = ""
+    @State private var pendingOCRPages: [OCRPage] = []
+    @State private var pendingCategory: Document.DocumentCategory = .general
+    @State private var pendingKeywordsResume: String = ""
+    @State private var showingSettings = false
+
     @State private var isSelectionMode = false
     @State private var selectedDocumentIds: Set<UUID> = []
     @State private var selectedFolderIds: Set<UUID> = []
@@ -2023,6 +1968,9 @@ struct FolderDocumentsView: View {
     @State private var renameText = ""
     @State private var documentToRename: Document?
 
+    @State private var showingNewFolderDialog = false
+    @State private var newFolderName = ""
+
     private var sortMenu: some View {
         Menu {
             ForEach(DocumentsSortMode.allCases, id: \.rawValue) { mode in
@@ -2037,7 +1985,6 @@ struct FolderDocumentsView: View {
                 .font(.system(size: 16, weight: .semibold))
         }
     }
-    
 
     private var isShowingActiveSubfolder: Binding<Bool> {
         Binding(
@@ -2060,116 +2007,123 @@ struct FolderDocumentsView: View {
         }
     }
 
-    var body: some View {
-        let items = mixedFolderItems()
+    private var folderListContent: some View {
+        List {
+            ForEach(mixedFolderItems()) { item in
+                switch item.kind {
+                case .folder(let sub):
+                    FolderRowView(
+                        folder: sub,
+                        docCount: documentManager.documents(in: sub.id).count,
+                        isSelected: selectedFolderIds.contains(sub.id),
+                        isSelectionMode: isSelectionMode,
+                        usesNativeSelection: false,
+                        onSelectToggle: { toggleFolderSelection(sub.id) },
+                        onLongPress: { beginSelection(folderId: sub.id) },
+                        onOpen: { activeSubfolder = sub },
+                        onRename: {
+                            folderToRename = sub
+                            renameFolderText = sub.name
+                            showingRenameFolderDialog = true
+                        },
+                        onMove: {
+                            folderToMove = sub
+                            showingMoveFolderSheet = true
+                        },
+                        onDelete: {
+                            folderToDelete = sub
+                            showingDeleteFolderDialog = true
+                        }
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets())
+                case .document(let document):
+                    DocumentRowView(
+                        document: document,
+                        isSelected: selectedDocumentIds.contains(document.id),
+                        isSelectionMode: isSelectionMode,
+                        usesNativeSelection: false,
+                        onSelectToggle: { toggleDocumentSelection(document.id) },
+                        onLongPress: { beginSelection(documentId: document.id) },
+                        onOpen: { onOpenDocument(document) },
+                        onRename: { renameDocument(document) },
+                        onMoveToFolder: {
+                            documentToMove = document
+                        },
+                        onDelete: { documentManager.deleteDocument(document) },
+                        onConvert: { },
+                        onShare: { shareDocuments([document]) }
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets())
+                }
+            }
+        }
+        .listStyle(.plain)
+    }
 
+    private var folderGridContent: some View {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+        return ScrollView {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(mixedFolderItems()) { item in
+                    switch item.kind {
+                    case .folder(let sub):
+                        FolderGridItemView(
+                            folder: sub,
+                            docCount: documentManager.documents(in: sub.id).count,
+                            isSelected: selectedFolderIds.contains(sub.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleFolderSelection(sub.id) },
+                            onLongPress: { beginSelection(folderId: sub.id) },
+                            onOpen: { activeSubfolder = sub },
+                            onRename: {
+                                folderToRename = sub
+                                renameFolderText = sub.name
+                                showingRenameFolderDialog = true
+                            },
+                            onMove: {
+                                folderToMove = sub
+                                showingMoveFolderSheet = true
+                            },
+                            onDelete: {
+                                folderToDelete = sub
+                                showingDeleteFolderDialog = true
+                            }
+                        )
+                    case .document(let document):
+                        DocumentGridItemView(
+                            document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onLongPress: { beginSelection(documentId: document.id) },
+                            onOpen: { onOpenDocument(document) },
+                            onRename: { renameDocument(document) },
+                            onMoveToFolder: {
+                                documentToMove = document
+                            },
+                            onDelete: { documentManager.deleteDocument(document) },
+                            onConvert: { },
+                            onShare: { shareDocuments([document]) }
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var folderBaseContent: some View {
         Group {
             if layoutMode == .list {
-                List {
-                    ForEach(items) { item in
-                        switch item.kind {
-                        case .folder(let sub):
-                            FolderRowView(
-                                folder: sub,
-                                docCount: documentManager.documents(in: sub.id).count,
-                                isSelected: selectedFolderIds.contains(sub.id),
-                                isSelectionMode: isSelectionMode,
-                                usesNativeSelection: false,
-                                onSelectToggle: { toggleFolderSelection(sub.id) },
-                                onLongPress: { beginSelection(folderId: sub.id) },
-                                onOpen: { activeSubfolder = sub },
-                                onRename: {
-                                    folderToRename = sub
-                                    renameFolderText = sub.name
-                                    showingRenameFolderDialog = true
-                                },
-                                onMove: {
-                                    folderToMove = sub
-                                    showingMoveFolderSheet = true
-                                },
-                                onDelete: {
-                                    folderToDelete = sub
-                                    showingDeleteFolderDialog = true
-                                }
-                            )
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets())
-                        case .document(let document):
-                            DocumentRowView(
-                                document: document,
-                                isSelected: selectedDocumentIds.contains(document.id),
-                                isSelectionMode: isSelectionMode,
-                                usesNativeSelection: false,
-                                onSelectToggle: { toggleDocumentSelection(document.id) },
-                                onLongPress: { beginSelection(documentId: document.id) },
-                                onOpen: { onOpenDocument(document) },
-                                onRename: { renameDocument(document) },
-                                onMoveToFolder: {
-                                    documentToMove = document
-                                },
-                                onDelete: { documentManager.deleteDocument(document) },
-                                onConvert: { },
-                                onShare: { shareDocuments([document]) }
-                            )
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets())
-                        }
-                    }
-                }
-                .listStyle(.plain)
+                folderListContent
             } else {
-                ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                        ForEach(items) { item in
-                            switch item.kind {
-                            case .folder(let sub):
-                                FolderGridItemView(
-                                    folder: sub,
-                                    docCount: documentManager.documents(in: sub.id).count,
-                                    isSelected: selectedFolderIds.contains(sub.id),
-                                    isSelectionMode: isSelectionMode,
-                                    onSelectToggle: { toggleFolderSelection(sub.id) },
-                                    onLongPress: { beginSelection(folderId: sub.id) },
-                                    onOpen: { activeSubfolder = sub },
-                                    onRename: {
-                                        folderToRename = sub
-                                        renameFolderText = sub.name
-                                        showingRenameFolderDialog = true
-                                    },
-                                    onMove: {
-                                        folderToMove = sub
-                                        showingMoveFolderSheet = true
-                                    },
-                                    onDelete: {
-                                        folderToDelete = sub
-                                        showingDeleteFolderDialog = true
-                                    }
-                                )
-                            case .document(let document):
-                                DocumentGridItemView(
-                                    document: document,
-                                    isSelected: selectedDocumentIds.contains(document.id),
-                                    isSelectionMode: isSelectionMode,
-                                    onSelectToggle: { toggleDocumentSelection(document.id) },
-                                    onLongPress: { beginSelection(documentId: document.id) },
-                                    onOpen: { onOpenDocument(document) },
-                                    onRename: { renameDocument(document) },
-                                    onMoveToFolder: {
-                                        documentToMove = document
-                                    },
-                                    onDelete: { documentManager.deleteDocument(document) },
-                                    onConvert: { },
-                                    onShare: { shareDocuments([document]) }
-                                )
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-                    .padding(.bottom, 24)
-                }
+                folderGridContent
             }
         }
         .overlay(
@@ -2182,15 +2136,39 @@ struct FolderDocumentsView: View {
             .hidden()
         )
         .navigationTitle(folder.name)
-        .toolbar {
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                if isSelectionMode {
+    }
+
+    private var folderContentSelection: some View {
+        folderBaseContent
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("New Folder") {
+                            newFolderName = ""
+                            showingNewFolderDialog = true
+                        }
+
+                        Button("Scan Document") {
+                            startScan()
+                        }
+
+                        Button("Import Files") {
+                            showingDocumentPicker = true
+                        }
+
+                        Button("Create Zip") {
+                            showingZipExportSheet = true
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .foregroundColor(.primary)
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Share Selected") {
                             shareSelectedDocuments()
-                        }
-                        Button("Delete Selected", role: .destructive) {
-                            showingBulkDeleteDialog = true
                         }
                         Button("Move Selected") {
                             showingBulkMoveSheet = true
@@ -2198,23 +2176,119 @@ struct FolderDocumentsView: View {
                         Button("Create Zip") {
                             showingZipExportSheet = true
                         }
+                        Button("Delete Selected", role: .destructive) {
+                            showingBulkDeleteDialog = true
+                        }
+                        
+                        Divider()
+                        
+                        Button("Cancel") {
+                            clearSelection()
+                        }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.primary)
                     }
-
-                    Button("Done") {
-                        clearSelection()
-                    }
-                } else {
-                    Button {
-                        documentManager.setPrefersGridLayout(layoutMode == .list)
-                    } label: {
-                        Image(systemName: layoutMode == .grid ? "list.bullet" : "square.grid.3x3")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-
-                    sortMenu
                 }
+            }
+    }
+
+    private var folderContentNormal: some View {
+        folderBaseContent
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("New Folder") {
+                            newFolderName = ""
+                            showingNewFolderDialog = true
+                        }
+
+                        Button("Scan Document") {
+                            startScan()
+                        }
+
+                        Button("Import Files") {
+                            showingDocumentPicker = true
+                        }
+
+                        Button("Create Zip") {
+                            showingZipExportSheet = true
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .foregroundColor(.primary)
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            isSelectionMode = true
+                        } label: {
+                            Label("Select", systemImage: "checkmark.circle")
+                        }
+                        
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("Preferences", systemImage: "gearshape")
+                        }
+                        
+                        Divider()
+                        
+                        Text("View")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button {
+                            documentManager.setPrefersGridLayout(false)
+                        } label: {
+                            Label("List", systemImage: "list.bullet")
+                        }
+                        
+                        Button {
+                            documentManager.setPrefersGridLayout(true)
+                        } label: {
+                            Label("Grid", systemImage: "square.grid.2x2")
+                        }
+                        
+                        Divider()
+                        
+                        Text("Sort")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button {
+                            documentsSortModeRaw = DocumentsSortMode.alphabetically.rawValue
+                        } label: {
+                            Label("Name", systemImage: "textformat")
+                        }
+                        
+                        Button {
+                            documentsSortModeRaw = DocumentsSortMode.oldest.rawValue
+                        } label: {
+                            Label("Date", systemImage: "calendar")
+                        }
+                        
+                        Button {
+                            documentsSortModeRaw = DocumentsSortMode.newest.rawValue
+                        } label: {
+                            Label("Recent", systemImage: "clock")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.primary)
+                    }
+                }
+            }
+    }
+
+    var body: some View {
+        Group {
+            if isSelectionMode {
+                folderContentSelection
+            } else {
+                folderContentNormal
             }
         }
         .sheet(item: $documentToMove) { doc in
@@ -2256,9 +2330,73 @@ struct FolderDocumentsView: View {
         .sheet(isPresented: $showingZipExportSheet) {
             ZipExportView(
                 preselectedDocumentIds: selectedDocumentIds,
-                preselectedFolderIds: selectedFolderIds
+                preselectedFolderIds: selectedFolderIds,
+                targetFolderId: folder.id
             )
             .environmentObject(documentManager)
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
+        }
+        .sheet(isPresented: $showingDocumentPicker) {
+            DocumentPicker { urls in
+                processImportedFiles(urls)
+            }
+        }
+        .sheet(isPresented: $showingScanner) {
+            if scannerMode == .document, VNDocumentCameraViewController.isSupported {
+                DocumentScannerView { scannedImages in
+                    self.scannedImages = scannedImages
+                    self.prepareNamingDialog(for: scannedImages)
+                }
+            } else {
+                SimpleCameraView { scannedText in
+                    processScannedText(scannedText)
+                }
+            }
+        }
+        .alert("Camera Access Needed", isPresented: $showingCameraPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Allow camera access to scan documents.")
+        }
+        .alert("Name Document", isPresented: $showingNamingDialog) {
+            TextField("Document name", text: $customName)
+            
+            Button("Use Suggested") {
+                finalizePendingDocument(with: suggestedName)
+            }
+            
+            Button("Use Custom") {
+                finalizePendingDocument(with: customName.isEmpty ? suggestedName : customName)
+            }
+            
+            Button("Cancel", role: .cancel) {
+                scannedImages.removeAll()
+                extractedText = ""
+                suggestedName = ""
+                customName = ""
+                pendingCategory = .general
+                pendingKeywordsResume = ""
+                pendingOCRPages = []
+                isProcessing = false
+            }
+        } message: {
+            Text("Suggested name: \"\(suggestedName)\"\n\nWould you like to use this name or enter a custom one?")
+        }
+        .alert("New Folder", isPresented: $showingNewFolderDialog) {
+            TextField("Folder name", text: $newFolderName)
+            Button("Create") {
+                documentManager.createFolder(name: newFolderName, parentId: folder.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a name for the folder")
         }
         .alert("Rename Document", isPresented: $showingRenameDialog) {
             TextField("Document name", text: $renameText)
@@ -2506,6 +2644,526 @@ struct FolderDocumentsView: View {
         root.present(activity, animated: true)
     }
 
+    // MARK: - Folder-specific document processing functions
+    
+    private func startScan() {
+        func presentScanner() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                showingScanner = true
+            }
+        }
+        if !VNDocumentCameraViewController.isSupported {
+            scannerMode = .simple
+            presentScanner()
+            return
+        }
+
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            scannerMode = .document
+            presentScanner()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        scannerMode = .document
+                        presentScanner()
+                    } else {
+                        showingCameraPermissionAlert = true
+                    }
+                }
+            }
+        case .denied, .restricted:
+            showingCameraPermissionAlert = true
+        @unknown default:
+            showingCameraPermissionAlert = true
+        }
+    }
+
+    private func processImportedFiles(_ urls: [URL]) {
+        isProcessing = true
+        var processedCount = 0
+
+        for url in urls {
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+
+            if let document = documentManager.processFile(at: url) {
+                let withFolder = Document(
+                    id: document.id,
+                    title: document.title,
+                    content: document.content,
+                    summary: document.summary,
+                    ocrPages: document.ocrPages,
+                    category: document.category,
+                    keywordsResume: document.keywordsResume,
+                    tags: document.tags,
+                    sourceDocumentId: document.sourceDocumentId,
+                    dateCreated: document.dateCreated,
+                    folderId: folder.id,
+                    sortOrder: document.sortOrder,
+                    type: document.type,
+                    imageData: document.imageData,
+                    pdfData: document.pdfData,
+                    originalFileData: document.originalFileData
+                )
+
+                documentManager.addDocument(withFolder)
+
+                let fullTextForKeywords = withFolder.content
+                DispatchQueue.global(qos: .utility).async {
+                    let cat = DocumentManager.inferCategory(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+                    let kw = DocumentManager.makeKeywordsResume(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+
+                    DispatchQueue.main.async {
+                        let current = self.documentManager.getDocument(by: withFolder.id) ?? withFolder
+                        let updated = Document(
+                            id: current.id,
+                            title: current.title,
+                            content: current.content,
+                            summary: current.summary,
+                            ocrPages: current.ocrPages,
+                            category: cat,
+                            keywordsResume: kw,
+                            tags: current.tags,
+                            sourceDocumentId: current.sourceDocumentId,
+                            dateCreated: current.dateCreated,
+                            folderId: current.folderId ?? self.folder.id,
+                            sortOrder: current.sortOrder,
+                            type: current.type,
+                            imageData: current.imageData,
+                            pdfData: current.pdfData,
+                            originalFileData: current.originalFileData
+                        )
+                        if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
+                            self.documentManager.documents[idx] = updated
+                        }
+                    }
+                }
+
+                processedCount += 1
+            }
+
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        DispatchQueue.main.async {
+            self.isProcessing = false
+        }
+    }
+
+    private func processScannedText(_ text: String) {
+        isProcessing = true
+
+        let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
+        let document = Document(
+            title: titleCaseFromOCR(cappedText),
+            content: cappedText,
+            summary: "Processing summary...",
+            tags: [],
+            sourceDocumentId: nil,
+            dateCreated: Date(),
+            folderId: folder.id,
+            type: .scanned,
+            imageData: nil,
+            pdfData: nil
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            documentManager.addDocument(document)
+            isProcessing = false
+        }
+    }
+
+    private func prepareNamingDialog(for images: [UIImage]) {
+        guard let firstImage = images.first else { return }
+
+        isProcessing = true
+
+        let firstPage = performOCRDetailed(on: firstImage, pageIndex: 0)
+        let firstPageText = firstPage.text
+
+        var ocrPages: [OCRPage] = []
+        for (index, image) in images.enumerated() {
+            let page = performOCRDetailed(on: image, pageIndex: index)
+            ocrPages.append(page.page)
+        }
+        extractedText = buildStructuredText(from: ocrPages, includePageLabels: true)
+        pendingOCRPages = ocrPages
+
+        let fullTextForKeywords = extractedText
+        DispatchQueue.global(qos: .utility).async {
+            let cat = DocumentManager.inferCategory(title: "", content: fullTextForKeywords, summary: "")
+            let kw = DocumentManager.makeKeywordsResume(title: "", content: fullTextForKeywords, summary: "")
+            DispatchQueue.main.async {
+                self.pendingCategory = cat
+                self.pendingKeywordsResume = kw
+            }
+        }
+
+        let namingSeed = extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? firstPageText : extractedText
+
+        if !namingSeed.isEmpty {
+            generateAIDocumentName(from: namingSeed)
+        } else {
+            suggestedName = titleCaseFromOCR(firstPageText)
+            customName = suggestedName
+            isProcessing = false
+            showingNamingDialog = true
+        }
+    }
+
+    private func finalizePendingDocument(with name: String) {
+        let finalName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = finalName.isEmpty ? suggestedName : finalName
+        finalizeDocument(with: safeName)
+    }
+
+    private func finalizeDocument(with name: String) {
+        guard !scannedImages.isEmpty else { return }
+
+        isProcessing = true
+
+        var imageDataArray: [Data] = []
+        for image in scannedImages {
+            if let imageData = image.jpegData(compressionQuality: 0.95) {
+                imageDataArray.append(imageData)
+            }
+        }
+
+        let pdfData = createPDF(from: scannedImages)
+        let cappedText = DocumentManager.truncateText(extractedText, maxChars: 50000)
+        let cappedPages: [OCRPage]? = {
+            if pendingOCRPages.isEmpty { return nil }
+            return [OCRPage(pageIndex: 0, blocks: [OCRBlock(text: cappedText, confidence: 1.0, bbox: OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0), order: 0)])]
+        }()
+        let pagesToStore = pendingOCRPages.isEmpty ? cappedPages : pendingOCRPages
+
+        let document = Document(
+            title: name,
+            content: cappedText,
+            summary: "Processing summary...",
+            ocrPages: pagesToStore,
+            category: pendingCategory,
+            keywordsResume: pendingKeywordsResume,
+            tags: [],
+            sourceDocumentId: nil,
+            dateCreated: Date(),
+            folderId: folder.id,
+            type: .scanned,
+            imageData: imageDataArray,
+            pdfData: pdfData
+        )
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            documentManager.addDocument(document)
+            isProcessing = false
+
+            scannedImages.removeAll()
+            extractedText = ""
+            suggestedName = ""
+            customName = ""
+            pendingCategory = .general
+            pendingKeywordsResume = ""
+            pendingOCRPages = []
+        }
+    }
+
+    private func generateAIDocumentName(from text: String) {
+        let base = extractHeadingsAndFirstParagraph(from: text)
+        let seed = base.isEmpty ? text : base
+        let candidates = extractTitleCandidates(from: seed)
+        let fallback = candidates.first ?? titleCaseFromOCR(text)
+
+        let prompt = """
+            Choose the best candidate and output a 1–4 word Title Case title. No punctuation. Output only the title.
+
+            CANDIDATES:
+            \(candidates.map { "- \($0)" }.joined(separator: "\n"))
+            """
+
+        EdgeAI.shared?.generate("<<<NO_HISTORY>>><<<NAME_REQUEST>>>" + prompt, resolver: { result in
+            DispatchQueue.main.async {
+                if let result = result as? String, !result.isEmpty {
+                    let clean = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let normalized = self.normalizeSuggestedTitle(clean, fallback: fallback)
+                    self.suggestedName = normalized.isEmpty ? fallback : normalized
+                } else {
+                    self.suggestedName = fallback
+                }
+                self.customName = self.suggestedName
+                self.isProcessing = false
+                self.showingNamingDialog = true
+            }
+        }, rejecter: { code, message, error in
+            DispatchQueue.main.async {
+                self.suggestedName = fallback
+                self.customName = self.suggestedName
+                self.isProcessing = false
+                self.showingNamingDialog = true
+            }
+        })
+    }
+
+    private func extractTitleCandidates(from text: String) -> [String] {
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var scored: [(String, Double)] = []
+        for (idx, line) in lines.enumerated() {
+            if isMetadataLine(line) { continue }
+            let score = scoreTitleLine(line, index: idx)
+            if score > 0 {
+                scored.append((line, score))
+            }
+        }
+
+        let top = scored
+            .sorted { $0.1 > $1.1 }
+            .prefix(5)
+            .map { normalizeTitleCandidate($0.0, maxWords: 16) }
+            .filter { !$0.isEmpty }
+
+        return top.isEmpty ? [normalizeTitleCandidate(text, maxWords: 8)] : top
+    }
+
+    private func isMetadataLine(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        let denylist = [
+            "abstract", "keywords", "references", "acknowledg", "copyright",
+            "doi", "issn", "isbn", "volume", "vol.", "issue", "no.", "page",
+            "journal", "proceedings", "conference", "university", "department",
+            "faculty", "publisher", "press", "editor", "address", "telephone", "phone", "fax"
+        ]
+        if lower.contains("http://") || lower.contains("https://") || lower.contains("www.") { return true }
+        if lower.range(of: "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        if lower.range(of: "\\bdoi\\b", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bissn\\b", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bpage\\s+\\d+\\b", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bvol\\.?\\s*\\d+", options: .regularExpression) != nil { return true }
+        if lower.range(of: "\\bissue\\s*\\d+", options: .regularExpression) != nil { return true }
+        if denylist.contains(where: { lower.contains($0) }) { return true }
+        return false
+    }
+
+    private func scoreTitleLine(_ line: String, index: Int) -> Double {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 4 { return -1 }
+        if trimmed.count > 120 { return -1 }
+
+        let words = trimmed.split { $0.isWhitespace }
+        let wordCount = words.count
+        let letters = trimmed.filter { $0.isLetter }.count
+        let digits = trimmed.filter { $0.isNumber }.count
+        let total = max(1, trimmed.count)
+
+        var score: Double = 0
+        score += Double(max(0, 5 - index)) * 0.35
+        if wordCount >= 4 && wordCount <= 16 { score += 2.0 }
+        if wordCount <= 2 { score -= 1.5 }
+        if wordCount > 20 { score -= 1.0 }
+
+        let letterRatio = Double(letters) / Double(total)
+        let digitRatio = Double(digits) / Double(total)
+        if letterRatio >= 0.7 { score += 1.0 }
+        if letterRatio < 0.4 { score -= 1.0 }
+        if digitRatio > 0.3 { score -= 1.5 }
+
+        let isAllCaps = trimmed == trimmed.uppercased() && letterRatio > 0.5
+        let isTitleCase = words.allSatisfy { word in
+            guard let first = word.first else { return false }
+            return String(first) == String(first).uppercased()
+        }
+        if isTitleCase { score += 0.8 }
+        if isAllCaps { score += 0.5 }
+
+        return score
+    }
+
+    private func normalizeTitleCandidate(_ input: String, maxWords: Int) -> String {
+        let firstLine = input.components(separatedBy: .newlines).first ?? ""
+        let stripped = firstLine
+            .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[\"'`]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.isEmpty { return "" }
+        return stripped.split(separator: " ").prefix(maxWords).joined(separator: " ")
+    }
+
+    private func normalizeSuggestedTitle(_ raw: String, fallback: String) -> String {
+        let firstLine = raw.components(separatedBy: .newlines).first ?? ""
+        let stripped = firstLine
+            .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[\"'`]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let words = stripped.split(separator: " ").map(String.init)
+        var seen = Set<String>()
+        var unique: [String] = []
+        for word in words {
+            let key = word.lowercased()
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            unique.append(word)
+            if unique.count == 4 { break }
+        }
+
+        let cleaned = unique.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
+        if isMetadataLine(cleaned) { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
+        return enforceTitleCase(cleaned)
+    }
+
+    private func extractHeadingsAndFirstParagraph(from text: String) -> String {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let paragraphs = trimmed
+            .replacingOccurrences(of: "\n\n\n+", with: "\n\n", options: .regularExpression)
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !paragraphs.isEmpty else { return trimmed }
+        if paragraphs.count == 1 { return paragraphs[0] }
+        return paragraphs[0] + "\n\n" + paragraphs[1]
+    }
+
+    private func titleCaseFromOCR(_ text: String) -> String {
+        let snippet = String(text.prefix(300))
+        return enforceTitleCase(snippet)
+    }
+
+    private func enforceTitleCase(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let normalized = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let words = normalized.lowercased().split(separator: " ").map(String.init)
+        let cased = words.map { word -> String in
+            guard let first = word.first else { return "" }
+            return String(first).uppercased() + word.dropFirst()
+        }
+        return cased.joined()
+    }
+
+    private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
+        guard let processedImage = preprocessImageForOCR(image),
+              let cgImage = processedImage.cgImage else {
+            return ("Could not process image", OCRPage(pageIndex: pageIndex, blocks: []))
+        }
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+
+        var recognizedText = ""
+        var blocks: [OCRBlock] = []
+
+        do {
+            try handler.perform([request])
+            if let results = request.results as? [VNRecognizedTextObservation] {
+                for (idx, observation) in results.enumerated() {
+                    guard let candidate = observation.topCandidates(1).first else { continue }
+                    let bbox = observation.boundingBox
+                    let bounding = OCRBoundingBox(x: bbox.origin.x, y: bbox.origin.y, width: bbox.size.width, height: bbox.size.height)
+                    blocks.append(OCRBlock(text: candidate.string, confidence: Double(candidate.confidence), bbox: bounding, order: idx))
+                    recognizedText += candidate.string + "\n"
+                }
+            }
+        } catch {
+            recognizedText = "OCR failed: \(error.localizedDescription)"
+        }
+
+        let page = OCRPage(pageIndex: pageIndex, blocks: blocks)
+        return (recognizedText, page)
+    }
+
+    private func buildStructuredText(from pages: [OCRPage], includePageLabels: Bool) -> String {
+        var output: [String] = []
+        for page in pages {
+            if includePageLabels {
+                output.append("Page \(page.pageIndex + 1):")
+            }
+            let sorted = page.blocks.sorted { $0.order < $1.order }
+            for block in sorted {
+                let line = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !line.isEmpty {
+                    output.append(line)
+                }
+            }
+            output.append("")
+        }
+        return output.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func preprocessImageForOCR(_ image: UIImage) -> UIImage? {
+        let targetSize: CGFloat = 2560
+        let scale = min(targetSize / max(image.size.width, 1), targetSize / max(image.size.height, 1))
+        let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+
+        UIGraphicsBeginImageContextWithOptions(newSize, true, 1.0)
+        UIColor.white.setFill()
+        UIRectFill(CGRect(origin: .zero, size: newSize))
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        let result = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        return result
+    }
+
+    private func createPDF(from images: [UIImage]) -> Data? {
+        let pdfData = NSMutableData()
+
+        guard let dataConsumer = CGDataConsumer(data: pdfData) else { return nil }
+        let pageWidth: CGFloat = 612
+        let pageHeight: CGFloat = 792
+        let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        var mediaBox = pageRect
+
+        guard let pdfContext = CGContext(consumer: dataConsumer, mediaBox: &mediaBox, nil) else { return nil }
+
+        for image in images {
+            pdfContext.beginPDFPage(nil)
+
+            if let cgImage = image.cgImage {
+                let imageSize = image.size
+                let imageAspectRatio = imageSize.width / imageSize.height
+                let pageAspectRatio = pageWidth / pageHeight
+
+                var drawRect: CGRect
+
+                if imageAspectRatio > pageAspectRatio {
+                    let scaledHeight = pageWidth / imageAspectRatio
+                    let yOffset = (pageHeight - scaledHeight) / 2
+                    drawRect = CGRect(x: 0, y: yOffset, width: pageWidth, height: scaledHeight)
+                } else {
+                    let scaledWidth = pageHeight * imageAspectRatio
+                    let xOffset = (pageWidth - scaledWidth) / 2
+                    drawRect = CGRect(x: xOffset, y: 0, width: scaledWidth, height: pageHeight)
+                }
+
+                pdfContext.draw(cgImage, in: drawRect)
+            }
+
+            pdfContext.endPDFPage()
+        }
+
+        pdfContext.closePDF()
+        return pdfData as Data
+    }
+
 }
 
 struct MoveToFolderSheet: View {
@@ -2710,10 +3368,16 @@ struct BulkMoveSheet: View {
 
 struct PDFThumbnailView: UIViewRepresentable {
     let data: Data
+    let contentMode: UIView.ContentMode
+
+    init(data: Data, contentMode: UIView.ContentMode = .scaleAspectFill) {
+        self.data = data
+        self.contentMode = contentMode
+    }
     
     func makeUIView(context: Context) -> UIImageView {
         let imageView = UIImageView()
-        imageView.contentMode = .scaleAspectFill
+        imageView.contentMode = contentMode
         imageView.clipsToBounds = true
         
         // Generate thumbnail from PDF
@@ -2729,6 +3393,66 @@ struct PDFThumbnailView: UIViewRepresentable {
     
     func updateUIView(_ uiView: UIImageView, context: Context) {
         // Update if needed
+    }
+}
+
+struct DocumentThumbnailView: UIViewRepresentable {
+    let document: Document
+    let size: CGSize
+
+    func makeUIView(context: Context) -> UIImageView {
+        let imageView = UIImageView()
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        return imageView
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {
+        if let imageData = document.imageData?.first, let uiImage = UIImage(data: imageData) {
+            uiView.image = uiImage
+            return
+        }
+
+        if let pdfData = document.pdfData, let image = thumbnailFromPDF(data: pdfData, size: size) {
+            uiView.image = image
+            return
+        }
+
+        guard let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first ?? document.content.data(using: .utf8) else {
+            uiView.image = nil
+            return
+        }
+
+        let ext = splitDisplayTitle(document.title).ext
+        let fileURL = temporaryFileURL(id: document.id, ext: ext.isEmpty ? fileExtension(for: document.type) : ext)
+
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            try? data.write(to: fileURL, options: [.atomic])
+        }
+
+        let request = QLThumbnailGenerator.Request(
+            fileAt: fileURL,
+            size: size,
+            scale: UIScreen.main.scale,
+            representationTypes: .thumbnail
+        )
+
+        QLThumbnailGenerator.shared.generateRepresentations(for: request) { representation, _, _ in
+            guard let representation = representation else { return }
+            DispatchQueue.main.async {
+                uiView.image = representation.uiImage
+            }
+        }
+    }
+
+    private func thumbnailFromPDF(data: Data, size: CGSize) -> UIImage? {
+        guard let document = PDFDocument(data: data), let firstPage = document.page(at: 0) else { return nil }
+        return firstPage.thumbnail(of: size, for: .mediaBox)
+    }
+
+    private func temporaryFileURL(id: UUID, ext: String) -> URL {
+        let safeExt = ext.isEmpty ? "dat" : ext
+        return FileManager.default.temporaryDirectory.appendingPathComponent("doc_thumb_\(id.uuidString).\(safeExt)")
     }
 }
 

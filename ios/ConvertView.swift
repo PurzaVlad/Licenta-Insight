@@ -7,7 +7,6 @@ struct ConvertView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                Color(.systemGroupedBackground).ignoresSafeArea()
                 VStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 12) {
                         ConvertSectionHeader(title: "From PDF")
@@ -326,4 +325,8 @@ struct ConvertSectionHeader: View {
             .foregroundStyle(.primary)
             .padding(.top, 2)
     }
+}
+
+#Preview {
+  ConvertView()
 }
