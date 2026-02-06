@@ -769,7 +769,14 @@ struct DocumentsView: View {
             }
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView()
+            if #available(iOS 16.0, *) {
+                SettingsView()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .modifier(SettingsSheetBackgroundModifier())
+            } else {
+                SettingsView()
+            }
         }
         .onChange(of: isSelectionMode) { active in
             editMode = active ? .active : .inactive
@@ -2080,6 +2087,16 @@ private struct FolderDropDelegate: DropDelegate {
     }
 }
 
+private struct SettingsSheetBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content.presentationBackground(Color(.systemBackground))
+        } else {
+            content
+        }
+    }
+}
+
 private struct ListFolderDropDelegate: DropDelegate {
     let folderId: UUID
     let documentManager: DocumentManager
@@ -2833,9 +2850,16 @@ struct FolderDocumentsView: View {
             )
             .environmentObject(documentManager)
         }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
-        }
+    .sheet(isPresented: $showingSettings) {
+            if #available(iOS 16.0, *) {
+                SettingsView()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .modifier(SettingsSheetBackgroundModifier())
+            } else {
+                SettingsView()
+            }
+    }
         .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker { urls in
                 processImportedFiles(urls)

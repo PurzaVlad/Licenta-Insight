@@ -101,7 +101,14 @@ struct ConvertView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) {
-                SettingsView()
+                if #available(iOS 16.0, *) {
+                    SettingsView()
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                        .modifier(SettingsSheetBackgroundModifier())
+                } else {
+                    SettingsView()
+                }
             }
         }
     }
@@ -481,6 +488,16 @@ private extension View {
             scrollDismissesKeyboard(.interactively)
         } else {
             self
+        }
+    }
+}
+
+private struct SettingsSheetBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content.presentationBackground(Color(.systemBackground))
+        } else {
+            content
         }
     }
 }

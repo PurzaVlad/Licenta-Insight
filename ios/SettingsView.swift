@@ -36,14 +36,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("Theme")) {
-                    Picker("Theme", selection: $appThemeRaw) {
-                        ForEach(AppTheme.allCases) { theme in
-                            Text(theme.title).tag(theme.rawValue)
-                        }
+                Picker("Theme", selection: $appThemeRaw) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Text(theme.title).tag(theme.rawValue)
                     }
-                    .pickerStyle(.segmented)
                 }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
 
                 Section(header: Text("Unlock Method")) {
                     Toggle(isOn: faceIDToggleBinding) {
@@ -83,15 +82,8 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
             }
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Text(" Settings ")
-                        .font(.headline)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-            }
         }
         .onAppear {
             refreshFaceIDAvailability()

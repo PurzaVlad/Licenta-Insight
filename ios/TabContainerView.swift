@@ -54,6 +54,8 @@ struct TabContainerView: View {
     @State private var isSummarizing = false
     @State private var currentSummaryDocId: UUID? = nil
     @State private var canceledSummaryIds: Set<UUID> = []
+    @State private var selectedTab: AppTab = .documents
+    @State private var lastNonSearchTab: AppTab = .documents
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("modelReady") private var modelReady = false
     @AppStorage("useFaceID") private var useFaceID = false
@@ -76,6 +78,14 @@ struct TabContainerView: View {
         let id: UUID
         let url: URL
         let document: Document
+    }
+
+    private enum AppTab: Hashable {
+        case documents
+        case chat
+        case tools
+        case convert
+        case search
     }
 
     private var appTheme: AppTheme {
@@ -175,9 +185,66 @@ struct TabContainerView: View {
 
     @ViewBuilder
     private var tabRoot: some View {
-        if #available(iOS 18.0, *) {
-            TabView {
-                Tab("Documents", systemImage: "folder") {
+        Group {
+            if #available(iOS 18.0, *) {
+                TabView(selection: $selectedTab) {
+                    Tab(value: AppTab.documents) {
+                        DocumentsView(
+                            onOpenPreview: { document, url in
+                                previewItem = PreviewItem(id: document.id, url: url, document: document)
+                            },
+                            onShowSummary: { document in
+                                summaryDocument = document
+                            }
+                        )
+                        .environmentObject(documentManager)
+                    } label: {
+                        Label("Documents", systemImage: "folder")
+                    }
+
+                    Tab(value: AppTab.chat) {
+                        NativeChatView()
+                            .environmentObject(documentManager)
+                    } label: {
+                        Label("Chat", systemImage: "bubble.left")
+                    }
+
+                    Tab(value: AppTab.tools) {
+                        ToolsView()
+                            .environmentObject(documentManager)
+                    } label: {
+                        Label("Tools", systemImage: "wand.and.stars")
+                    }
+
+                    Tab(value: AppTab.convert) {
+                        ConvertView()
+                            .environmentObject(documentManager)
+                    } label: {
+                        Label("Convert", systemImage: "arrow.triangle.2.circlepath")
+                    }
+
+                    Tab(value: AppTab.search, role: .search) {
+                        SearchView(
+                            onOpenPreview: { document, url in
+                                previewItem = PreviewItem(id: document.id, url: url, document: document)
+                            },
+                            onShowSummary: { document in
+                                summaryDocument = document
+                            },
+                            onExit: {
+                                selectedTab = lastNonSearchTab
+                            }
+                        )
+                        .environmentObject(documentManager)
+                    } label: {
+                        Label("Search", systemImage: "magnifyingglass")
+                    }
+                }
+                .tint(Color("Primary"))
+                .accentColor(Color("Primary"))
+                .modifier(TabBarBackgroundModifier())
+            } else {
+                TabView(selection: $selectedTab) {
                     DocumentsView(
                         onOpenPreview: { document, url in
                             previewItem = PreviewItem(id: document.id, url: url, document: document)
@@ -187,92 +254,63 @@ struct TabContainerView: View {
                         }
                     )
                     .environmentObject(documentManager)
-                }
+                    .tabItem {
+                        Image(systemName: "folder")
+                        Text("Documents")
+                    }
+                    .tag(AppTab.documents)
 
-                Tab("Chat", systemImage: "bubble.left") {
                     NativeChatView()
                         .environmentObject(documentManager)
-                }
+                        .tabItem {
+                            Image(systemName: "bubble.left")
+                            Text("Chat")
+                        }
+                        .tag(AppTab.chat)
 
-                Tab("Tools", systemImage: "wand.and.stars") {
                     ToolsView()
                         .environmentObject(documentManager)
-                }
+                        .tabItem {
+                            Image(systemName: "wand.and.stars")
+                            Text("Tools")
+                        }
+                        .tag(AppTab.tools)
 
-                Tab("Convert", systemImage: "arrow.triangle.2.circlepath") {
                     ConvertView()
                         .environmentObject(documentManager)
-                }
+                        .tabItem {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Convert")
+                        }
+                        .tag(AppTab.convert)
 
-                Tab(role: .search) {
                     SearchView(
                         onOpenPreview: { document, url in
                             previewItem = PreviewItem(id: document.id, url: url, document: document)
                         },
                         onShowSummary: { document in
                             summaryDocument = document
+                        },
+                        onExit: {
+                            selectedTab = lastNonSearchTab
                         }
                     )
-                    .environmentObject(documentManager)
+                        .environmentObject(documentManager)
+                        .tabItem {
+                            Image(systemName: "magnifyingglass")
+                            Text("Search")
+                        }
+                        .tag(AppTab.search)
                 }
+                .tint(Color("Primary"))
+                .accentColor(Color("Primary"))
+                .modifier(TabBarBackgroundModifier())
             }
-            .tint(Color("Primary"))
-            .accentColor(Color("Primary"))
-            .modifier(TabBarBackgroundModifier())
-        } else {
-            TabView {
-                DocumentsView(
-                    onOpenPreview: { document, url in
-                        previewItem = PreviewItem(id: document.id, url: url, document: document)
-                    },
-                    onShowSummary: { document in
-                        summaryDocument = document
-                    }
-                )
-                .environmentObject(documentManager)
-                .tabItem {
-                    Image(systemName: "folder")
-                    Text("Documents")
-                }
-
-                NativeChatView()
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "bubble.left")
-                        Text("Chat")
-                    }
-
-                ToolsView()
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "wand.and.stars")
-                        Text("Tools")
-                    }
-
-                ConvertView()
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                        Text("Convert")
-                    }
-
-                SearchView(
-                    onOpenPreview: { document, url in
-                        previewItem = PreviewItem(id: document.id, url: url, document: document)
-                    },
-                    onShowSummary: { document in
-                        summaryDocument = document
-                    }
-                )
-                    .environmentObject(documentManager)
-                    .tabItem {
-                        Image(systemName: "magnifyingglass")
-                        Text("Search")
-                    }
+        }
+        .onChange(of: selectedTab) { newValue in
+            if newValue != .search {
+                lastNonSearchTab = newValue
             }
-            .tint(Color("Primary"))
-            .accentColor(Color("Primary"))
-            .modifier(TabBarBackgroundModifier())
         }
     }
 
