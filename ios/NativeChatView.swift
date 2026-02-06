@@ -199,8 +199,8 @@ struct NativeChatView: View {
             }
             .padding(.leading, 0)
             .padding(.trailing, 6)
-            .padding(.vertical, 0)
-            .frame(height: 44)
+            .padding(.vertical, 6)
+            .frame(minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
                     .fill(colorScheme == .light ? Color(.systemGray6) : Color.clear)
