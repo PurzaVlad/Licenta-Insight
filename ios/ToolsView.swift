@@ -3,6 +3,7 @@ import PDFKit
 
 struct ToolsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingSettings = false
 
     var body: some View {
@@ -64,7 +65,7 @@ struct ToolsView: View {
                     .padding(16)
                     .background(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(Color(.systemBackground))
+                            .fill(cardBackground)
                     )
                     .padding(.horizontal, 16)
 
@@ -95,6 +96,12 @@ struct ToolsView: View {
                 SettingsView()
             }
         }
+    }
+
+    private var cardBackground: Color {
+        colorScheme == .dark
+            ? Color(.secondarySystemGroupedBackground)
+            : Color(.systemBackground)
     }
 }
 

@@ -22,7 +22,8 @@ struct NativeChatView: View {
 
     private let inputLineHeight: CGFloat = 22
     private let inputMinLines = 1
-    private let inputMaxLines = 6
+    private let inputMaxLines = 2
+    private let inputBarMinHeight: CGFloat = 44
     @State private var inputHeight: CGFloat = 22
     private let inputMaxCornerRadius: CGFloat = 25
     private let inputMinCornerRadius: CGFloat = 12
@@ -69,6 +70,7 @@ struct NativeChatView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
+                    .padding(.bottom, 80)
                 }
                 .hideScrollBackground()
                 .scrollDismissesKeyboardIfAvailable()
@@ -102,10 +104,8 @@ struct NativeChatView: View {
                 SettingsView()
             }
             .sheet(isPresented: $showingScopePicker) {
-                ScopePickerSheet(
-                    documents: documentManager.documents,
-                    selectedIds: $scopedDocumentIds
-                )
+                ScopePickerSheet(selectedIds: $scopedDocumentIds)
+                    .environmentObject(documentManager)
             }
             .safeAreaInset(edge: .bottom) {
                 inputBar
@@ -114,7 +114,7 @@ struct NativeChatView: View {
     }
 
     private var scopedDocuments: [Document] {
-        documentManager.documents.filter { scopedDocumentIds.contains($0.id) }
+        scopedDocumentsForSelection()
     }
 
     private var isScopeActive: Bool {
@@ -139,39 +139,46 @@ struct NativeChatView: View {
                     .foregroundColor(isScopeActive ? Color("Primary") : .primary)
                     .frame(width: 44, height: 44)
                     .background(
-                        Group {
-                            if isScopeActive {
-                                Circle().fill(Color("Primary").opacity(0.12))
-                            } else {
-                                Circle().fill(.ultraThinMaterial)
-                            }
-                        }
+                        Circle()
+                            .fill(isScopeActive ? Color("Primary").opacity(0.12) : Color.clear)
                     )
                     .overlay(
                         Circle()
-                            .stroke(isScopeActive ? Color("Primary") : Color(.systemGray4).opacity(0.35), lineWidth: 1)
+                            .strokeBorder(isScopeActive ? Color("Primary").opacity(0.5) : Color.white.opacity(0.3), lineWidth: 1)
                     )
+                    .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
             }
 
-            HStack(spacing: 4) {
-                AutoGrowingTextView(
-                    text: $input,
-                    height: $inputHeight,
-                    minHeight: inputLineHeight * CGFloat(inputMinLines),
-                    maxHeight: inputLineHeight * CGFloat(inputMaxLines),
-                    font: UIFont.systemFont(ofSize: 17),
-                    isEditable: !isGenerating
-                )
-                .frame(height: inputHeight)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .leading) {
-                    if input.isEmpty {
-                        Text("Ask anything")
-                            .foregroundStyle(.secondary)
+            HStack(alignment: .bottom, spacing: 4) {
+                Group {
+                    if #available(iOS 16.0, *) {
+                        TextField("Ask anything", text: $input, axis: .vertical)
+                            .textFieldStyle(.plain)
                             .font(.system(size: 17))
-                            .padding(.top, 2)
+                            .lineLimit(1...6)
+                            .frame(minHeight: 24)
+                            .disabled(isGenerating)
+                    } else {
+                        AutoGrowingTextView(
+                            text: $input,
+                            height: $inputHeight,
+                            minHeight: inputLineHeight * CGFloat(inputMinLines),
+                            maxHeight: inputLineHeight * CGFloat(inputMaxLines),
+                            font: UIFont.systemFont(ofSize: 17),
+                            isEditable: !isGenerating
+                        )
+                        .frame(height: inputHeight)
+                        .overlay(alignment: .leading) {
+                            if input.isEmpty {
+                                Text("Ask anything")
+                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 17))
+                                    .padding(.top, 1)
+                            }
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
                     send()
@@ -181,17 +188,16 @@ struct NativeChatView: View {
                         .foregroundColor(hasText || isGenerating ? Color("Primary") : .gray)
                 }
                 .disabled(!hasText && !isGenerating)
+                .padding(.bottom, 2)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 0)
+            .frame(height: 44)
             .background(
                 RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
-                    .fill(Color(.systemGroupedBackground))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
-                            .stroke(Color(.systemGray4).opacity(0.5), lineWidth: 1)
-                    )
+                    .strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
             )
+            .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -579,7 +585,7 @@ struct NativeChatView: View {
         }
 
         if !scopedDocumentIds.isEmpty {
-            var scopedDocs = documentManager.documents.filter { scopedDocumentIds.contains($0.id) }
+            var scopedDocs = scopedDocumentsForSelection()
             if scopedDocs.count > selectionMaxDocs {
                 scopedDocs = Array(scopedDocs.prefix(selectionMaxDocs))
             }
@@ -622,6 +628,31 @@ struct NativeChatView: View {
         return nil
     }
 
+    private func scopedDocumentsForSelection() -> [Document] {
+        let folderIds = Set(documentManager.folders.map { $0.id })
+        let selectedFolderIds = scopedDocumentIds.intersection(folderIds)
+        let selectedDocIds = scopedDocumentIds.subtracting(folderIds)
+
+        var docs = documentManager.documents.filter { selectedDocIds.contains($0.id) }
+
+        if !selectedFolderIds.isEmpty {
+            var allFolderIds = Set<UUID>()
+            for folderId in selectedFolderIds {
+                allFolderIds.insert(folderId)
+                allFolderIds.formUnion(documentManager.descendantFolderIds(of: folderId))
+            }
+            let folderDocs = documentManager.documents.filter { doc in
+                guard let folderId = doc.folderId else { return false }
+                return allFolderIds.contains(folderId)
+            }
+            docs.append(contentsOf: folderDocs)
+        }
+
+        var seen = Set<UUID>()
+        let uniqueDocs = docs.filter { seen.insert($0.id).inserted }
+        return uniqueDocs.sorted { $0.dateCreated > $1.dateCreated }
+    }
+
     private func wrapChatPrompt(_ prompt: String) -> String {
         "<<<CHAT_DETAIL>>>" + prompt
     }
@@ -641,43 +672,127 @@ struct NativeChatView: View {
     }
 
     private struct ScopePickerSheet: View {
-        let documents: [Document]
+        @EnvironmentObject private var documentManager: DocumentManager
         @Binding var selectedIds: Set<UUID>
         @Environment(\.dismiss) private var dismiss
+        @State private var editMode: EditMode = .active
+        @State private var searchText = ""
+        @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
+
+        private enum DocumentsSortMode: String, CaseIterable {
+            case dateNewest = "newest"
+            case dateOldest = "oldest"
+            case nameAsc = "alphabetically"
+            case nameDesc = "alphabetically_desc"
+            case accessNewest = "access_newest"
+            case accessOldest = "access_oldest"
+        }
+
+        private enum ScopeItemKind {
+            case folder(DocumentFolder)
+            case document(Document)
+        }
+
+        private struct ScopeItem: Identifiable {
+            let id: UUID
+            let kind: ScopeItemKind
+            let name: String
+            let dateCreated: Date
+        }
+
+        private var documentsSortMode: DocumentsSortMode {
+            DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .dateNewest
+        }
+
+        private var scopeSortMode: DocumentsSortMode {
+            switch documentsSortMode {
+            case .accessNewest, .accessOldest:
+                return documentsSortMode
+            default:
+                return .accessNewest
+            }
+        }
+
+        private var scopeItems: [ScopeItem] {
+            let folderItems = documentManager.folders.map { folder in
+                ScopeItem(id: folder.id, kind: .folder(folder), name: folder.name, dateCreated: folder.dateCreated)
+            }
+            let documentItems = documentManager.documents.map { doc in
+                ScopeItem(
+                    id: doc.id,
+                    kind: .document(doc),
+                    name: splitDisplayTitle(doc.title).base,
+                    dateCreated: doc.dateCreated
+                )
+            }
+            return sortItems(folderItems + documentItems)
+        }
+
+        private var filteredItems: [ScopeItem] {
+            let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return scopeItems }
+            let needle = trimmed.lowercased()
+            return scopeItems.filter { item in
+                item.name.lowercased().contains(needle)
+            }
+        }
 
         var body: some View {
             NavigationView {
-                List {
-                    if documents.isEmpty {
-                        Text("No documents available.")
+                List(selection: $selectedIds) {
+                    if filteredItems.isEmpty {
+                        Text("No documents or folders available.")
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(documents.sorted { $0.dateCreated > $1.dateCreated }) { document in
-                            Button {
-                                toggleSelection(document.id)
-                            } label: {
-                                HStack {
-                                    Image(systemName: iconForDocumentType(document.type))
-                                        .foregroundColor(Color("Primary"))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(document.title)
-                                            .font(.headline)
-                                            .lineLimit(1)
-                                            .foregroundColor(.primary)
-                                        Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: selectedIds.contains(document.id) ? "checkmark.circle.fill" : "circle")
-                                        .foregroundColor(selectedIds.contains(document.id) ? Color("Primary") : .secondary)
-                                }
-                                }
+                        ForEach(filteredItems) { item in
+                            switch item.kind {
+                            case .folder(let folder):
+                                FolderRowView(
+                                    folder: folder,
+                                    docCount: documentManager.documents(in: folder.id).count,
+                                    isSelected: selectedIds.contains(folder.id),
+                                    isSelectionMode: true,
+                                    usesNativeSelection: true,
+                                    onSelectToggle: {},
+                                    onOpen: {},
+                                    onRename: {},
+                                    onMove: {},
+                                    onDelete: {},
+                                    isDropTargeted: false
+                                )
+                                .tag(folder.id)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+                            case .document(let document):
+                                DocumentRowView(
+                                    document: document,
+                                    isSelected: selectedIds.contains(document.id),
+                                    isSelectionMode: true,
+                                    usesNativeSelection: true,
+                                    onSelectToggle: {},
+                                    onOpen: {},
+                                    onRename: {},
+                                    onMoveToFolder: {},
+                                    onDelete: {},
+                                    onConvert: {},
+                                    onShare: {}
+                                )
+                                .tag(document.id)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
                             }
                         }
+                    }
                 }
-                .navigationTitle("Scope Documents")
+                .listStyle(.plain)
+                .hideScrollBackground()
+                .scrollDismissesKeyboardIfAvailable()
+                .environment(\.editMode, $editMode)
+                .navigationTitle("Scope")
                 .navigationBarTitleDisplayMode(.inline)
+                .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search documents")
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button("Clear") {
@@ -693,11 +808,44 @@ struct NativeChatView: View {
             }
         }
 
-        private func toggleSelection(_ id: UUID) {
-            if selectedIds.contains(id) {
-                selectedIds.remove(id)
-            } else {
-                selectedIds.insert(id)
+        private func sortItems(_ items: [ScopeItem]) -> [ScopeItem] {
+            switch scopeSortMode {
+            case .dateNewest:
+                return items.sorted {
+                    if $0.dateCreated != $1.dateCreated { return $0.dateCreated > $1.dateCreated }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            case .dateOldest:
+                return items.sorted {
+                    if $0.dateCreated != $1.dateCreated { return $0.dateCreated < $1.dateCreated }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            case .nameAsc:
+                return items.sorted {
+                    let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+                    if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                    return $0.dateCreated > $1.dateCreated
+                }
+            case .nameDesc:
+                return items.sorted {
+                    let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+                    if nameOrder != .orderedSame { return nameOrder == .orderedDescending }
+                    return $0.dateCreated > $1.dateCreated
+                }
+            case .accessNewest:
+                return items.sorted {
+                    let a = documentManager.lastAccessedDate(for: $0.id, fallback: $0.dateCreated)
+                    let b = documentManager.lastAccessedDate(for: $1.id, fallback: $1.dateCreated)
+                    if a != b { return a > b }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            case .accessOldest:
+                return items.sorted {
+                    let a = documentManager.lastAccessedDate(for: $0.id, fallback: $0.dateCreated)
+                    let b = documentManager.lastAccessedDate(for: $1.id, fallback: $1.dateCreated)
+                    if a != b { return a < b }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
             }
         }
     }
@@ -791,7 +939,10 @@ struct NativeChatView: View {
 private extension View {
     @ViewBuilder
     func scrollDismissesKeyboardIfAvailable() -> some View {
-        if #available(iOS 16.0, *) {
+        if #available(iOS 16.4, *) {
+            scrollDismissesKeyboard(.interactively)
+                .scrollBounceBehavior(.always)
+        } else if #available(iOS 16.0, *) {
             scrollDismissesKeyboard(.interactively)
         } else {
             self
