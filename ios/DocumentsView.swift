@@ -888,10 +888,6 @@ struct DocumentsView: View {
             // Force refresh when the view appears to show newly converted documents
             documentManager.objectWillChange.send()
         }
-        .refreshable {
-            // Add pull-to-refresh functionality
-            documentManager.objectWillChange.send()
-        }
         .sheet(isPresented: $showingScanner) {
             if scannerMode == .document, VNDocumentCameraViewController.isSupported {
                 DocumentScannerView { scannedImages in
@@ -2090,7 +2086,7 @@ private struct FolderDropDelegate: DropDelegate {
 private struct SettingsSheetBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16.4, *) {
-            content.presentationBackground(Color(.systemBackground))
+            content.presentationBackground(.regularMaterial)
         } else {
             content
         }

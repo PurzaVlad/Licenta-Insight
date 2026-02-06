@@ -988,7 +988,7 @@ private extension View {
 private struct SettingsSheetBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16.4, *) {
-            content.presentationBackground(Color(.systemBackground))
+            content.presentationBackground(.regularMaterial)
         } else {
             content
         }
