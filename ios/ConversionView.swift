@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Foundation
+import AVFoundation
 
 struct ConversionView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -241,7 +242,7 @@ struct ConversionView: View {
                 if document.type == .docx {
                     documentManager.refreshContentIfNeeded(for: document.id)
                 }
-                sourceFormat = formatFromDocumentType(document.type)
+                sourceFormat = conversionFormatFromDocumentType(document.type)
                 if let initial = initialTargetFormat, allowedTargetFormats.contains(initial) {
                     selectedTargetFormat = initial
                 } else {
@@ -273,18 +274,6 @@ struct ConversionView: View {
         return base
     }
     
-    private func formatFromDocumentType(_ type: Document.DocumentType) -> DocumentFormat {
-        switch type {
-        case .pdf: return .pdf
-        case .docx: return .docx
-        case .image: return .image
-        case .scanned: return .pdf
-        case .ppt, .pptx: return .pptx
-        case .xls, .xlsx: return .xlsx
-        default: return .pdf
-        }
-    }
-    
     private func performConversion() {
         guard let document = selectedDocument else { return }
         guard let target = selectedTargetFormat else { return }
@@ -300,7 +289,12 @@ struct ConversionView: View {
         }
         
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = convertDocument(document, from: sourceFormat, to: target)
+            let result = convertDocument(
+                documentManager: documentManager,
+                document: document,
+                from: sourceFormat,
+                to: target
+            )
             
             DispatchQueue.main.async {
                 timer.invalidate()
@@ -313,152 +307,6 @@ struct ConversionView: View {
                 }
             }
         }
-    }
-    
-    private func convertDocument(_ document: Document, from sourceFormat: DocumentFormat, to targetFormat: DocumentFormat) -> ConversionResult {
-        let latestDocument = documentManager.getDocument(by: document.id) ?? document
-        let baseName = normalizedBaseName(latestDocument.title)
-        let fallbackFilename = "\(baseName.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
-        
-        do {
-            let outputData: Data?
-            var serverError: String? = nil
-            var serverFilename: String? = nil
-            
-            switch (sourceFormat, targetFormat) {
-            case (.docx, .pdf):
-                let result = convertViaServer(document: latestDocument, to: targetFormat)
-                outputData = result.data
-                serverError = result.error
-                serverFilename = result.filename
-
-            case (.pptx, .pdf), (.xlsx, .pdf):
-                let result = convertViaServer(document: latestDocument, to: targetFormat)
-                outputData = result.data
-                serverError = result.error
-                serverFilename = result.filename
-
-            case (.image, .pdf):
-                if let imageData = latestDocument.imageData {
-                    let images = imageData.compactMap { UIImage(data: $0) }
-                    outputData = convertImagesToPDF(images)
-                } else {
-                    outputData = convertToPDF(content: latestDocument.content, title: latestDocument.title)
-                }
-
-            case (.pdf, .docx):
-                let result = convertViaServer(document: latestDocument, to: targetFormat)
-                outputData = result.data
-                serverError = result.error
-                serverFilename = result.filename
-
-            case (.pdf, .xlsx), (.pdf, .pptx):
-                let result = convertViaServer(document: latestDocument, to: targetFormat)
-                outputData = result.data
-                serverError = result.error
-                serverFilename = result.filename
-
-            case (.pdf, .image):
-                outputData = convertToImage(content: latestDocument.content)
-                serverError = nil
-
-            default:
-                throw ConversionError.unsupportedConversion
-            }
-            
-            guard let data = outputData else {
-                if let serverError {
-                    throw ConversionError.serverFailure(serverError)
-                }
-                throw ConversionError.conversionFailed
-            }
-
-            let filename = serverFilename ?? fallbackFilename
-            
-            // Save converted file to documents directory
-            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let fileURL = documentsPath.appendingPathComponent(filename)
-            try data.write(to: fileURL)
-            
-            return ConversionResult(
-                success: true,
-                outputData: data,
-                filename: filename,
-                message: "Successfully converted to \(targetFormat.rawValue)"
-            )
-            
-        } catch {
-            return ConversionResult(
-                success: false,
-                outputData: nil,
-                filename: fallbackFilename,
-                message: "Conversion failed: \(error.localizedDescription)"
-            )
-        }
-    }
-
-    private func convertViaServer(document: Document, to targetFormat: DocumentFormat) -> (data: Data?, error: String?, filename: String?) {
-        guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else {
-            return (nil, "Missing input data.", nil)
-        }
-
-        let config: ConversionConfig
-        do {
-            config = try ConversionConfig.load()
-        } catch {
-            return (nil, error.localizedDescription, nil)
-        }
-
-        var components = URLComponents(url: config.baseURL.appendingPathComponent("convert"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
-
-        guard let url = components?.url else { return (nil, "Invalid conversion URL.", nil) }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(document.title, forHTTPHeaderField: "X-Filename")
-        request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
-        request.timeoutInterval = 180
-        let semaphore = DispatchSemaphore(value: 0)
-        var resultData: Data?
-        var errorMessage: String?
-        var responseFilename: String?
-
-        request.httpBody = inputData
-
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            if let error {
-                errorMessage = error.localizedDescription
-                return
-            }
-            guard let http = response as? HTTPURLResponse else {
-                errorMessage = "No response from server."
-                return
-            }
-            if http.statusCode == 200 {
-                resultData = data
-                if let headerValue = http.allHeaderFields.first(where: { key, _ in
-                    String(describing: key).lowercased() == "content-disposition"
-                })?.value as? String {
-                    responseFilename = ContentDisposition.filename(from: headerValue)
-                }
-                return
-            }
-            if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
-                errorMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                return
-            }
-            errorMessage = "Server error (HTTP \(http.statusCode))."
-        }
-        task.resume()
-        _ = semaphore.wait(timeout: .now() + 180)
-
-        if resultData == nil && errorMessage == nil {
-            errorMessage = "No response from server (timeout or network issue)."
-        }
-        return (resultData, errorMessage, responseFilename)
     }
     
     enum ConversionError: Error {
@@ -481,15 +329,7 @@ struct ConversionView: View {
     // MARK: - Conversion Helper Functions
 
     private func normalizedBaseName(_ title: String) -> String {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "Converted_Document" }
-        let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
-        var base = (trimmed as NSString).deletingPathExtension
-        let ext = (trimmed as NSString).pathExtension.lowercased()
-        if !ext.isEmpty && !knownExts.contains(ext) {
-            base = trimmed
-        }
-        return base.isEmpty ? "Converted_Document" : base
+        normalizedConversionBaseName(title)
     }
     
     private func convertToPDF(content: String, title: String) -> Data? {
@@ -752,7 +592,7 @@ struct ConversionResultSheet: View {
             if result.success {
                 VStack(spacing: 12) {
                     HStack(spacing: 12) {
-                        Image(systemName: iconForDocumentType(getDocumentType(from: result.filename)))
+                        Image(systemName: iconForDocumentType(conversionDocumentType(from: result.filename)))
                             .font(.system(size: 24, weight: .semibold))
                             .foregroundColor(.blue)
                         Text(result.filename)
@@ -798,10 +638,10 @@ struct ConversionResultSheet: View {
         
         DispatchQueue.global(qos: .userInitiated).async {
             // Determine document type from file extension
-            let documentType = self.getDocumentType(from: self.result.filename)
+            let documentType = conversionDocumentType(from: self.result.filename)
             
             // Extract content based on type
-            var content = self.extractContent(from: outputData, type: documentType)
+            var content = conversionExtractContent(from: outputData, type: documentType)
             if self.sourceFormat == .pdf, documentType == .docx {
                 if let source = self.sourceDocument {
                     let sourceText = source.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -812,14 +652,14 @@ struct ConversionResultSheet: View {
             }
             let ocrPages = (documentType == .pdf || documentType == .image)
                 ? (self.documentManager.buildVisionOCRPages(from: outputData, type: documentType)
-                    ?? self.buildPseudoOCRPages(from: content))
-                : self.buildPseudoOCRPages(from: content)
+                    ?? buildPseudoOCRPagesFromText(content))
+                : buildPseudoOCRPagesFromText(content)
             let summaryText = self.sourceDocument == nil
                 ? "Converted document - Processing summary..."
                 : DocumentManager.summaryUnavailableMessage
             
             // Create the document
-            let cleanedTitle = normalizedTitle(from: self.result.filename)
+            let cleanedTitle = normalizedConversionTitle(from: self.result.filename)
             let document = Document(
                 title: cleanedTitle,
                 content: content,
@@ -855,69 +695,6 @@ struct ConversionResultSheet: View {
             }
         }
     }
-    
-    private func getDocumentType(from filename: String) -> Document.DocumentType {
-        let ext = (filename as NSString).pathExtension.lowercased()
-        switch ext {
-        case "pdf": return .pdf
-        case "docx", "doc": return .docx
-        case "ppt", "pptx": return .pptx
-        case "xls", "xlsx": return .xlsx
-        case "txt": return .text
-        case "jpg", "jpeg", "png": return .image
-        case "zip": return .zip
-        default: return .text
-        }
-    }
-
-    private func normalizedTitle(from filename: String) -> String {
-        let base = (filename as NSString).deletingPathExtension
-        let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
-        let ext = (base as NSString).pathExtension.lowercased()
-        let cleaned = knownExts.contains(ext) ? (base as NSString).deletingPathExtension : base
-        return cleaned.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-    
-    private func extractContent(from data: Data, type: Document.DocumentType) -> String {
-        switch type {
-        case .text:
-            return String(data: data, encoding: .utf8) ?? "Converted text document"
-        case .docx:
-            // For HTML-based DOCX files, extract basic text content
-            if let htmlString = String(data: data, encoding: .utf8) {
-                // Simple HTML text extraction - remove HTML tags
-                let cleanText = htmlString
-                    .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                    .replacingOccurrences(of: "&nbsp;", with: " ")
-                    .replacingOccurrences(of: "&amp;", with: "&")
-                    .replacingOccurrences(of: "&lt;", with: "<")
-                    .replacingOccurrences(of: "&gt;", with: ">")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return cleanText.isEmpty ? "Converted Word document" : cleanText
-            }
-            return "Converted Word document"
-        case .pdf:
-            return "Converted PDF document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
-        case .image:
-            return "Converted image document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
-        case .ppt, .pptx:
-            return "Converted PowerPoint document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
-        case .xls, .xlsx:
-            return "Converted Excel document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
-        case .zip:
-            return "ZIP archive - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
-        default:
-            return "Converted document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
-        }
-    }
-
-    private func buildPseudoOCRPages(from text: String) -> [OCRPage]? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-        let bbox = OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
-        let block = OCRBlock(text: trimmed, confidence: 1.0, bbox: bbox, order: 0)
-        return [OCRPage(pageIndex: 0, blocks: [block])]
-    }
 }
 
 struct ShareSheet: UIViewControllerRepresentable {
@@ -928,4 +705,372 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Conversion Helpers (Shared)
+
+func conversionFormatFromDocumentType(_ type: Document.DocumentType) -> ConversionView.DocumentFormat {
+    switch type {
+    case .pdf: return .pdf
+    case .docx: return .docx
+    case .image: return .image
+    case .scanned: return .pdf
+    case .ppt, .pptx: return .pptx
+    case .xls, .xlsx: return .xlsx
+    default: return .pdf
+    }
+}
+
+func convertDocument(
+    documentManager: DocumentManager,
+    document: Document,
+    from sourceFormat: ConversionView.DocumentFormat,
+    to targetFormat: ConversionView.DocumentFormat
+) -> ConversionView.ConversionResult {
+    let latestDocument = documentManager.getDocument(by: document.id) ?? document
+    let baseName = normalizedConversionBaseName(latestDocument.title)
+    let fallbackFilename = "\(baseName.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
+
+    do {
+        let outputData: Data?
+        var serverError: String? = nil
+        var serverFilename: String? = nil
+
+        switch (sourceFormat, targetFormat) {
+        case (.docx, .pdf):
+            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            outputData = result.data
+            serverError = result.error
+            serverFilename = result.filename
+
+        case (.pptx, .pdf), (.xlsx, .pdf):
+            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            outputData = result.data
+            serverError = result.error
+            serverFilename = result.filename
+
+        case (.image, .pdf):
+            if let imageData = latestDocument.imageData {
+                let images = imageData.compactMap { UIImage(data: $0) }
+                outputData = conversionConvertImagesToPDF(images)
+            } else {
+                outputData = conversionConvertToPDF(content: latestDocument.content, title: latestDocument.title)
+            }
+
+        case (.pdf, .docx):
+            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            outputData = result.data
+            serverError = result.error
+            serverFilename = result.filename
+
+        case (.pdf, .xlsx), (.pdf, .pptx):
+            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            outputData = result.data
+            serverError = result.error
+            serverFilename = result.filename
+
+        case (.pdf, .image):
+            outputData = conversionConvertToImage(content: latestDocument.content)
+            serverError = nil
+
+        default:
+            throw ConversionView.ConversionError.unsupportedConversion
+        }
+
+        guard let data = outputData else {
+            if let serverError {
+                throw ConversionView.ConversionError.serverFailure(serverError)
+            }
+            throw ConversionView.ConversionError.conversionFailed
+        }
+
+        let filename = serverFilename ?? fallbackFilename
+
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let fileURL = documentsPath.appendingPathComponent(filename)
+        try data.write(to: fileURL)
+
+        return ConversionView.ConversionResult(
+            success: true,
+            outputData: data,
+            filename: filename,
+            message: "Successfully converted to \(targetFormat.rawValue)"
+        )
+    } catch {
+        return ConversionView.ConversionResult(
+            success: false,
+            outputData: nil,
+            filename: fallbackFilename,
+            message: "Conversion failed: \(error.localizedDescription)"
+        )
+    }
+}
+
+func saveConversionResult(
+    result: ConversionView.ConversionResult,
+    documentManager: DocumentManager,
+    sourceFormat: ConversionView.DocumentFormat,
+    sourceDocument: Document?,
+    completion: @escaping () -> Void
+) {
+    guard result.success, let outputData = result.outputData else {
+        DispatchQueue.main.async { completion() }
+        return
+    }
+
+    DispatchQueue.global(qos: .userInitiated).async {
+        let documentType = conversionDocumentType(from: result.filename)
+        var content = conversionExtractContent(from: outputData, type: documentType)
+        if sourceFormat == .pdf, documentType == .docx {
+            if let source = sourceDocument {
+                let sourceText = source.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !sourceText.isEmpty {
+                    content = sourceText
+                }
+            }
+        }
+
+        let ocrPages = (documentType == .pdf || documentType == .image)
+            ? (documentManager.buildVisionOCRPages(from: outputData, type: documentType)
+                ?? buildPseudoOCRPagesFromText(content))
+            : buildPseudoOCRPagesFromText(content)
+
+        let summaryText = sourceDocument == nil
+            ? "Converted document - Processing summary..."
+            : DocumentManager.summaryUnavailableMessage
+
+        let cleanedTitle = normalizedConversionTitle(from: result.filename)
+        let document = Document(
+            title: cleanedTitle,
+            content: content,
+            summary: summaryText,
+            ocrPages: ocrPages,
+            category: .general,
+            keywordsResume: "",
+            tags: [],
+            sourceDocumentId: sourceDocument?.id,
+            dateCreated: Date(),
+            type: documentType,
+            imageData: documentType == .image ? [outputData] : nil,
+            pdfData: documentType == .pdf ? outputData : nil,
+            originalFileData: outputData
+        )
+
+        DispatchQueue.main.async {
+            documentManager.addDocument(document)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                documentManager.objectWillChange.send()
+            }
+            completion()
+        }
+    }
+}
+
+func conversionDocumentType(from filename: String) -> Document.DocumentType {
+    let ext = (filename as NSString).pathExtension.lowercased()
+    switch ext {
+    case "pdf": return .pdf
+    case "docx", "doc": return .docx
+    case "ppt", "pptx": return .pptx
+    case "xls", "xlsx": return .xlsx
+    case "txt": return .text
+    case "jpg", "jpeg", "png": return .image
+    case "zip": return .zip
+    default: return .text
+    }
+}
+
+func normalizedConversionTitle(from filename: String) -> String {
+    let base = (filename as NSString).deletingPathExtension
+    let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
+    let ext = (base as NSString).pathExtension.lowercased()
+    let cleaned = knownExts.contains(ext) ? (base as NSString).deletingPathExtension : base
+    return cleaned.replacingOccurrences(of: "_", with: " ").capitalized
+}
+
+func conversionExtractContent(from data: Data, type: Document.DocumentType) -> String {
+    switch type {
+    case .text:
+        return String(data: data, encoding: .utf8) ?? "Converted text document"
+    case .docx:
+        if let htmlString = String(data: data, encoding: .utf8) {
+            let cleanText = htmlString
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "&nbsp;", with: " ")
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleanText.isEmpty ? "Converted Word document" : cleanText
+        }
+        return "Converted Word document"
+    case .pdf:
+        return "Converted PDF document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .image:
+        return "Converted image document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .ppt, .pptx:
+        return "Converted PowerPoint document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .xls, .xlsx:
+        return "Converted Excel document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    case .zip:
+        return "ZIP archive - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    default:
+        return "Converted document - \(ByteCountFormatter().string(fromByteCount: Int64(data.count)))"
+    }
+}
+
+func buildPseudoOCRPagesFromText(_ text: String) -> [OCRPage]? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return nil }
+    let bbox = OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+    let block = OCRBlock(text: trimmed, confidence: 1.0, bbox: bbox, order: 0)
+    return [OCRPage(pageIndex: 0, blocks: [block])]
+}
+
+func conversionConvertToPDF(content: String, title: String) -> Data? {
+    let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
+    let margin: CGFloat = 54
+    let contentRect = pageRect.insetBy(dx: margin, dy: margin)
+
+    let titleText = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let bodyText = content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    let titleFont = UIFont.systemFont(ofSize: 18, weight: .bold)
+    let bodyFont = UIFont.systemFont(ofSize: 12)
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = 4
+    paragraph.paragraphSpacing = 8
+
+    let attributed = NSMutableAttributedString()
+    if !titleText.isEmpty {
+        attributed.append(NSAttributedString(string: "\(titleText)\n\n", attributes: [
+            .font: titleFont,
+            .foregroundColor: UIColor.black
+        ]))
+    }
+    attributed.append(NSAttributedString(string: bodyText, attributes: [
+        .font: bodyFont,
+        .foregroundColor: UIColor.black,
+        .paragraphStyle: paragraph
+    ]))
+
+    let renderer = UIGraphicsPDFRenderer(bounds: pageRect)
+    return renderer.pdfData { context in
+        context.beginPage()
+        attributed.draw(with: contentRect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+}
+
+func conversionConvertToImage(content: String) -> Data? {
+    let size = CGSize(width: 1240, height: 1754)
+    let renderer = UIGraphicsImageRenderer(size: size)
+    let image = renderer.image { context in
+        UIColor.white.setFill()
+        context.fill(CGRect(origin: .zero, size: size))
+
+        let textRect = CGRect(x: 40, y: 40, width: size.width - 80, height: size.height - 80)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 4
+        paragraph.paragraphSpacing = 8
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 16),
+            .foregroundColor: UIColor.black,
+            .paragraphStyle: paragraph
+        ]
+        let attributed = NSAttributedString(string: content, attributes: attrs)
+        attributed.draw(with: textRect, options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    }
+    return image.jpegData(compressionQuality: 0.92)
+}
+
+func conversionConvertImagesToPDF(_ images: [UIImage]) -> Data? {
+    guard !images.isEmpty else { return nil }
+    let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 612, height: 792))
+    return renderer.pdfData { context in
+        for image in images {
+            let bounds = CGRect(x: 0, y: 0, width: 612, height: 792)
+            context.beginPage(withBounds: bounds, pageInfo: [:])
+            let targetRect = AVMakeRect(aspectRatio: image.size, insideRect: bounds.insetBy(dx: 24, dy: 24))
+            image.draw(in: targetRect)
+        }
+    }
+}
+
+private func normalizedConversionBaseName(_ title: String) -> String {
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Converted_Document" }
+    let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
+    var base = (trimmed as NSString).deletingPathExtension
+    let ext = (trimmed as NSString).pathExtension.lowercased()
+    if !ext.isEmpty && !knownExts.contains(ext) {
+        base = trimmed
+    }
+    return base.isEmpty ? "Converted_Document" : base
+}
+
+private func convertViaServer(
+    document: Document,
+    to targetFormat: ConversionView.DocumentFormat
+) -> (data: Data?, error: String?, filename: String?) {
+    guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else {
+        return (nil, "Missing input data.", nil)
+    }
+
+    let config: ConversionConfig
+    do {
+        config = try ConversionConfig.load()
+    } catch {
+        return (nil, error.localizedDescription, nil)
+    }
+
+    var components = URLComponents(url: config.baseURL.appendingPathComponent("convert"), resolvingAgainstBaseURL: false)
+    components?.queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
+
+    guard let url = components?.url else { return (nil, "Invalid conversion URL.", nil) }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+    request.setValue(document.title, forHTTPHeaderField: "X-Filename")
+    request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
+    request.timeoutInterval = 180
+    let semaphore = DispatchSemaphore(value: 0)
+    var resultData: Data?
+    var errorMessage: String?
+    var responseFilename: String?
+
+    request.httpBody = inputData
+
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { semaphore.signal() }
+        if let error {
+            errorMessage = error.localizedDescription
+            return
+        }
+        guard let http = response as? HTTPURLResponse else {
+            errorMessage = "No response from server."
+            return
+        }
+        if http.statusCode == 200 {
+            resultData = data
+            if let headerValue = http.allHeaderFields.first(where: { key, _ in
+                String(describing: key).lowercased() == "content-disposition"
+            })?.value as? String {
+                responseFilename = ContentDisposition.filename(from: headerValue)
+            }
+            return
+        }
+        if let data, data.isEmpty == false, let text = String(data: data, encoding: .utf8) {
+            errorMessage = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return
+        }
+        errorMessage = "Server error (HTTP \(http.statusCode))."
+    }
+    task.resume()
+    _ = semaphore.wait(timeout: .now() + 180)
+
+    if resultData == nil && errorMessage == nil {
+        errorMessage = "No response from server (timeout or network issue)."
+    }
+    return (resultData, errorMessage, responseFilename)
 }

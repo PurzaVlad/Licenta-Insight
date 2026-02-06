@@ -12,78 +12,62 @@ struct ConvertView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ConvertSectionHeader(title: "From PDF")
                         ConvertRow(title: "PDF to DOCX", icon: .pdfToDocx) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.docx,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .docx,
                                 allowedSourceTypes: [.pdf]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                         ConvertRow(title: "PDF to PPTX", icon: .pdfToPptx) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.pptx,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .pptx,
                                 allowedSourceTypes: [.pdf]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                         ConvertRow(title: "PDF to XLSX", icon: .pdfToXlsx) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.xlsx,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .xlsx,
                                 allowedSourceTypes: [.pdf]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                         ConvertRow(title: "PDF to JPG", icon: .pdfToJpg) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.image,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .image,
                                 allowedSourceTypes: [.pdf]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
 
                         ConvertSectionHeader(title: "To PDF")
                         ConvertRow(title: "DOCX to PDF", icon: .docxToPdf) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.pdf,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .pdf,
                                 allowedSourceTypes: [.docx]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                         ConvertRow(title: "PPTX to PDF", icon: .pptxToPdf) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.pdf,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .pdf,
                                 allowedSourceTypes: [.pptx]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                         ConvertRow(title: "XLSX to PDF", icon: .xlsxToPdf) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.pdf,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .pdf,
                                 allowedSourceTypes: [.xlsx]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                         ConvertRow(title: "JPG to PDF", icon: .jpgToPdf, showsDivider: false) {
-                            ConversionView(
-                                initialTargetFormat: ConversionView.DocumentFormat.pdf,
-                                autoPresentPicker: true,
-                                showsNavigation: false,
+                            ConvertFlowView(
+                                targetFormat: .pdf,
                                 allowedSourceTypes: [.image]
                             )
-                                .environmentObject(documentManager)
+                            .environmentObject(documentManager)
                         }
                     }
                     .padding(16)
@@ -161,6 +145,163 @@ struct ConvertRow<Destination: View>: View {
         }
         if showsDivider {
             Divider()
+        }
+    }
+}
+
+private struct ConvertFlowView: View {
+    let targetFormat: ConversionView.DocumentFormat
+    let allowedSourceTypes: Set<Document.DocumentType>
+    @EnvironmentObject private var documentManager: DocumentManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedId: UUID? = nil
+    @State private var selectionSet: Set<UUID> = []
+    @State private var isAdjustingSelection = false
+    @State private var isConverting = false
+    @State private var conversionResult: ConversionView.ConversionResult? = nil
+    @State private var searchText = ""
+
+    private var documents: [Document] {
+        documentManager.documents.filter { allowedSourceTypes.contains($0.type) }
+    }
+
+    private var filteredDocuments: [Document] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return documents }
+        let needle = trimmed.lowercased()
+        return documents.filter { doc in
+            splitDisplayTitle(doc.title).base.lowercased().contains(needle)
+        }
+    }
+
+    private var selectedDocument: Document? {
+        guard let selectedId else { return nil }
+        return documentManager.getDocument(by: selectedId)
+    }
+
+    var body: some View {
+        List(selection: $selectionSet) {
+            if filteredDocuments.isEmpty {
+                Text("No documents available.")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(filteredDocuments) { document in
+                    DocumentRowView(
+                        document: document,
+                        isSelected: selectionSet.contains(document.id),
+                        isSelectionMode: true,
+                        usesNativeSelection: true,
+                        onSelectToggle: {},
+                        onOpen: {},
+                        onRename: {},
+                        onMoveToFolder: {},
+                        onDelete: {},
+                        onConvert: {},
+                        onShare: {}
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+                }
+            }
+        }
+        .listStyle(.plain)
+        .hideScrollBackground()
+        .scrollDismissesKeyboardIfAvailable()
+        .environment(\.editMode, .constant(.active))
+        .navigationTitle("Select Document")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search documents")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Convert") {
+                    startConversion()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedId == nil || isConverting)
+            }
+        }
+        .onAppear {
+            selectionSet = selectedId.map { [$0] } ?? []
+        }
+        .onChange(of: selectionSet) { newSet in
+            if isAdjustingSelection { return }
+            isAdjustingSelection = true
+            defer { isAdjustingSelection = false }
+
+            if let first = newSet.first {
+                selectionSet = [first]
+                selectedId = first
+            } else {
+                selectedId = nil
+            }
+        }
+        .overlay(conversionOverlay)
+    }
+
+    @ViewBuilder
+    private var conversionOverlay: some View {
+        if isConverting || conversionResult != nil {
+            ZStack {
+                Color.black.opacity(0.25).ignoresSafeArea()
+                VStack(spacing: 12) {
+                    if let result = conversionResult {
+                        Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .font(.system(size: 52))
+                            .foregroundColor(result.success ? .green : .red)
+                        Text(result.success ? "Conversion Complete" : "Conversion Failed")
+                            .font(.headline)
+                    } else {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle())
+                        Text("Converting…")
+                            .font(.headline)
+                    }
+                }
+                .padding(24)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(.systemBackground))
+                )
+                .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 6)
+            }
+        }
+    }
+
+    private func startConversion() {
+        guard let document = selectedDocument else { return }
+        isConverting = true
+        conversionResult = nil
+
+        let sourceFormat = conversionFormatFromDocumentType(document.type)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = convertDocument(
+                documentManager: documentManager,
+                document: document,
+                from: sourceFormat,
+                to: targetFormat
+            )
+            DispatchQueue.main.async {
+                isConverting = false
+                conversionResult = result
+                if result.success {
+                    saveConversionResult(
+                        result: result,
+                        documentManager: documentManager,
+                        sourceFormat: sourceFormat,
+                        sourceDocument: document
+                    ) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            dismiss()
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }
@@ -327,6 +468,20 @@ struct ConvertIcon: View {
                 .foregroundColor(Color("Primary"))
         }
         .frame(width: 24, height: 24, alignment: .center)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func scrollDismissesKeyboardIfAvailable() -> some View {
+        if #available(iOS 16.4, *) {
+            scrollDismissesKeyboard(.interactively)
+                .scrollBounceBehavior(.always)
+        } else if #available(iOS 16.0, *) {
+            scrollDismissesKeyboard(.interactively)
+        } else {
+            self
+        }
     }
 }
 

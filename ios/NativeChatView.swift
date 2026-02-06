@@ -187,15 +187,18 @@ struct NativeChatView: View {
                 Button {
                     send()
                 } label: {
-                    Image(systemName: isGenerating ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 30))
-                        .foregroundColor(hasText || isGenerating ? Color("Primary") : .gray)
+                    Image(systemName: isGenerating ? "stop.fill" : "arrow.up")
+                        .font(.system(size: 16, weight: .semibold))
                 }
                 .disabled(!hasText && !isGenerating)
-                .frame(width: 44, height: 44)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .ifAvailableiOS17CircleBorder()
+                .tint(Color("Primary"))
+                .frame(width: 32, height: 32)
             }
             .padding(.leading, 0)
-            .padding(.trailing, 0)
+            .padding(.trailing, 6)
             .padding(.vertical, 0)
             .frame(height: 44)
             .background(
@@ -808,10 +811,14 @@ struct NativeChatView: View {
                             selectedIds.removeAll()
                         }
                         .foregroundColor(.primary)
+                        .disabled(selectedIds.isEmpty)
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button("Done") { dismiss() }
                             .foregroundColor(.primary)
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color("Primary"))
+                            .disabled(selectedIds.isEmpty)
                     }
                 }
             }
@@ -955,6 +962,16 @@ private extension View {
                 .scrollBounceBehavior(.always)
         } else if #available(iOS 16.0, *) {
             scrollDismissesKeyboard(.interactively)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func ifAvailableiOS17CircleBorder() -> some View {
+        if #available(iOS 17.0, *) {
+            self
+                .buttonBorderShape(.circle)
         } else {
             self
         }

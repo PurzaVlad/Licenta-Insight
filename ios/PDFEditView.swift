@@ -61,6 +61,8 @@ struct PDFEditView: View {
 struct SignPDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
     @StateObject private var signatureStore = SignatureStore()
     @StateObject private var pdfController = PDFSigningController()
     @State private var selectedDocument: Document?
@@ -71,8 +73,16 @@ struct SignPDFView: View {
     @State private var alertMessage = ""
     @State private var didAutoPresent = false
 
-    init(autoPresentPicker: Bool = false) {
-        self.autoPresentPicker = autoPresentPicker
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
     }
 
     var body: some View {
@@ -102,9 +112,16 @@ struct SignPDFView: View {
                 signaturePanel
                     .padding(.bottom, 10)
             } else {
-                Button("Choose PDF") { showingPicker = true }
-                    .padding(.horizontal)
-                    .padding(.top, 6)
+                if allowsPicker {
+                    Button("Choose PDF") { showingPicker = true }
+                        .padding(.horizontal)
+                        .padding(.top, 6)
+                } else {
+                    Text("No PDF selected.")
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal)
+                        .padding(.top, 6)
+                }
             }
         }
         .padding(.top, 8)
@@ -122,10 +139,14 @@ struct SignPDFView: View {
             }
         }
         .onAppear {
-            guard autoPresentPicker, !didAutoPresent else { return }
-            didAutoPresent = true
-            DispatchQueue.main.async {
-                showingPicker = true
+            if autoPresentPicker, !didAutoPresent {
+                didAutoPresent = true
+                DispatchQueue.main.async {
+                    showingPicker = true
+                }
+            }
+            if selectedDocument != nil {
+                loadPDF(for: selectedDocument)
             }
         }
         .onChange(of: selectedDocument) { newDoc in
@@ -196,16 +217,24 @@ struct SignPDFView: View {
         }
 
         isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
         let workItem = DispatchWorkItem {
+            var existingTitles = initialTitles
             let base = baseTitle(for: document.title)
-            let title = "\(base)_Signed.pdf"
+            let preferredBase = "\(base)_signed"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
             let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
                 isSaving = false
-                alertMessage = "Signed PDF saved to Documents."
-                showingAlert = true
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Signed PDF saved to Documents."
+                    showingAlert = true
+                }
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
@@ -889,6 +918,9 @@ final class SignatureStore: ObservableObject {
 struct MergePDFsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let preferredOrder: [UUID]?
+    let onComplete: (([Document]) -> Void)?
     @State private var selectedIds: Set<UUID> = []
     @State private var showingPicker = false
     @State private var isSaving = false
@@ -896,8 +928,18 @@ struct MergePDFsView: View {
     @State private var alertMessage = ""
     @State private var didAutoPresent = false
 
-    init(autoPresentPicker: Bool = false) {
-        self.autoPresentPicker = autoPresentPicker
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedIds: [UUID] = [],
+        preferredOrder: [UUID]? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.preferredOrder = preferredOrder ?? preselectedIds
+        self.onComplete = onComplete
+        _selectedIds = State(initialValue: Set(preselectedIds))
     }
 
     private var pdfDocuments: [Document] {
@@ -905,7 +947,27 @@ struct MergePDFsView: View {
     }
 
     private var selectedDocuments: [Document] {
-        pdfDocuments.filter { selectedIds.contains($0.id) }
+        guard let preferredOrder else {
+            return pdfDocuments.filter { selectedIds.contains($0.id) }
+        }
+
+        let docsById = Dictionary(uniqueKeysWithValues: pdfDocuments.map { ($0.id, $0) })
+        var orderedDocs: [Document] = []
+        var seen = Set<UUID>()
+
+        for id in preferredOrder where selectedIds.contains(id) {
+            if let doc = docsById[id], seen.insert(id).inserted {
+                orderedDocs.append(doc)
+            }
+        }
+
+        if orderedDocs.count < selectedIds.count {
+            for doc in pdfDocuments where selectedIds.contains(doc.id) && !seen.contains(doc.id) {
+                orderedDocs.append(doc)
+            }
+        }
+
+        return orderedDocs
     }
 
     var body: some View {
@@ -933,8 +995,10 @@ struct MergePDFsView: View {
             }
 
             HStack(spacing: 12) {
-                Button("Choose PDFs") {
-                    showingPicker = true
+                if allowsPicker {
+                    Button("Choose PDFs") {
+                        showingPicker = true
+                    }
                 }
 
                 Button(isSaving ? "Merging..." : "Merge") {
@@ -970,6 +1034,7 @@ struct MergePDFsView: View {
     private func mergeSelected() {
         guard selectedDocuments.count >= 2 else { return }
         isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
 
         let workItem = DispatchWorkItem {
             let merged = PDFDocument()
@@ -995,15 +1060,23 @@ struct MergePDFsView: View {
                 return
             }
 
-            let title = "Merged PDF \(shortDateString())"
+            var existingTitles = initialTitles
+            let base = baseTitle(for: selectedDocuments.first?.title ?? "PDF")
+            let preferredBase = "\(base)_merged"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
             let newDoc = makePDFDocument(title: title, data: data, sourceDocumentId: nil)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
                 isSaving = false
                 selectedIds.removeAll()
-                alertMessage = "Merged PDF saved to Documents."
-                showingAlert = true
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Merged PDF saved to Documents."
+                    showingAlert = true
+                }
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
@@ -1015,6 +1088,8 @@ struct MergePDFsView: View {
 struct SplitPDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
     @State private var selectedDocument: Document?
     @State private var showingPicker = false
     @State private var ranges: [PageRangeInput] = [PageRangeInput()]
@@ -1023,8 +1098,16 @@ struct SplitPDFView: View {
     @State private var alertMessage = ""
     @State private var didAutoPresent = false
 
-    init(autoPresentPicker: Bool = false) {
-        self.autoPresentPicker = autoPresentPicker
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
     }
 
     private var pageCount: Int {
@@ -1043,12 +1126,19 @@ struct SplitPDFView: View {
                             .font(.headline)
                             .lineLimit(1)
                         Spacer()
-                        Button("Change") { showingPicker = true }
+                        if allowsPicker {
+                            Button("Change") { showingPicker = true }
+                        }
                     }
                     Text("Pages: \(pageCount)")
                         .foregroundColor(.secondary)
                 } else {
-                    Button("Choose PDF") { showingPicker = true }
+                    if allowsPicker {
+                        Button("Choose PDF") { showingPicker = true }
+                    } else {
+                        Text("No PDF selected.")
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 VStack(spacing: 12) {
@@ -1124,9 +1214,12 @@ struct SplitPDFView: View {
         }
 
         isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
 
         let workItem = DispatchWorkItem {
             var created = 0
+            var newDocs: [Document] = []
+            var existingTitles = initialTitles
             for (idx, range) in parsedRanges.enumerated() {
                 let newPDF = PDFDocument()
                 var insertIndex = 0
@@ -1138,19 +1231,26 @@ struct SplitPDFView: View {
                 }
                 guard let outData = newPDF.dataRepresentation() else { continue }
                 let base = baseTitle(for: document.title)
-                let title = "\(base)_Part\(idx + 1).pdf"
+                let preferredBase = "\(base)_split\(idx + 1)"
+                let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+                existingTitles.insert(title.lowercased())
                 let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
-                DispatchQueue.main.async {
-                    documentManager.addDocument(newDoc)
-                }
+                newDocs.append(newDoc)
                 created += 1
                 if created >= 3 { break }
             }
 
             DispatchQueue.main.async {
+                for doc in newDocs {
+                    documentManager.addDocument(doc)
+                }
                 isSaving = false
-                alertMessage = created > 0 ? "Created \(created) PDFs." : "Failed to split PDF."
-                showingAlert = true
+                if let onComplete, !newDocs.isEmpty {
+                    onComplete(newDocs)
+                } else {
+                    alertMessage = created > 0 ? "Created \(created) PDFs." : "Failed to split PDF."
+                    showingAlert = true
+                }
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
@@ -1175,6 +1275,8 @@ struct PageRangeInput {
 struct RearrangePDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
     @State private var selectedDocument: Document?
     @State private var showingPicker = false
     @State private var pageItems: [PDFPageItem] = []
@@ -1184,8 +1286,16 @@ struct RearrangePDFView: View {
     @State private var alertMessage = ""
     @State private var didAutoPresent = false
 
-    init(autoPresentPicker: Bool = false) {
-        self.autoPresentPicker = autoPresentPicker
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
     }
 
     var body: some View {
@@ -1196,11 +1306,18 @@ struct RearrangePDFView: View {
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
-                    Button("Change") { showingPicker = true }
+                    if allowsPicker {
+                        Button("Change") { showingPicker = true }
+                    }
                 }
                 .padding(.horizontal)
             } else {
-                Button("Choose PDF") { showingPicker = true }
+                if allowsPicker {
+                    Button("Choose PDF") { showingPicker = true }
+                } else {
+                    Text("No PDF selected.")
+                        .foregroundColor(.secondary)
+                }
             }
 
             if !pageItems.isEmpty {
@@ -1237,10 +1354,14 @@ struct RearrangePDFView: View {
             )
         }
         .onAppear {
-            guard autoPresentPicker, !didAutoPresent else { return }
-            didAutoPresent = true
-            DispatchQueue.main.async {
-                showingPicker = true
+            if autoPresentPicker, !didAutoPresent {
+                didAutoPresent = true
+                DispatchQueue.main.async {
+                    showingPicker = true
+                }
+            }
+            if selectedDocument != nil && pageItems.isEmpty {
+                loadPages(for: selectedDocument)
             }
         }
         .onChange(of: selectedDocument) { newDoc in
@@ -1275,6 +1396,7 @@ struct RearrangePDFView: View {
               let pdf = PDFDocument(data: data) else { return }
 
         isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
         let workItem = DispatchWorkItem {
             let newPDF = PDFDocument()
             var insertIndex = 0
@@ -1293,15 +1415,22 @@ struct RearrangePDFView: View {
                 return
             }
 
+            var existingTitles = initialTitles
             let base = baseTitle(for: document.title)
-            let title = "\(base)_Rearranged.pdf"
+            let preferredBase = "\(base)_rearranged"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
             let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
                 isSaving = false
-                alertMessage = "Rearranged PDF saved to Documents."
-                showingAlert = true
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Rearranged PDF saved to Documents."
+                    showingAlert = true
+                }
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
@@ -1319,6 +1448,8 @@ struct PDFPageItem: Identifiable {
 struct RotatePDFView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
     @State private var selectedDocument: Document?
     @State private var showingPicker = false
     @State private var pageItems: [RotatePageItem] = []
@@ -1327,8 +1458,16 @@ struct RotatePDFView: View {
     @State private var alertMessage = ""
     @State private var didAutoPresent = false
 
-    init(autoPresentPicker: Bool = false) {
-        self.autoPresentPicker = autoPresentPicker
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
     }
 
     var body: some View {
@@ -1339,11 +1478,18 @@ struct RotatePDFView: View {
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
-                    Button("Change") { showingPicker = true }
+                    if allowsPicker {
+                        Button("Change") { showingPicker = true }
+                    }
                 }
                 .padding(.horizontal)
             } else {
-                Button("Choose PDF") { showingPicker = true }
+                if allowsPicker {
+                    Button("Choose PDF") { showingPicker = true }
+                } else {
+                    Text("No PDF selected.")
+                        .foregroundColor(.secondary)
+                }
             }
 
             if !pageItems.isEmpty {
@@ -1390,10 +1536,14 @@ struct RotatePDFView: View {
             )
         }
         .onAppear {
-            guard autoPresentPicker, !didAutoPresent else { return }
-            didAutoPresent = true
-            DispatchQueue.main.async {
-                showingPicker = true
+            if autoPresentPicker, !didAutoPresent {
+                didAutoPresent = true
+                DispatchQueue.main.async {
+                    showingPicker = true
+                }
+            }
+            if selectedDocument != nil && pageItems.isEmpty {
+                loadPages(for: selectedDocument)
             }
         }
         .onChange(of: selectedDocument) { newDoc in
@@ -1450,6 +1600,7 @@ struct RotatePDFView: View {
               let pdf = PDFDocument(data: data) else { return }
 
         isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
         let workItem = DispatchWorkItem {
             for item in pageItems {
                 if let page = pdf.page(at: item.index) {
@@ -1466,15 +1617,22 @@ struct RotatePDFView: View {
                 return
             }
 
+            var existingTitles = initialTitles
             let base = baseTitle(for: document.title)
-            let title = "\(base)_Rotated.pdf"
+            let preferredBase = "\(base)_rotated"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
             let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
                 isSaving = false
-                alertMessage = "Rotated PDF saved to Documents."
-                showingAlert = true
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Rotated PDF saved to Documents."
+                    showingAlert = true
+                }
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
@@ -1644,8 +1802,31 @@ private func baseTitle(for title: String) -> String {
     return base.isEmpty ? "PDF" : base
 }
 
-private func shortDateString() -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMdd-HHmm"
-    return formatter.string(from: Date())
+private func existingDocumentTitles(in documentManager: DocumentManager) -> Set<String> {
+    Set(documentManager.documents.map { $0.title.lowercased() })
+}
+
+private func uniquePDFTitle(preferredBase: String, existingTitles: Set<String>) -> String {
+    uniqueTitle(preferredBase: preferredBase, ext: "pdf", existingTitles: existingTitles)
+}
+
+private func uniqueTitle(preferredBase: String, ext: String, existingTitles: Set<String>) -> String {
+    let trimmedBase = preferredBase.trimmingCharacters(in: .whitespacesAndNewlines)
+    let base = trimmedBase.isEmpty ? "PDF" : trimmedBase
+    let extSuffix = ext.isEmpty ? "" : ".\(ext)"
+    var candidate = "\(base)\(extSuffix)"
+    let lowerExisting = existingTitles
+
+    if !lowerExisting.contains(candidate.lowercased()) {
+        return candidate
+    }
+
+    var idx = 2
+    while true {
+        candidate = "\(base)\(idx)\(extSuffix)"
+        if !lowerExisting.contains(candidate.lowercased()) {
+            return candidate
+        }
+        idx += 1
+    }
 }
