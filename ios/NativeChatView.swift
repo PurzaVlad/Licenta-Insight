@@ -16,6 +16,7 @@ struct NativeChatView: View {
     @State private var isThinkingPulseOn: Bool = false
     @State private var activeChatGenerationId: UUID? = nil
     @EnvironmentObject private var documentManager: DocumentManager
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingSettings = false
     @State private var showingScopePicker = false
     @State private var scopedDocumentIds: Set<UUID> = []
@@ -140,16 +141,16 @@ struct NativeChatView: View {
                     .frame(width: 44, height: 44)
                     .background(
                         Circle()
-                            .fill(isScopeActive ? Color("Primary").opacity(0.12) : Color.clear)
+                            .fill(isScopeActive ? Color("Primary").opacity(0.12) : (colorScheme == .light ? Color(.systemGray6) : Color.clear))
                     )
                     .overlay(
                         Circle()
-                            .strokeBorder(isScopeActive ? Color("Primary").opacity(0.5) : Color.white.opacity(0.3), lineWidth: 1)
+                            .strokeBorder(isScopeActive ? Color("Primary").opacity(0.5) : (colorScheme == .light ? Color(.systemGray3) : Color.white.opacity(0.3)), lineWidth: 1)
                     )
                     .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
             }
-
-            HStack(alignment: .bottom, spacing: 4) {
+                    
+            HStack(alignment: .center, spacing: 6) {
                 Group {
                     if #available(iOS 16.0, *) {
                         TextField("Ask anything", text: $input, axis: .vertical)
@@ -174,11 +175,14 @@ struct NativeChatView: View {
                                     .foregroundStyle(.secondary)
                                     .font(.system(size: 17))
                                     .padding(.top, 1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 12)
+                .padding(.trailing, 6)
 
                 Button {
                     send()
@@ -188,14 +192,19 @@ struct NativeChatView: View {
                         .foregroundColor(hasText || isGenerating ? Color("Primary") : .gray)
                 }
                 .disabled(!hasText && !isGenerating)
-                .padding(.bottom, 2)
+                .frame(width: 44, height: 44)
             }
-            .padding(.horizontal, 10)
+            .padding(.leading, 0)
+            .padding(.trailing, 0)
             .padding(.vertical, 0)
             .frame(height: 44)
             .background(
                 RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
+                    .fill(colorScheme == .light ? Color(.systemGray6) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
+                    .strokeBorder(colorScheme == .light ? Color(.systemGray3) : Color.white.opacity(0.3), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
         }
@@ -863,6 +872,7 @@ struct NativeChatView: View {
             textView.isScrollEnabled = false
             textView.backgroundColor = .clear
             textView.font = font
+            textView.textAlignment = .natural
             textView.textContainerInset = .zero
             textView.textContainer.lineFragmentPadding = 0
             textView.textContainer.lineBreakMode = .byWordWrapping
@@ -879,6 +889,7 @@ struct NativeChatView: View {
             uiView.font = font
             uiView.isEditable = isEditable
             uiView.isScrollEnabled = false
+            uiView.textAlignment = .natural
             recalcHeight(view: uiView)
         }
 
