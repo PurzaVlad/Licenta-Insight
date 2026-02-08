@@ -255,6 +255,14 @@ func iconForDocumentType(_ type: Document.DocumentType) -> String {
     case .text:
         return "doc.plaintext"
     case .zip:
+        return zipSymbolName()
+    }
+}
+
+func zipSymbolName() -> String {
+    if #available(iOS 17.0, *) {
+        return "zipper.page"
+    } else {
         return "archivebox"
     }
 }

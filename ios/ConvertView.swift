@@ -4,82 +4,101 @@ struct ConvertView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingSettings = false
+    @AppStorage("pendingConvertDeepLink") private var pendingConvertDeepLink = ""
+    @State private var deepLinkConfig: ConvertDeepLinkConfig?
+    @State private var showDeepLinkFlow = false
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ConvertSectionHeader(title: "From PDF")
-                        ConvertRow(title: "PDF to DOCX", icon: .pdfToDocx) {
-                            ConvertFlowView(
-                                targetFormat: .docx,
-                                allowedSourceTypes: [.pdf]
-                            )
-                            .environmentObject(documentManager)
-                        }
-                        ConvertRow(title: "PDF to PPTX", icon: .pdfToPptx) {
-                            ConvertFlowView(
-                                targetFormat: .pptx,
-                                allowedSourceTypes: [.pdf]
-                            )
-                            .environmentObject(documentManager)
-                        }
-                        ConvertRow(title: "PDF to XLSX", icon: .pdfToXlsx) {
-                            ConvertFlowView(
-                                targetFormat: .xlsx,
-                                allowedSourceTypes: [.pdf]
-                            )
-                            .environmentObject(documentManager)
-                        }
-                        ConvertRow(title: "PDF to JPG", icon: .pdfToJpg) {
-                            ConvertFlowView(
-                                targetFormat: .image,
-                                allowedSourceTypes: [.pdf]
-                            )
-                            .environmentObject(documentManager)
-                        }
+            ZStack {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ConvertSectionHeader(title: "From PDF")
+                            ConvertRow(title: "PDF to DOCX", icon: .pdfToDocx) {
+                                ConvertFlowView(
+                                    targetFormat: .docx,
+                                    allowedSourceTypes: [.pdf]
+                                )
+                                .environmentObject(documentManager)
+                            }
+                            ConvertRow(title: "PDF to PPTX", icon: .pdfToPptx) {
+                                ConvertFlowView(
+                                    targetFormat: .pptx,
+                                    allowedSourceTypes: [.pdf]
+                                )
+                                .environmentObject(documentManager)
+                            }
+                            ConvertRow(title: "PDF to XLSX", icon: .pdfToXlsx) {
+                                ConvertFlowView(
+                                    targetFormat: .xlsx,
+                                    allowedSourceTypes: [.pdf]
+                                )
+                                .environmentObject(documentManager)
+                            }
+                            ConvertRow(title: "PDF to JPG", icon: .pdfToJpg) {
+                                ConvertFlowView(
+                                    targetFormat: .image,
+                                    allowedSourceTypes: [.pdf]
+                                )
+                                .environmentObject(documentManager)
+                            }
 
-                        ConvertSectionHeader(title: "To PDF")
-                        ConvertRow(title: "DOCX to PDF", icon: .docxToPdf) {
-                            ConvertFlowView(
-                                targetFormat: .pdf,
-                                allowedSourceTypes: [.docx]
-                            )
-                            .environmentObject(documentManager)
+                            ConvertSectionHeader(title: "To PDF")
+                            ConvertRow(title: "DOCX to PDF", icon: .docxToPdf) {
+                                ConvertFlowView(
+                                    targetFormat: .pdf,
+                                    allowedSourceTypes: [.docx]
+                                )
+                                .environmentObject(documentManager)
+                            }
+                            ConvertRow(title: "PPTX to PDF", icon: .pptxToPdf) {
+                                ConvertFlowView(
+                                    targetFormat: .pdf,
+                                    allowedSourceTypes: [.pptx]
+                                )
+                                .environmentObject(documentManager)
+                            }
+                            ConvertRow(title: "XLSX to PDF", icon: .xlsxToPdf) {
+                                ConvertFlowView(
+                                    targetFormat: .pdf,
+                                    allowedSourceTypes: [.xlsx]
+                                )
+                                .environmentObject(documentManager)
+                            }
+                            ConvertRow(title: "JPG to PDF", icon: .jpgToPdf, showsDivider: false) {
+                                ConvertFlowView(
+                                    targetFormat: .pdf,
+                                    allowedSourceTypes: [.image]
+                                )
+                                .environmentObject(documentManager)
+                            }
                         }
-                        ConvertRow(title: "PPTX to PDF", icon: .pptxToPdf) {
-                            ConvertFlowView(
-                                targetFormat: .pdf,
-                                allowedSourceTypes: [.pptx]
-                            )
-                            .environmentObject(documentManager)
-                        }
-                        ConvertRow(title: "XLSX to PDF", icon: .xlsxToPdf) {
-                            ConvertFlowView(
-                                targetFormat: .pdf,
-                                allowedSourceTypes: [.xlsx]
-                            )
-                            .environmentObject(documentManager)
-                        }
-                        ConvertRow(title: "JPG to PDF", icon: .jpgToPdf, showsDivider: false) {
-                            ConvertFlowView(
-                                targetFormat: .pdf,
-                                allowedSourceTypes: [.image]
-                            )
-                            .environmentObject(documentManager)
-                        }
+                        .padding(16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(cardBackground)
+                        )
+                        .padding(.horizontal, 16)
+
+                        Spacer()
                     }
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(cardBackground)
-                    )
-                    .padding(.horizontal, 16)
-
-                    Spacer()
+                    .padding(.top, 8)
                 }
-                .padding(.top, 8)
+                NavigationLink(isActive: $showDeepLinkFlow) {
+                    if let config = deepLinkConfig {
+                        ConvertFlowView(
+                            targetFormat: config.targetFormat,
+                            allowedSourceTypes: config.allowedSourceTypes
+                        )
+                        .environmentObject(documentManager)
+                    } else {
+                        EmptyView()
+                    }
+                } label: {
+                    EmptyView()
+                }
+                .hidden()
             }
             .hideScrollBackground()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -110,6 +129,12 @@ struct ConvertView: View {
                     SettingsView()
                 }
             }
+            .onAppear {
+                handlePendingDeepLinkIfNeeded()
+            }
+            .onChange(of: pendingConvertDeepLink) { _ in
+                handlePendingDeepLinkIfNeeded()
+            }
         }
     }
 
@@ -118,10 +143,52 @@ struct ConvertView: View {
             ? Color(.secondarySystemGroupedBackground)
             : Color(.systemBackground)
     }
+
+    private struct ConvertDeepLinkConfig {
+        let targetFormat: ConversionView.DocumentFormat
+        let allowedSourceTypes: Set<Document.DocumentType>
+    }
+
+    private func handlePendingDeepLinkIfNeeded() {
+        guard !pendingConvertDeepLink.isEmpty else { return }
+        guard let config = convertDeepLinkConfig(for: pendingConvertDeepLink) else {
+            pendingConvertDeepLink = ""
+            return
+        }
+        pendingConvertDeepLink = ""
+        deepLinkConfig = config
+        showDeepLinkFlow = false
+        DispatchQueue.main.async {
+            showDeepLinkFlow = true
+        }
+    }
+
+    private func convertDeepLinkConfig(for id: String) -> ConvertDeepLinkConfig? {
+        switch id {
+        case "convert-pdf-docx":
+            return ConvertDeepLinkConfig(targetFormat: .docx, allowedSourceTypes: [.pdf])
+        case "convert-pdf-pptx":
+            return ConvertDeepLinkConfig(targetFormat: .pptx, allowedSourceTypes: [.pdf])
+        case "convert-pdf-xlsx":
+            return ConvertDeepLinkConfig(targetFormat: .xlsx, allowedSourceTypes: [.pdf])
+        case "convert-pdf-jpg":
+            return ConvertDeepLinkConfig(targetFormat: .image, allowedSourceTypes: [.pdf])
+        case "convert-docx-pdf":
+            return ConvertDeepLinkConfig(targetFormat: .pdf, allowedSourceTypes: [.docx])
+        case "convert-pptx-pdf":
+            return ConvertDeepLinkConfig(targetFormat: .pdf, allowedSourceTypes: [.pptx])
+        case "convert-xlsx-pdf":
+            return ConvertDeepLinkConfig(targetFormat: .pdf, allowedSourceTypes: [.xlsx])
+        case "convert-jpg-pdf":
+            return ConvertDeepLinkConfig(targetFormat: .pdf, allowedSourceTypes: [.image])
+        default:
+            return nil
+        }
+    }
 }
 
 struct ConvertRow<Destination: View>: View {
-    let title: String
+    let title: String 
     let icon: ConvertIconType
     let destination: Destination
     let showsDivider: Bool

@@ -144,17 +144,20 @@ struct NativeChatView: View {
                 showingScopePicker = true
             } label: {
                 Image(systemName: "scope")
-                    .foregroundColor(isScopeActive ? Color("Primary") : .primary)
+                    .foregroundColor(isScopeActive ? .white : .primary)
                     .frame(width: 44, height: 44)
                     .background(
                         Circle()
-                            .fill(isScopeActive ? Color("Primary").opacity(0.12) : (colorScheme == .light ? Color(.systemGray6) : Color.clear))
+                            .fill(isScopeActive ? Color("Primary") : (colorScheme == .light ? Color(.systemGray6) : Color.clear))
                     )
-                    .overlay(
-                        Circle()
-                            .strokeBorder(isScopeActive ? Color("Primary").opacity(0.5) : (colorScheme == .light ? Color(.systemGray3) : Color.white.opacity(0.3)), lineWidth: 1)
+                    .shadow(
+                        color: isScopeActive ? Color("Primary").opacity(0.35) : Color.black.opacity(0.15),
+                        radius: isScopeActive ? 10 : 6,
+                        x: 0,
+                        y: isScopeActive ? 4 : 3
                     )
-                    .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
+                    .scaleEffect(isScopeActive ? 1.03 : 1.0)
+                    .animation(.easeInOut(duration: 0.18), value: isScopeActive)
             }
                     
             HStack(alignment: .center, spacing: 6) {
@@ -211,10 +214,6 @@ struct NativeChatView: View {
             .background(
                 RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
                     .fill(colorScheme == .light ? Color(.systemGray6) : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
-                    .strokeBorder(colorScheme == .light ? Color(.systemGray3) : Color.white.opacity(0.3), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
         }

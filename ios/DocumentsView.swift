@@ -50,6 +50,60 @@ extension View {
     }
 }
 
+private struct TabBarVisibilityModifier: ViewModifier {
+    let isHidden: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.toolbar(isHidden ? .hidden : .visible, for: .tabBar)
+        } else {
+            content
+        }
+    }
+}
+
+private struct BottomBarVisibilityModifier: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.toolbar(isVisible ? .visible : .hidden, for: .bottomBar)
+        } else {
+            content
+        }
+    }
+}
+
+private struct TabBarControllerAccessor: UIViewControllerRepresentable {
+    let isHidden: Bool
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        uiViewController.tabBarController?.tabBar.isHidden = isHidden
+    }
+}
+
+private extension View {
+    func tabBarVisibility(_ isHidden: Bool) -> some View {
+        self.modifier(TabBarVisibilityModifier(isHidden: isHidden))
+    }
+
+    func tabBarHiddenCompat(_ isHidden: Bool) -> some View {
+        if #available(iOS 16.0, *) {
+            return AnyView(self)
+        } else {
+            return AnyView(self.background(TabBarControllerAccessor(isHidden: isHidden)))
+        }
+    }
+
+    func bottomBarVisibility(_ isVisible: Bool) -> some View {
+        self.modifier(BottomBarVisibilityModifier(isVisible: isVisible))
+    }
+}
+
 private enum DocumentLayoutMode {
     case list
     case grid
@@ -173,12 +227,13 @@ struct DocumentsView: View {
     @State private var isSelectionMode = false
     @State private var selectedDocumentIds: Set<UUID> = []
     @State private var selectedFolderIds: Set<UUID> = []
+    @State private var editMode: EditMode = .inactive
     @State private var showingBulkDeleteDialog = false
     @State private var showingBulkMoveSheet = false
     @State private var showingNameSearch = false
     @State private var nameSearchText = ""
     @State private var showingSettings = false
-    @State private var editMode: EditMode = .inactive
+    @State private var isFolderSelectionModeActive = false
     @State private var dropTargetedFolderId: UUID? = nil
     @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
 
@@ -199,6 +254,16 @@ struct DocumentsView: View {
         documentsSortMode = (documentsSortMode == .accessNewest) ? .accessOldest : .accessNewest
     }
 
+    private func toggleRootSelectAll() {
+        if rootIsAllSelected {
+            selectedDocumentIds.removeAll()
+            selectedFolderIds.removeAll()
+        } else {
+            selectedDocumentIds = rootSelectableDocumentIds
+            selectedFolderIds = rootSelectableFolderIds
+        }
+    }
+
     private var listSelectionBinding: Binding<Set<UUID>> {
         Binding(
             get: { selectedDocumentIds.union(selectedFolderIds) },
@@ -213,6 +278,20 @@ struct DocumentsView: View {
 
     private var rootFolders: [DocumentFolder] { documentManager.folders(in: nil) }
     private var rootDocs: [Document] { documentManager.documents(in: nil) }
+    private var hasSelection: Bool { !selectedDocumentIds.isEmpty || !selectedFolderIds.isEmpty }
+    private var rootSelectableDocumentIds: Set<UUID> { Set(rootDocs.map { $0.id }) }
+    private var rootSelectableFolderIds: Set<UUID> { Set(rootFolders.map { $0.id }) }
+    private var rootHasSelectableItems: Bool {
+        !rootSelectableDocumentIds.isEmpty || !rootSelectableFolderIds.isEmpty
+    }
+    private var rootIsAllSelected: Bool {
+        rootHasSelectableItems
+            && rootSelectableDocumentIds.isSubset(of: selectedDocumentIds)
+            && rootSelectableFolderIds.isSubset(of: selectedFolderIds)
+    }
+    private var shouldHideTabBar: Bool {
+        isSelectionMode || isFolderSelectionModeActive
+    }
 
     private var sortMenu: some View {
         Menu {
@@ -536,7 +615,14 @@ struct DocumentsView: View {
     @ViewBuilder
     private var activeFolderDestinationView: some View {
         if let folder = activeFolder {
-            FolderDocumentsView(folder: folder, onOpenDocument: openDocumentPreview)
+            FolderDocumentsView(
+                folder: folder,
+                onOpenDocument: openDocumentPreview,
+                initialSelectionMode: isSelectionMode,
+                onSelectionModeChange: { isActive in
+                    isFolderSelectionModeActive = isActive
+                }
+            )
                 .environmentObject(documentManager)
         } else {
             EmptyView()
@@ -567,207 +653,251 @@ struct DocumentsView: View {
             .hidden()
         }
     }
+
+    @ToolbarContentBuilder
+    private var documentsSelectionToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button(rootIsAllSelected ? "Deselect All" : "Select All") {
+                toggleRootSelectAll()
+            }
+            .disabled(!rootHasSelectableItems)
+        }
+
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button("Cancel") {
+                clearSelection()
+            }
+        }
+
+        ToolbarItemGroup(placement: .bottomBar) {
+            Button {
+                shareSelectedDocuments()
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .disabled(!hasSelection)
+
+            Button {
+                showingZipExportSheet = true
+            } label: {
+                Label("Compress", systemImage: zipSymbolName())
+            }
+            .disabled(!hasSelection)
+
+            Button {
+                showingBulkMoveSheet = true
+            } label: {
+                Label("Move", systemImage: "folder")
+            }
+            .disabled(!hasSelection)
+
+            Button(role: .destructive) {
+                showingBulkDeleteDialog = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
+            .disabled(!hasSelection)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var documentsNormalToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Menu {
+                Button {
+                    newFolderName = ""
+                    showingNewFolderDialog = true
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
+                }
+
+                Button {
+                    startScan()
+                } label: {
+                    Label("Scan Document", systemImage: "doc.viewfinder")
+                }
+                
+                Button {
+                    showingDocumentPicker = true
+                } label: {
+                    Label("Import Files", systemImage: "square.and.arrow.down")
+                }
+                
+                Button {
+                    showingZipExportSheet = true
+                } label: {
+                    Label("Create Zip", systemImage: zipSymbolName())
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .foregroundColor(.primary)
+            }
+        }
+
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Menu {
+                Button {
+                    DispatchQueue.main.async {
+                        isSelectionMode = true
+                        editMode = .active
+                    }
+                } label: {
+                    Label("Select", systemImage: "checkmark.circle")
+                }
+                
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Preferences", systemImage: "gearshape")
+                }
+                
+                Divider()
+                
+                Text("View")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    documentManager.setPrefersGridLayout(false)
+                } label: {
+                    HStack {
+                        Image(systemName: "list.bullet")
+                        Text("List")
+                        Spacer()
+                        if !documentManager.prefersGridLayout {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Button {
+                    documentManager.setPrefersGridLayout(true)
+                } label: {
+                    HStack {
+                        Image(systemName: "square.grid.2x2")
+                        Text("Grid")
+                        Spacer()
+                        if documentManager.prefersGridLayout {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Divider()
+
+                Text("Sort")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    toggleNameSort()
+                } label: {
+                    HStack {
+                        Image(systemName: "textformat")
+                        Text("Name")
+                        Spacer()
+                        if documentsSortMode == .nameAsc {
+                            Image(systemName: "arrow.down")
+                                .foregroundColor(.secondary)
+                        } else if documentsSortMode == .nameDesc {
+                            Image(systemName: "arrow.up")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Button {
+                    toggleDateSort()
+                } label: {
+                    HStack {
+                        Image(systemName: "calendar")
+                        Text("Date")
+                        Spacer()
+                        if documentsSortMode == .dateNewest {
+                            Image(systemName: "arrow.down")
+                                .foregroundColor(.secondary)
+                        } else if documentsSortMode == .dateOldest {
+                            Image(systemName: "arrow.up")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Button {
+                    toggleAccessSort()
+                } label: {
+                    HStack {
+                        Label {
+                            Text("Recent")
+                        } icon: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "clock")
+                                if documentsSortMode == .accessNewest {
+                                    Image(systemName: "arrow.down")
+                                } else if documentsSortMode == .accessOldest {
+                                    Image(systemName: "arrow.up")
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundColor(.primary)
+            }
+        }
+    }
+
+    private var documentsBaseContent: some View {
+        Group {
+            if documentManager.documents.isEmpty && !isProcessing {
+                emptyStateView
+            } else {
+                rootBrowserView
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .overlay {
+            if isProcessing {
+                processingOverlayView
+            }
+        }
+        .overlay {
+            NavigationLink(
+                destination: activeFolderDestinationView,
+                isActive: isShowingActiveFolder
+            ) {
+                EmptyView()
+            }
+            .hidden()
+        }
+        .navigationTitle("Documents")
+        .navigationBarTitleDisplayMode(.large)
+    }
     
     var body: some View {
         NavigationView {
-            Group {
-                if documentManager.documents.isEmpty && !isProcessing {
-                    emptyStateView
-                } else {
-                    rootBrowserView
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.systemGroupedBackground).ignoresSafeArea())
-            .overlay {
-                if isProcessing {
-                    processingOverlayView
-                }
-            }
-            .overlay {
-                NavigationLink(
-                    destination: activeFolderDestinationView,
-                    isActive: isShowingActiveFolder
-                ) {
-                    EmptyView()
-                }
-                .hidden()
-            }
-            .navigationTitle("Documents")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            newFolderName = ""
-                            showingNewFolderDialog = true
-                        } label: {
-                            Label("New Folder", systemImage: "folder.badge.plus")
-                        }
-
-                        Button {
-                            startScan()
-                        } label: {
-                            Label("Scan Document", systemImage: "doc.viewfinder")
-                        }
-                        
-                        Button {
-                            showingDocumentPicker = true
-                        } label: {
-                            Label("Import Files", systemImage: "square.and.arrow.down")
-                        }
-                        
-                        Button {
-                            showingZipExportSheet = true
-                        } label: {
-                            Label("Create Zip", systemImage: "archivebox")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundColor(.primary)
-                    }
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        if isSelectionMode {
-                            Button("Share Selected") {
-                                shareSelectedDocuments()
-                            }
-                            Button("Move Selected") {
-                                showingBulkMoveSheet = true
-                            }
-                            Button("Create Zip") {
-                                showingZipExportSheet = true
-                            }
-                            Button("Delete Selected", role: .destructive) {
-                                showingBulkDeleteDialog = true
-                            }
-                            
-                            Divider()
-                            
-                            Button("Cancel") {
-                                clearSelection()
-                            }
-                        } else {
-                            Button {
-                                isSelectionMode = true
-                            } label: {
-                                Label("Select", systemImage: "checkmark.circle")
-                            }
-                            
-                            Button {
-                                showingSettings = true
-                            } label: {
-                                Label("Preferences", systemImage: "gearshape")
-                            }
-                            
-                            Divider()
-                            
-                            Text("View")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Button {
-                                documentManager.setPrefersGridLayout(false)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "list.bullet")
-                                    Text("List")
-                                    Spacer()
-                                    if !documentManager.prefersGridLayout {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            Button {
-                                documentManager.setPrefersGridLayout(true)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "square.grid.2x2")
-                                    Text("Grid")
-                                    Spacer()
-                                    if documentManager.prefersGridLayout {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            Divider()
-
-                            Text("Sort")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Button {
-                                toggleNameSort()
-                            } label: {
-                                HStack {
-                                    Image(systemName: "textformat")
-                                    Text("Name")
-                                    Spacer()
-                                    if documentsSortMode == .nameAsc {
-                                        Image(systemName: "arrow.down")
-                                            .foregroundColor(.secondary)
-                                    } else if documentsSortMode == .nameDesc {
-                                        Image(systemName: "arrow.up")
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            Button {
-                                toggleDateSort()
-                            } label: {
-                                HStack {
-                                    Image(systemName: "calendar")
-                                    Text("Date")
-                                    Spacer()
-                                    if documentsSortMode == .dateNewest {
-                                        Image(systemName: "arrow.down")
-                                            .foregroundColor(.secondary)
-                                    } else if documentsSortMode == .dateOldest {
-                                        Image(systemName: "arrow.up")
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            Button {
-                                toggleAccessSort()
-                            } label: {
-                                HStack {
-                                    Label {
-                                        Text("Recent")
-                                    } icon: {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "clock")
-                                            if documentsSortMode == .accessNewest {
-                                                Image(systemName: "arrow.down")
-                                            } else if documentsSortMode == .accessOldest {
-                                                Image(systemName: "arrow.up")
-                                            }
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundColor(.primary)
-                    }
-                }
+            if isSelectionMode {
+                documentsBaseContent
+                    .toolbar { documentsSelectionToolbar }
+            } else {
+                documentsBaseContent
+                    .toolbar { documentsNormalToolbar }
             }
         }
+        .navigationViewStyle(.stack)
+        .tabBarVisibility(shouldHideTabBar)
+        .tabBarHiddenCompat(shouldHideTabBar)
         .sheet(isPresented: $showingSettings) {
             if #available(iOS 16.0, *) {
                 SettingsView()
@@ -780,6 +910,11 @@ struct DocumentsView: View {
         }
         .onChange(of: isSelectionMode) { active in
             editMode = active ? .active : .inactive
+        }
+        .onChange(of: activeFolder?.id) { folderId in
+            if folderId == nil {
+                isFolderSelectionModeActive = false
+            }
         }
         .alert("New Folder", isPresented: $showingNewFolderDialog) {
             TextField("Folder name", text: $newFolderName)
@@ -1020,6 +1155,7 @@ struct DocumentsView: View {
     private func beginSelection(documentId: UUID? = nil, folderId: UUID? = nil) {
         if !isSelectionMode {
             isSelectionMode = true
+            editMode = .active
         }
         if let documentId {
             toggleDocumentSelection(documentId)
@@ -1790,7 +1926,7 @@ struct DocumentRowView: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(Color("Primary"))
 
-                            Image(systemName: "archivebox.fill")
+                            Image(systemName: zipSymbolName())
                                 .foregroundColor(.white)
                                 .font(.system(size: 20))
                         }
@@ -1873,7 +2009,7 @@ struct DocumentGridItemView: View {
                     if document.type == .zip {
                         RoundedRectangle(cornerRadius: 10)
                             .fill(Color("Primary"))
-                        Image(systemName: "archivebox.fill")
+                        Image(systemName: zipSymbolName())
                             .font(.system(size: 28))
                             .foregroundColor(.white)
                     } else {
@@ -2249,6 +2385,8 @@ struct FolderGridItemView: View {
 struct FolderDocumentsView: View {
     let folder: DocumentFolder
     let onOpenDocument: (Document) -> Void
+    let initialSelectionMode: Bool
+    let onSelectionModeChange: (Bool) -> Void
     @EnvironmentObject private var documentManager: DocumentManager
     private var layoutMode: DocumentLayoutMode { documentManager.prefersGridLayout ? .grid : .list }
     @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
@@ -2275,9 +2413,10 @@ struct FolderDocumentsView: View {
     @State private var pendingKeywordsResume: String = ""
     @State private var showingSettings = false
 
-    @State private var isSelectionMode = false
+    @State private var isSelectionMode: Bool
     @State private var selectedDocumentIds: Set<UUID> = []
     @State private var selectedFolderIds: Set<UUID> = []
+    @State private var editMode: EditMode = .inactive
     @State private var showingBulkDeleteDialog = false
     @State private var showingBulkMoveSheet = false
     @State private var showingZipExportSheet = false
@@ -2299,6 +2438,48 @@ struct FolderDocumentsView: View {
     @State private var showingNewFolderDialog = false
     @State private var newFolderName = ""
     @State private var dropTargetedFolderId: UUID? = nil
+    
+    init(
+        folder: DocumentFolder,
+        onOpenDocument: @escaping (Document) -> Void,
+        initialSelectionMode: Bool = false,
+        onSelectionModeChange: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.folder = folder
+        self.onOpenDocument = onOpenDocument
+        self.initialSelectionMode = initialSelectionMode
+        self.onSelectionModeChange = onSelectionModeChange
+        _isSelectionMode = State(initialValue: initialSelectionMode)
+        _editMode = State(initialValue: initialSelectionMode ? .active : .inactive)
+    }
+    
+    private var hasSelection: Bool { !selectedDocumentIds.isEmpty || !selectedFolderIds.isEmpty }
+    private var folderSelectableDocumentIds: Set<UUID> {
+        Set(documentManager.documents(in: folder.id).map { $0.id })
+    }
+    private var folderSelectableFolderIds: Set<UUID> {
+        Set(documentManager.folders(in: folder.id).map { $0.id })
+    }
+    private var folderHasSelectableItems: Bool {
+        !folderSelectableDocumentIds.isEmpty || !folderSelectableFolderIds.isEmpty
+    }
+    private var folderIsAllSelected: Bool {
+        folderHasSelectableItems
+            && folderSelectableDocumentIds.isSubset(of: selectedDocumentIds)
+            && folderSelectableFolderIds.isSubset(of: selectedFolderIds)
+    }
+
+    private var listSelectionBinding: Binding<Set<UUID>> {
+        Binding(
+            get: { selectedDocumentIds.union(selectedFolderIds) },
+            set: { newValue in
+                let docIds = Set(documentManager.documents(in: folder.id).map { $0.id })
+                let folderIds = Set(documentManager.folders(in: folder.id).map { $0.id })
+                selectedDocumentIds = newValue.filter { docIds.contains($0) }
+                selectedFolderIds = newValue.filter { folderIds.contains($0) }
+            }
+        )
+    }
 
     private func toggleNameSort() {
         documentsSortMode = (documentsSortMode == .nameAsc) ? .nameDesc : .nameAsc
@@ -2310,6 +2491,16 @@ struct FolderDocumentsView: View {
 
     private func toggleAccessSort() {
         documentsSortMode = (documentsSortMode == .accessNewest) ? .accessOldest : .accessNewest
+    }
+
+    private func toggleFolderSelectAll() {
+        if folderIsAllSelected {
+            selectedDocumentIds.removeAll()
+            selectedFolderIds.removeAll()
+        } else {
+            selectedDocumentIds = folderSelectableDocumentIds
+            selectedFolderIds = folderSelectableFolderIds
+        }
     }
 
     private var sortMenu: some View {
@@ -2341,7 +2532,12 @@ struct FolderDocumentsView: View {
     @ViewBuilder
     private var activeSubfolderDestinationView: some View {
         if let sub = activeSubfolder {
-            FolderDocumentsView(folder: sub, onOpenDocument: onOpenDocument)
+            FolderDocumentsView(
+                folder: sub,
+                onOpenDocument: onOpenDocument,
+                initialSelectionMode: isSelectionMode,
+                onSelectionModeChange: onSelectionModeChange
+            )
                 .environmentObject(documentManager)
         } else {
             EmptyView()
@@ -2352,13 +2548,14 @@ struct FolderDocumentsView: View {
     private var folderListContent: some View {
         if isSelectionMode {
             // Use List for native selection support
-            List {
+            List(selection: listSelectionBinding) {
                 ForEach(mixedFolderItems()) { item in
                     folderListRowForSelection(item)
                 }
             }
             .listStyle(.plain)
             .hideScrollBackground()
+            .environment(\.editMode, $editMode)
         } else {
             // Use ScrollView for drag and drop support
             ScrollView {
@@ -2402,6 +2599,7 @@ struct FolderDocumentsView: View {
                 },
                 isDropTargeted: false
             )
+            .tag(sub.id)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets())
@@ -2421,6 +2619,7 @@ struct FolderDocumentsView: View {
                 onConvert: { },
                 onShare: { shareDocuments([document]) }
             )
+            .tag(document.id)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets())
@@ -2576,231 +2775,250 @@ struct FolderDocumentsView: View {
         .navigationTitle(folder.name)
     }
 
-    private var folderContentSelection: some View {
-        folderBaseContent
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            newFolderName = ""
-                            showingNewFolderDialog = true
-                        } label: {
-                            Label("New Folder", systemImage: "folder.badge.plus")
-                        }
-
-                        Button {
-                            startScan()
-                        } label: {
-                            Label("Scan Document", systemImage: "doc.viewfinder")
-                        }
-
-                        Button {
-                            showingDocumentPicker = true
-                        } label: {
-                            Label("Import Files", systemImage: "square.and.arrow.down")
-                        }
-
-                        Button {
-                            showingZipExportSheet = true
-                        } label: {
-                            Label("Create Zip", systemImage: "archivebox")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundColor(.primary)
-                    }
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("Share Selected") {
-                            shareSelectedDocuments()
-                        }
-                        Button("Move Selected") {
-                            showingBulkMoveSheet = true
-                        }
-                        Button("Create Zip") {
-                            showingZipExportSheet = true
-                        }
-                        Button("Delete Selected", role: .destructive) {
-                            showingBulkDeleteDialog = true
-                        }
-                        
-                        Divider()
-                        
-                        Button("Cancel") {
-                            clearSelection()
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundColor(.primary)
-                    }
-                }
+    @ToolbarContentBuilder
+    private var folderSelectionToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button(folderIsAllSelected ? "Deselect All" : "Select All") {
+                toggleFolderSelectAll()
             }
+            .disabled(!folderHasSelectableItems)
+        }
+
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button("Cancel") {
+                clearSelection()
+            }
+        }
+
+        ToolbarItemGroup(placement: .bottomBar) {
+            Button {
+                shareSelectedDocuments()
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .disabled(!hasSelection)
+
+            Button {
+                showingZipExportSheet = true
+            } label: {
+                Label("Compress", systemImage: zipSymbolName())
+            }
+            .disabled(!hasSelection)
+
+            Button {
+                showingBulkMoveSheet = true
+            } label: {
+                Label("Move", systemImage: "folder")
+            }
+            .disabled(!hasSelection)
+
+            Button(role: .destructive) {
+                showingBulkDeleteDialog = true
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
+            .disabled(!hasSelection)
+        }
     }
 
-    private var folderContentNormal: some View {
-        folderBaseContent
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            newFolderName = ""
-                            showingNewFolderDialog = true
-                        } label: {
-                            Label("New Folder", systemImage: "folder.badge.plus")
-                        }
-
-                        Button {
-                            startScan()
-                        } label: {
-                            Label("Scan Document", systemImage: "doc.viewfinder")
-                        }
-
-                        Button {
-                            showingDocumentPicker = true
-                        } label: {
-                            Label("Import Files", systemImage: "square.and.arrow.down")
-                        }
-
-                        Button {
-                            showingZipExportSheet = true
-                        } label: {
-                            Label("Create Zip", systemImage: "archivebox")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundColor(.primary)
-                    }
+    @ToolbarContentBuilder
+    private var folderNormalToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Menu {
+                Button {
+                    newFolderName = ""
+                    showingNewFolderDialog = true
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
                 }
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            isSelectionMode = true
-                        } label: {
-                            Label("Select", systemImage: "checkmark.circle")
-                        }
-                        
-                        Button {
-                            showingSettings = true
-                        } label: {
-                            Label("Preferences", systemImage: "gearshape")
-                        }
-                        
-                        Divider()
-                        
-                        Text("View")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button {
-                            documentManager.setPrefersGridLayout(false)
-                        } label: {
-                            HStack {
-                                Image(systemName: "list.bullet")
-                                Text("List")
-                                Spacer()
-                                if !documentManager.prefersGridLayout {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        
-                        Button {
-                            documentManager.setPrefersGridLayout(true)
-                        } label: {
-                            HStack {
-                                Image(systemName: "square.grid.2x2")
-                                Text("Grid")
-                                Spacer()
-                                if documentManager.prefersGridLayout {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        
-                        Divider()
-                        
-                        Text("Sort")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button {
-                            toggleNameSort()
-                        } label: {
-                            HStack {
-                                Image(systemName: "textformat")
-                                Text("Name")
-                                Spacer()
-                                if documentsSortMode == .nameAsc {
-                                    Image(systemName: "arrow.down")
-                                        .foregroundColor(.secondary)
-                                } else if documentsSortMode == .nameDesc {
-                                    Image(systemName: "arrow.up")
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        
-                        Button {
-                            toggleDateSort()
-                        } label: {
-                            HStack {
-                                Image(systemName: "calendar")
-                                Text("Date")
-                                Spacer()
-                                if documentsSortMode == .dateNewest {
-                                    Image(systemName: "arrow.down")
-                                        .foregroundColor(.secondary)
-                                } else if documentsSortMode == .dateOldest {
-                                    Image(systemName: "arrow.up")
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        
-                        Button {
-                            toggleAccessSort()
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Recent")
-                                } icon: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "clock")
-                                        if documentsSortMode == .accessNewest {
-                                            Image(systemName: "arrow.down")
-                                        } else if documentsSortMode == .accessOldest {
-                                            Image(systemName: "arrow.up")
-                                        }
-                                    }
-                                }
-                                Spacer()
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundColor(.primary)
-                    }
+                Button {
+                    startScan()
+                } label: {
+                    Label("Scan Document", systemImage: "doc.viewfinder")
                 }
+
+                Button {
+                    showingDocumentPicker = true
+                } label: {
+                    Label("Import Files", systemImage: "square.and.arrow.down")
+                }
+
+                Button {
+                    showingZipExportSheet = true
+                } label: {
+                    Label("Create Zip", systemImage: zipSymbolName())
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .foregroundColor(.primary)
             }
+        }
+
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Menu {
+                Button {
+                    DispatchQueue.main.async {
+                        isSelectionMode = true
+                        editMode = .active
+                    }
+                } label: {
+                    Label("Select", systemImage: "checkmark.circle")
+                }
+                
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Preferences", systemImage: "gearshape")
+                }
+                
+                Divider()
+                
+                Text("View")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    documentManager.setPrefersGridLayout(false)
+                } label: {
+                    HStack {
+                        Image(systemName: "list.bullet")
+                        Text("List")
+                        Spacer()
+                        if !documentManager.prefersGridLayout {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                Button {
+                    documentManager.setPrefersGridLayout(true)
+                } label: {
+                    HStack {
+                        Image(systemName: "square.grid.2x2")
+                        Text("Grid")
+                        Spacer()
+                        if documentManager.prefersGridLayout {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                Divider()
+                
+                Text("Sort")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    toggleNameSort()
+                } label: {
+                    HStack {
+                        Image(systemName: "textformat")
+                        Text("Name")
+                        Spacer()
+                        if documentsSortMode == .nameAsc {
+                            Image(systemName: "arrow.down")
+                                .foregroundColor(.secondary)
+                        } else if documentsSortMode == .nameDesc {
+                            Image(systemName: "arrow.up")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                Button {
+                    toggleDateSort()
+                } label: {
+                    HStack {
+                        Image(systemName: "calendar")
+                        Text("Date")
+                        Spacer()
+                        if documentsSortMode == .dateNewest {
+                            Image(systemName: "arrow.down")
+                                .foregroundColor(.secondary)
+                        } else if documentsSortMode == .dateOldest {
+                            Image(systemName: "arrow.up")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                Button {
+                    toggleAccessSort()
+                } label: {
+                    HStack {
+                        Label {
+                            Text("Recent")
+                        } icon: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "clock")
+                                if documentsSortMode == .accessNewest {
+                                    Image(systemName: "arrow.down")
+                                } else if documentsSortMode == .accessOldest {
+                                    Image(systemName: "arrow.up")
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundColor(.primary)
+            }
+        }
+    }
+
+    @available(iOS 16.0, *)
+    @ToolbarContentBuilder
+    private var folderToolbar: some ToolbarContent {
+        if isSelectionMode {
+            folderSelectionToolbar
+        } else {
+            folderNormalToolbar
+        }
     }
 
     var body: some View {
         Group {
-            if isSelectionMode {
-                folderContentSelection
+            if #available(iOS 16.0, *) {
+                folderBaseContent
+                    .toolbar { folderToolbar }
             } else {
-                folderContentNormal
+                if isSelectionMode {
+                    folderBaseContent
+                        .toolbar { folderSelectionToolbar }
+                } else {
+                    folderBaseContent
+                        .toolbar { folderNormalToolbar }
+                }
             }
+        }
+        .navigationBarBackButtonHidden(isSelectionMode)
+        .tabBarVisibility(isSelectionMode)
+        .tabBarHiddenCompat(isSelectionMode)
+        .bottomBarVisibility(isSelectionMode)
+        .onAppear {
+            if isSelectionMode {
+                editMode = .active
+            }
+            onSelectionModeChange(isSelectionMode)
+        }
+        .onChange(of: isSelectionMode) { active in
+            editMode = active ? .active : .inactive
+            onSelectionModeChange(active)
+        }
+        .onDisappear {
+            onSelectionModeChange(false)
         }
         .sheet(item: $documentToMove) { doc in
             MoveToFolderSheet(
@@ -2856,12 +3074,12 @@ struct FolderDocumentsView: View {
                 SettingsView()
             }
     }
-        .sheet(isPresented: $showingDocumentPicker) {
+            .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker { urls in
                 processImportedFiles(urls)
             }
         }
-        .sheet(isPresented: $showingScanner) {
+            .sheet(isPresented: $showingScanner) {
             if scannerMode == .document, VNDocumentCameraViewController.isSupported {
                 DocumentScannerView { scannedImages in
                     self.scannedImages = scannedImages
@@ -3022,6 +3240,7 @@ struct FolderDocumentsView: View {
     private func beginSelection(documentId: UUID? = nil, folderId: UUID? = nil) {
         if !isSelectionMode {
             isSelectionMode = true
+            editMode = .active
         }
         if let documentId {
             toggleDocumentSelection(documentId)

@@ -44,6 +44,9 @@ class AppDelegate: RCTAppDelegate {
       navBar.compactScrollEdgeAppearance = navBarAppearance
     }
     navBar.isTranslucent = true
+    navBar.preservesSuperviewLayoutMargins = true
+    navBar.insetsLayoutMarginsFromSafeArea = true
+    navBar.layoutMargins = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
 
     // You can add your custom initial props in the dictionary below.
     // They will be passed down to the ViewController used by React Native.

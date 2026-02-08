@@ -5,73 +5,89 @@ struct ToolsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingSettings = false
+    @AppStorage("pendingToolsDeepLink") private var pendingToolsDeepLink = ""
+    @State private var deepLinkTool: ToolKind?
+    @State private var showDeepLinkFlow = false
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        SectionHeader(title: "Organize")
-                        ToolRow(
-                            icon: "rectangle.portrait.on.rectangle.portrait.fill",
-                            title: "Merge PDF"
-                        ) {
-                            ToolsFlowView(tool: .merge)
-                                .environmentObject(documentManager)
-                        }
-                        ToolRow(
-                            icon: "rectangle.split.2x1.fill",
-                            title: "Split PDF"
-                        ) {
-                            ToolsFlowView(tool: .split)
-                                .environmentObject(documentManager)
-                        }
-                        ToolRow(
-                            icon: "line.3.horizontal.decrease",
-                            title: "Arrange PDF"
-                        ) {
-                            ToolsFlowView(tool: .rearrange)
-                                .environmentObject(documentManager)
-                        }
+            ZStack {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionHeader(title: "Organize")
+                            ToolRow(
+                                icon: "rectangle.portrait.on.rectangle.portrait.fill",
+                                title: "Merge PDF"
+                            ) {
+                                ToolsFlowView(tool: .merge)
+                                    .environmentObject(documentManager)
+                            }
+                            ToolRow(
+                                icon: "rectangle.split.2x1.fill",
+                                title: "Split PDF"
+                            ) {
+                                ToolsFlowView(tool: .split)
+                                    .environmentObject(documentManager)
+                            }
+                            ToolRow(
+                                icon: "line.3.horizontal.decrease",
+                                title: "Arrange PDF"
+                            ) {
+                                ToolsFlowView(tool: .rearrange)
+                                    .environmentObject(documentManager)
+                            }
 
-                        SectionHeader(title: "Modify")
-                        ToolRow(
-                            icon: "rectangle.portrait.rotate",
-                            title: "Rotate PDF"
-                        ) {
-                            ToolsFlowView(tool: .rotate)
-                                .environmentObject(documentManager)
-                        }
-                        ToolRow(
-                            icon: "arrow.down.right.and.arrow.up.left",
-                            title: "Compress PDF"
-                        ) {
-                            ToolsFlowView(tool: .compress)
-                                .environmentObject(documentManager)
-                        }
-                        ToolRow(icon: "pencil", title: "Edit PDF") {
-                            ComingSoonView(title: "Edit PDF")
-                        }
+                            SectionHeader(title: "Modify")
+                            ToolRow(
+                                icon: "rectangle.portrait.rotate",
+                                title: "Rotate PDF"
+                            ) {
+                                ToolsFlowView(tool: .rotate)
+                                    .environmentObject(documentManager)
+                            }
+                            ToolRow(
+                                icon: "arrow.down.right.and.arrow.up.left",
+                                title: "Compress PDF"
+                            ) {
+                                ToolsFlowView(tool: .compress)
+                                    .environmentObject(documentManager)
+                            }
+                            ToolRow(icon: "pencil", title: "Edit PDF") {
+                                ComingSoonView(title: "Edit PDF")
+                            }
 
-                        SectionHeader(title: "Protect & Sign")
-                        ToolRow(icon: "signature", title: "Sign PDF") {
-                            ToolsFlowView(tool: .sign)
-                                .environmentObject(documentManager)
+                            SectionHeader(title: "Protect & Sign")
+                            ToolRow(icon: "signature", title: "Sign PDF") {
+                                ToolsFlowView(tool: .sign)
+                                    .environmentObject(documentManager)
+                            }
+                            ToolRow(icon: "lock.fill", title: "Protect PDF", showsDivider: false) {
+                                ComingSoonView(title: "Protect PDF")
+                            }
                         }
-                        ToolRow(icon: "lock.fill", title: "Protect PDF", showsDivider: false) {
-                            ComingSoonView(title: "Protect PDF")
-                        }
+                        .padding(16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(cardBackground)
+                        )
+                        .padding(.horizontal, 16)
+
+                        Spacer()
                     }
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(cardBackground)
-                    )
-                    .padding(.horizontal, 16)
-
-                    Spacer()
+                    .padding(.top, 8)
                 }
-                .padding(.top, 8)
+                NavigationLink(isActive: $showDeepLinkFlow) {
+                    if let tool = deepLinkTool {
+                        ToolsFlowView(tool: tool)
+                            .environmentObject(documentManager)
+                    } else {
+                        EmptyView()
+                    }
+                } label: {
+                    EmptyView()
+                }
+                .hidden()
             }
             .hideScrollBackground()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -102,6 +118,12 @@ struct ToolsView: View {
                     SettingsView()
                 }
             }
+            .onAppear {
+                handlePendingDeepLinkIfNeeded()
+            }
+            .onChange(of: pendingToolsDeepLink) { _ in
+                handlePendingDeepLinkIfNeeded()
+            }
         }
     }
 
@@ -109,6 +131,32 @@ struct ToolsView: View {
         colorScheme == .dark
             ? Color(.secondarySystemGroupedBackground)
             : Color(.systemBackground)
+    }
+
+    private func handlePendingDeepLinkIfNeeded() {
+        guard !pendingToolsDeepLink.isEmpty else { return }
+        guard let tool = toolKindFromDeepLinkId(pendingToolsDeepLink) else {
+            pendingToolsDeepLink = ""
+            return
+        }
+        pendingToolsDeepLink = ""
+        deepLinkTool = tool
+        showDeepLinkFlow = false
+        DispatchQueue.main.async {
+            showDeepLinkFlow = true
+        }
+    }
+
+    private func toolKindFromDeepLinkId(_ id: String) -> ToolKind? {
+        switch id {
+        case "tool-merge": return .merge
+        case "tool-split": return .split
+        case "tool-arrange": return .rearrange
+        case "tool-rotate": return .rotate
+        case "tool-compress": return .compress
+        case "tool-sign": return .sign
+        default: return nil
+        }
     }
 }
 

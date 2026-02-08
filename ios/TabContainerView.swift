@@ -68,6 +68,8 @@ struct TabContainerView: View {
     @State private var lastBackgroundDate: Date?
     @State private var previewItem: PreviewItem?
     @State private var summaryDocument: Document?
+    @AppStorage("pendingToolsDeepLink") private var pendingToolsDeepLink = ""
+    @AppStorage("pendingConvertDeepLink") private var pendingConvertDeepLink = ""
 
     private struct SummaryJob: Equatable {
         let documentId: UUID
@@ -233,6 +235,14 @@ struct TabContainerView: View {
                             },
                             onExit: {
                                 selectedTab = lastNonSearchTab
+                            },
+                            onOpenTools: { toolId in
+                                pendingToolsDeepLink = toolId
+                                selectedTab = .tools
+                            },
+                            onOpenConvert: { convertId in
+                                pendingConvertDeepLink = convertId
+                                selectedTab = .convert
                             }
                         )
                         .environmentObject(documentManager)
@@ -293,6 +303,14 @@ struct TabContainerView: View {
                         },
                         onExit: {
                             selectedTab = lastNonSearchTab
+                        },
+                        onOpenTools: { toolId in
+                            pendingToolsDeepLink = toolId
+                            selectedTab = .tools
+                        },
+                        onOpenConvert: { convertId in
+                            pendingConvertDeepLink = convertId
+                            selectedTab = .convert
                         }
                     )
                         .environmentObject(documentManager)
