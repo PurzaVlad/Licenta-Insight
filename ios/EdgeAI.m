@@ -15,6 +15,8 @@ RCT_EXTERN_METHOD(rejectRequest:(NSString *)requestId
                   code:(NSString *)code
                   message:(NSString *)message)
 
+RCT_EXTERN_METHOD(setModelReady:(BOOL)ready)
+
 @end
 
 @interface RCT_EXTERN_MODULE(NativeChatViewManager, RCTViewManager)

@@ -10,7 +10,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     guard let appDelegate = UIApplication.shared.delegate as? AppDelegate else { return }
 
     let rootView = appDelegate.rootViewFactory.view(
-      withModuleName: appDelegate.moduleName ?? "VaultAI",
+      withModuleName: appDelegate.moduleName ?? "Identity",
       initialProperties: appDelegate.initialProps,
       launchOptions: nil
     )

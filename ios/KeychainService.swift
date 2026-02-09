@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainService {
-    private static let service = "com.vaultai.app"
+    private static let service = "com.identity.app"
     private static let account = "appPasscode"
 
     static func passcodeExists() -> Bool {

@@ -260,9 +260,5 @@ func iconForDocumentType(_ type: Document.DocumentType) -> String {
 }
 
 func zipSymbolName() -> String {
-    if #available(iOS 17.0, *) {
-        return "zipper.page"
-    } else {
-        return "archivebox"
-    }
+    return "zipper.page"
 }

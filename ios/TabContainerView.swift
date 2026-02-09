@@ -35,46 +35,46 @@ extension View {
     }
 }
 
-// ViewModifier for navigation bar transparency with iOS 15 compatibility
+// ViewModifier for navigation bar transparency
 struct NavBarBlurModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content
-                .toolbarBackground(.hidden, for: .navigationBar)
-                .toolbarColorScheme(.none, for: .navigationBar)
-        } else {
-            content
-        }
+        content
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarColorScheme(.none, for: .navigationBar)
     }
 }
 
-// ViewModifier for tab bar transparency with iOS 15 compatibility
+// ViewModifier for tab bar transparency
 struct TabBarBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content
-                .toolbarBackground(.hidden, for: .tabBar)
-        } else {
-            content
-        }
+        content
+            .toolbarBackground(.hidden, for: .tabBar)
     }
 }
 
-// ViewModifier for hiding scroll content background with iOS 15 compatibility
+// ViewModifier for hiding scroll content background
 struct HideScrollBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content
-                .scrollContentBackground(.hidden)
-        } else {
-            content
-        }
+        content
+            .scrollContentBackground(.hidden)
     }
 }
 
 extension View {
     func hideScrollBackground() -> some View {
         self.modifier(HideScrollBackgroundModifier())
+    }
+
+    @ViewBuilder
+    func scrollDismissesKeyboardIfAvailable() -> some View {
+        scrollDismissesKeyboard(.interactively)
+            .scrollBounceBehavior(.always)
+    }
+}
+
+struct SharedSettingsSheetBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.presentationBackground(.regularMaterial)
     }
 }
 
@@ -103,10 +103,9 @@ struct TabContainerView: View {
     @State private var summaryDocument: Document?
     @AppStorage("pendingToolsDeepLink") private var pendingToolsDeepLink = ""
     @AppStorage("pendingConvertDeepLink") private var pendingConvertDeepLink = ""
-    @AppStorage("hasShownInitialStartupLoading") private var hasShownInitialStartupLoading = false
-    @State private var didStartInitialBootstrap = false
-    @State private var isInitialStartupLoading = false
-    @State private var isInitialStartupLoadingVisible = false
+    @State private var isInitialStartupLoadingVisible = true
+    @State private var hasPassedStartupGate = false
+    @State private var startupLoadingReadyPollToken: Int = 0
     @State private var operationLoadingCount = 0
     @State private var isOperationLoadingVisible = false
     @State private var operationLoadingVisibilityToken: Int = 0
@@ -138,22 +137,25 @@ struct TabContainerView: View {
         ZStack {
             Color(.systemGroupedBackground)
                 .ignoresSafeArea()
-            tabRoot
-        .fullScreenCover(item: $previewItem) { item in
-            let shouldShowSummary = item.document.type != .image
-            DocumentPreviewContainerView(
-                url: item.url,
-                document: item.document,
-                onAISummary: shouldShowSummary ? {
-                    previewItem = nil
-                    summaryDocument = item.document
-                } : nil
-            )
-        }
-        .sheet(item: $summaryDocument) { document in
-            DocumentSummaryView(document: document)
-                .environmentObject(documentManager)
-        }
+
+            if !isInitialStartupLoadingVisible {
+                tabRoot
+                    .fullScreenCover(item: $previewItem) { item in
+                        let shouldShowSummary = item.document.type != .image
+                        DocumentPreviewContainerView(
+                            url: item.url,
+                            document: item.document,
+                            onAISummary: shouldShowSummary ? {
+                                previewItem = nil
+                                summaryDocument = item.document
+                            } : nil
+                        )
+                    }
+                    .sheet(item: $summaryDocument) { document in
+                        DocumentSummaryView(document: document)
+                            .environmentObject(documentManager)
+                    }
+            }
 
             if isLocked {
                 lockOverlay
@@ -174,7 +176,15 @@ struct TabContainerView: View {
             }
         }
         .onAppear {
-            startInitialBootstrapIfNeeded()
+            let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
+            if modelReady != persistedModelReady {
+                modelReady = persistedModelReady
+            }
+            if persistedModelReady {
+                finishInitialStartupLoadingIfNeeded()
+            } else {
+                startInitialStartupLoadingIfNeeded()
+            }
             applyUserInterfaceStyle()
             for doc in documentManager.documents
             where isSummaryPlaceholder(doc.summary) && shouldAutoSummarize(doc) {
@@ -182,12 +192,27 @@ struct TabContainerView: View {
             }
             if modelReady {
                 generateMissingTagsIfNeeded()
+                lockIfNeeded(force: true)
             }
-            lockIfNeeded(force: true)
         }
         .onChange(of: modelReady) { ready in
             if ready {
                 generateMissingTagsIfNeeded()
+                finishInitialStartupLoadingIfNeeded()
+            } else {
+                startInitialStartupLoadingIfNeeded()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ModelReadyStatus"))) { notification in
+            guard let ready = notification.userInfo?["ready"] as? Bool else { return }
+            if modelReady != ready {
+                modelReady = ready
+            }
+            if ready {
+                generateMissingTagsIfNeeded()
+                finishInitialStartupLoadingIfNeeded()
+            } else {
+                startInitialStartupLoadingIfNeeded()
             }
         }
         .onChange(of: appThemeRaw) { _ in
@@ -197,6 +222,7 @@ struct TabContainerView: View {
             if phase == .background {
                 lastBackgroundDate = Date()
             } else if phase == .active {
+                guard !isInitialStartupLoadingVisible else { return }
                 lockIfNeeded(force: false)
             }
         }
@@ -496,7 +522,7 @@ struct TabContainerView: View {
                     .font(.system(size: 36, weight: .semibold))
                     .foregroundColor(.primary)
 
-                Text("Unlock VaultAI")
+                Text("Unlock Identity")
                     .font(.headline)
 
                 if !unlockErrorMessage.isEmpty {
@@ -591,7 +617,7 @@ struct TabContainerView: View {
             return
         }
 
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock VaultAI.") { success, authError in
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock Identity.") { success, authError in
             DispatchQueue.main.async {
                 self.isUnlocking = false
                 if success {
@@ -641,23 +667,58 @@ struct TabContainerView: View {
         }
     }
 
-    private func startInitialBootstrapIfNeeded() {
-        guard !didStartInitialBootstrap else { return }
-        didStartInitialBootstrap = true
-        guard !hasShownInitialStartupLoading else { return }
+    private func startInitialStartupLoadingIfNeeded() {
+        guard !hasPassedStartupGate else { return }
+        if !isInitialStartupLoadingVisible {
+            withAnimation(.easeIn(duration: 0.15)) {
+                isInitialStartupLoadingVisible = true
+            }
+        }
+        startStartupLoadingReadyPoll()
+    }
 
-        isInitialStartupLoading = true
-        scheduleInitialStartupLoadingVisibility()
+    private func finishInitialStartupLoadingIfNeeded() {
+        hasPassedStartupGate = true
+        startupLoadingReadyPollToken += 1
+        if isInitialStartupLoadingVisible {
+            withAnimation(.easeOut(duration: 0.2)) {
+                isInitialStartupLoadingVisible = false
+            }
+            DispatchQueue.main.async {
+                lockIfNeeded(force: true)
+            }
+            return
+        }
+
+        lockIfNeeded(force: true)
+    }
+
+    private func startStartupLoadingReadyPoll() {
+        startupLoadingReadyPollToken += 1
+        let token = startupLoadingReadyPollToken
+
         Task {
-            async let bootstrap: Void = performInitialBootstrap()
-            _ = await bootstrap
-
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    isInitialStartupLoading = false
-                    isInitialStartupLoadingVisible = false
+            while true {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await MainActor.run {
+                    guard startupLoadingReadyPollToken == token else { return }
+                    guard !hasPassedStartupGate else { return }
+                    guard isInitialStartupLoadingVisible else { return }
+                    let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
+                    if persistedModelReady {
+                        if !modelReady {
+                            modelReady = true
+                        }
+                        finishInitialStartupLoadingIfNeeded()
+                    }
                 }
-                hasShownInitialStartupLoading = true
+
+                let shouldContinue = await MainActor.run {
+                    startupLoadingReadyPollToken == token &&
+                    !hasPassedStartupGate &&
+                    isInitialStartupLoadingVisible
+                }
+                if !shouldContinue { break }
             }
         }
     }
@@ -683,24 +744,6 @@ struct TabContainerView: View {
                 }
             }
         }
-    }
-
-    private func scheduleInitialStartupLoadingVisibility() {
-        Task {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await MainActor.run {
-                guard isInitialStartupLoading else { return }
-                withAnimation(.easeIn(duration: 0.15)) {
-                    isInitialStartupLoadingVisible = true
-                }
-            }
-        }
-    }
-
-    private func performInitialBootstrap() async {
-        // Give the app one async cycle to finish attaching root views/state restoration.
-        await Task.yield()
-        try? await Task.sleep(nanoseconds: 500_000_000)
     }
 }
 

@@ -74,7 +74,7 @@ class DocumentManager: ObservableObject {
         // Use Application Support instead of UserDefaults (NSUserDefaults has a ~4MB limit).
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("VaultAI", isDirectory: true)
+        let dir = appSupport.appendingPathComponent("Identity", isDirectory: true)
         if !fm.fileExists(atPath: dir.path) {
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
@@ -1159,7 +1159,6 @@ class DocumentManager: ObservableObject {
         return "Imported Word document. Text extraction is limited on this file."
     }
 
-    @available(iOS 13.0, *)
     private func generateDOCXThumbnail(url: URL, size: CGSize = CGSize(width: 2048, height: 2048)) -> UIImage? {
         let request = QLThumbnailGenerator.Request(fileAt: url,
                                                    size: size,
@@ -1181,34 +1180,28 @@ class DocumentManager: ObservableObject {
     }
 
     private func extractTextFromDOCXViaOCR(url: URL) -> String? {
-        if #available(iOS 13.0, *) {
-            if let img = generateDOCXThumbnail(url: url) {
-                let result = performOCRDetailed(on: img, pageIndex: 0)
-                return result.text
-            }
+        if let img = generateDOCXThumbnail(url: url) {
+            let result = performOCRDetailed(on: img, pageIndex: 0)
+            return result.text
         }
         return nil
     }
 
     private func extractTextFromSpreadsheetViaOCR(url: URL) -> String {
-        if #available(iOS 13.0, *) {
-            if let img = generateDOCXThumbnail(url: url) {
-                let result = performOCRDetailed(on: img, pageIndex: 0)
-                if !result.text.isEmpty && !result.text.contains("OCR failed") {
-                    return formatExtractedText(result.text)
-                }
+        if let img = generateDOCXThumbnail(url: url) {
+            let result = performOCRDetailed(on: img, pageIndex: 0)
+            if !result.text.isEmpty && !result.text.contains("OCR failed") {
+                return formatExtractedText(result.text)
             }
         }
         return "Imported spreadsheet. Text extraction is limited on this file."
     }
 
     private func extractTextFromPresentationViaOCR(url: URL) -> (text: String, pages: [OCRPage]?) {
-        if #available(iOS 13.0, *) {
-            if let img = generateDOCXThumbnail(url: url) {
-                let result = performOCRDetailed(on: img, pageIndex: 0)
-                if !result.text.isEmpty && !result.text.contains("OCR failed") {
-                    return (formatExtractedText(result.text), [result.page])
-                }
+        if let img = generateDOCXThumbnail(url: url) {
+            let result = performOCRDetailed(on: img, pageIndex: 0)
+            if !result.text.isEmpty && !result.text.contains("OCR failed") {
+                return (formatExtractedText(result.text), [result.page])
             }
         }
         return ("", nil)

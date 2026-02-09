@@ -244,27 +244,17 @@ struct SearchView: View {
         .listStyle(.plain)
         .hideScrollBackground()
 
-        if #available(iOS 17.0, *) {
-            baseList
-                .listSectionSpacing(0)
-                .searchable(
-                    text: $searchText,
-                    isPresented: $isSearchPresented,
-                    placement: .automatic,
-                    prompt: "Search documents"
-                )
-                .onSubmit(of: .search) {
-                    dismissSearchKeyboard()
-                }
-        } else if #available(iOS 16.0, *) {
-            baseList
-                .searchable(text: $searchText, placement: .automatic, prompt: "Search documents")
-                .onSubmit(of: .search) {
-                    dismissSearchKeyboard()
-                }
-        } else {
-            baseList
-        }
+        baseList
+            .listSectionSpacing(0)
+            .searchable(
+                text: $searchText,
+                isPresented: $isSearchPresented,
+                placement: .automatic,
+                prompt: "Search documents"
+            )
+            .onSubmit(of: .search) {
+                dismissSearchKeyboard()
+            }
     }
 
     private var recentsHeader: some View {

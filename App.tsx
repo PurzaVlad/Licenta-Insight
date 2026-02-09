@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {Alert, StyleSheet, NativeModules, NativeEventEmitter} from 'react-native';
 import RNFS from 'react-native-fs';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {initLlama, releaseAllLlama} from 'llama.rn';
 import {downloadModel} from './src/api/model';
 
@@ -16,6 +17,8 @@ type Message = {
 const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
 const MODEL_URL =
   'https://huggingface.co/MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
+const MODEL_DOWNLOAD_STATE_KEY = 'edgeai:model_download_state';
+const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
 
 const SUMMARY_SYSTEM_PROMPT = `
   You will receive extracted text from a document.
@@ -53,7 +56,7 @@ const TAG_SYSTEM_PROMPT = `
   `;
 
 const CHAT_SYSTEM_PROMPT =
-  'You are VaultAI, a proactive, concise assistant. Answer from the provided ACTIVE_CONTEXT and recent chat. Do not reveal internal reasoning; provide the final answer only. If the context is insufficient, ask a brief clarifying question or suggest a document. Never say you cannot access information; ask for the missing document or clarification instead. Cite document titles when using their content. Respond in English. Always finish your last sentence; do not trail off.';
+  'You are Identity, a proactive, concise assistant. Answer from the provided ACTIVE_CONTEXT and recent chat. Do not reveal internal reasoning; provide the final answer only. If the context is insufficient, ask a brief clarifying question or suggest a document. Never say you cannot access information; ask for the missing document or clarification instead. Cite document titles when using their content. Respond in English. Always finish your last sentence; do not trail off.';
 
 const CONTINUATION_SYSTEM_PROMPT =
   'You will receive a draft assistant response. Continue and complete only the final sentence. Output only the missing continuation. Do not add new sentences. Do not repeat any text from the draft. If the final sentence is already complete, output nothing.';
@@ -97,11 +100,33 @@ function App(): React.JSX.Element {
         EdgeAI?.setModelReady?.(false);
       } catch {}
       setIsDownloading(true);
+      setDownloadProgress(0);
       try {
         const filePath = `${RNFS.DocumentDirectoryPath}/${MODEL_FILENAME}`;
         console.log('[Model] Checking for model at:', filePath);
+        let interruptedDownloadState: string | null = null;
+        try {
+          interruptedDownloadState = await AsyncStorage.getItem(MODEL_DOWNLOAD_STATE_KEY);
+        } catch (err) {
+          console.warn('[Model] Failed to read download state marker:', err);
+        }
+        const hadInterruptedDownload = interruptedDownloadState === MODEL_DOWNLOAD_IN_PROGRESS;
+        if (hadInterruptedDownload) {
+          console.warn('[Model] Interrupted download detected, removing partial model file');
+          try {
+            const partialExists = await RNFS.exists(filePath);
+            if (partialExists) {
+              await RNFS.unlink(filePath);
+            }
+          } catch (err) {
+            console.warn('[Model] Failed to remove partial model file:', err);
+          } finally {
+            setDownloadProgress(0);
+          }
+        }
+
         const fileExists = await RNFS.exists(filePath);
-        console.log('[Model] File exists:', fileExists);
+        console.log('[Model] File exists after recovery check:', fileExists);
 
         // Remove any other installed GGUF models to save space when switching models.
         try {
@@ -123,7 +148,17 @@ function App(): React.JSX.Element {
 
         if (!fileExists) {
           console.log('[Model] Downloading model...');
+          try {
+            await AsyncStorage.setItem(MODEL_DOWNLOAD_STATE_KEY, MODEL_DOWNLOAD_IN_PROGRESS);
+          } catch (err) {
+            console.warn('[Model] Failed to set download state marker:', err);
+          }
           await downloadModel(MODEL_FILENAME, MODEL_URL, setDownloadProgress);
+          try {
+            await AsyncStorage.removeItem(MODEL_DOWNLOAD_STATE_KEY);
+          } catch (err) {
+            console.warn('[Model] Failed to clear download state marker:', err);
+          }
           console.log('[Model] Download completed');
         }
 

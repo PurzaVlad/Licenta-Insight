@@ -171,7 +171,7 @@ struct SettingsView: View {
             return
         }
 
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Enable Face ID to unlock VaultAI.") { success, authError in
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Enable Face ID to unlock Identity.") { success, authError in
             DispatchQueue.main.async {
                 if success {
                     useFaceID = true

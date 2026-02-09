@@ -721,6 +721,22 @@ struct DocumentPreviewContainerView: View {
         self.onAISummary = onAISummary
     }
 
+    // Match navigation-style dismissal: edge swipe from left to right only.
+    private var edgeSwipeToDismiss: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                let fromLeftEdge = value.startLocation.x <= 28
+                let horizontalMove = value.translation.width
+                let verticalMove = abs(value.translation.height)
+                let isRightSwipe = horizontalMove > 90
+                let isMostlyHorizontal = verticalMove < 60 && abs(horizontalMove) > verticalMove
+
+                if fromLeftEdge && isRightSwipe && isMostlyHorizontal {
+                    dismiss()
+                }
+            }
+    }
+
     var body: some View {
         ZStack {
             // Full screen PDF preview
@@ -837,6 +853,8 @@ struct DocumentPreviewContainerView: View {
                 }
             }
         }
+        .interactiveDismissDisabled(true)
+        .simultaneousGesture(edgeSwipeToDismiss)
         .sheet(isPresented: $showingInfo) {
             if let doc = document {
                 DocumentInfoView(document: doc, fileURL: url)
@@ -1073,17 +1091,10 @@ class CustomQLPreviewController: QLPreviewController {
     
     func triggerSearchDirectly() {
         // Use the standard iOS search functionality
-        if #available(iOS 16.0, *) {
-            becomeFirstResponder()
-            let searchCommand = #selector(UIResponder.find(_:))
-            if canPerformAction(searchCommand, withSender: self) {
-                perform(searchCommand, with: self)
-            }
-        } else {
-            // For iOS < 16, try to find and show search interface
-            DispatchQueue.main.async {
-                self.findAndActivateSearch()
-            }
+        becomeFirstResponder()
+        let searchCommand = #selector(UIResponder.find(_:))
+        if canPerformAction(searchCommand, withSender: self) {
+            perform(searchCommand, with: self)
         }
     }
     
@@ -1169,11 +1180,7 @@ private func topSafeAreaInset() -> CGFloat {
 private extension View {
     @ViewBuilder
     func applySquareSheetCorners() -> some View {
-      if #available(iOS 16.4, *) {
-            self.presentationCornerRadius(0)
-        } else {
-            self
-        }
+        self.presentationCornerRadius(0)
     }
 }
 

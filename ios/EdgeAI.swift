@@ -66,12 +66,22 @@ class EdgeAI: RCTEventEmitter {
 
     @objc(setModelReady:)
     func setModelReady(_ ready: Bool) {
-        UserDefaults.standard.set(ready, forKey: "modelReady")
-        NotificationCenter.default.post(
-            name: NSNotification.Name("ModelReadyStatus"),
-            object: nil,
-            userInfo: ["ready": ready]
-        )
+        let applyReadyState = {
+            UserDefaults.standard.set(ready, forKey: "modelReady")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ModelReadyStatus"),
+                object: nil,
+                userInfo: ["ready": ready]
+            )
+        }
+
+        if Thread.isMainThread {
+            applyReadyState()
+        } else {
+            DispatchQueue.main.async {
+                applyReadyState()
+            }
+        }
     }
 }
 

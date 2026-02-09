@@ -6,7 +6,7 @@ import ReactAppDependencyProvider
 @main
 class AppDelegate: RCTAppDelegate {
   override func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
-    self.moduleName = "VaultAI"
+    self.moduleName = "Identity"
     self.dependencyProvider = RCTAppDependencyProvider()
     self.automaticallyLoadReactNativeWindow = false
 
@@ -22,9 +22,7 @@ class AppDelegate: RCTAppDelegate {
 
     let tabBar = UITabBar.appearance()
     tabBar.standardAppearance = tabBarAppearance
-    if #available(iOS 15.0, *) {
-      tabBar.scrollEdgeAppearance = tabBarAppearance
-    }
+    tabBar.scrollEdgeAppearance = tabBarAppearance
     tabBar.isTranslucent = true
     tabBar.backgroundColor = .clear
     
@@ -39,10 +37,8 @@ class AppDelegate: RCTAppDelegate {
     let navBar = UINavigationBar.appearance()
     navBar.standardAppearance = navBarAppearance
     navBar.compactAppearance = navBarAppearance
-    if #available(iOS 15.0, *) {
-      navBar.scrollEdgeAppearance = navBarAppearance
-      navBar.compactScrollEdgeAppearance = navBarAppearance
-    }
+    navBar.scrollEdgeAppearance = navBarAppearance
+    navBar.compactScrollEdgeAppearance = navBarAppearance
     navBar.isTranslucent = true
     navBar.preservesSuperviewLayoutMargins = true
     navBar.insetsLayoutMarginsFromSafeArea = true

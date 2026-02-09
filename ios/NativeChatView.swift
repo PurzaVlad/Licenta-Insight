@@ -31,7 +31,7 @@ struct NativeChatView: View {
 
     // Preprompt (edit this text to change assistant behavior)
     private let chatPreprompt = """
-    You are VaultAI, a deeply helpful, proactive, and concise assistant.
+    You are Identity, a deeply helpful, proactive, and concise assistant.
     You can use the ACTIVE_CONTEXT below, which includes folder structure, document titles, summaries, categories, keywords, and full extracted/OCR text for selected files.
     Do not reveal internal reasoning, analysis, or chain-of-thought. Provide the final answer only.
     Use the provided context and recent chat. If the context is insufficient, ask a brief clarifying question.
@@ -102,14 +102,10 @@ struct NativeChatView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) {
-                if #available(iOS 16.0, *) {
-                    SettingsView()
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                        .modifier(SettingsSheetBackgroundModifier())
-                } else {
-                    SettingsView()
-                }
+                SettingsView()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .modifier(SharedSettingsSheetBackgroundModifier())
             }
             .sheet(isPresented: $showingScopePicker) {
                 ScopePickerSheet(selectedIds: $scopedDocumentIds)
@@ -162,33 +158,12 @@ struct NativeChatView: View {
                     
             HStack(alignment: .center, spacing: 6) {
                 Group {
-                    if #available(iOS 16.0, *) {
-                        TextField("Ask anything", text: $input, axis: .vertical)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 17))
-                            .lineLimit(1...6)
-                            .frame(minHeight: 24)
-                            .disabled(isGenerating)
-                    } else {
-                        AutoGrowingTextView(
-                            text: $input,
-                            height: $inputHeight,
-                            minHeight: inputLineHeight * CGFloat(inputMinLines),
-                            maxHeight: inputLineHeight * CGFloat(inputMaxLines),
-                            font: UIFont.systemFont(ofSize: 17),
-                            isEditable: !isGenerating
-                        )
-                        .frame(height: inputHeight)
-                        .overlay(alignment: .leading) {
-                            if input.isEmpty {
-                                Text("Ask anything")
-                                    .foregroundStyle(.secondary)
-                                    .font(.system(size: 17))
-                                    .padding(.top, 1)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                    }
+                    TextField("Ask anything", text: $input, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 17))
+                        .lineLimit(1...6)
+                        .frame(minHeight: 24)
+                        .disabled(isGenerating)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 12)
@@ -962,35 +937,9 @@ struct NativeChatView: View {
 
 private extension View {
     @ViewBuilder
-    func scrollDismissesKeyboardIfAvailable() -> some View {
-        if #available(iOS 16.4, *) {
-            scrollDismissesKeyboard(.interactively)
-                .scrollBounceBehavior(.always)
-        } else if #available(iOS 16.0, *) {
-            scrollDismissesKeyboard(.interactively)
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
     func ifAvailableiOS17CircleBorder() -> some View {
-        if #available(iOS 17.0, *) {
-            self
-                .buttonBorderShape(.circle)
-        } else {
-            self
-        }
-    }
-}
-
-private struct SettingsSheetBackgroundModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 16.4, *) {
-            content.presentationBackground(.regularMaterial)
-        } else {
-            content
-        }
+        self
+            .buttonBorderShape(.circle)
     }
 }
 

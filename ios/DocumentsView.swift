@@ -8,15 +8,11 @@ import QuickLookThumbnailing
 import Foundation
 import AVFoundation
 
-// MARK: - Drag & Drop modifiers for iOS 16+
+// MARK: - Drag & Drop modifiers
 extension View {
     @ViewBuilder
     func folderDraggable(_ id: UUID) -> some View {
-        if #available(iOS 16.0, *) {
-            self.draggable(id.uuidString)
-        } else {
-            self
-        }
+        self.draggable(id.uuidString)
     }
     
     @ViewBuilder
@@ -25,27 +21,23 @@ extension View {
         documentManager: DocumentManager,
         dropTargetedFolderId: Binding<UUID?>
     ) -> some View {
-        if #available(iOS 16.0, *) {
-            self.dropDestination(for: String.self) { items, _ in
-                guard let uuidString = items.first, let id = UUID(uuidString: uuidString) else { return false }
-                if id == folderId { return false }
-                if documentManager.documents.contains(where: { $0.id == id }) {
-                    documentManager.moveDocument(documentId: id, toFolder: folderId)
-                    return true
-                } else if documentManager.folders.contains(where: { $0.id == id }) {
-                    documentManager.moveFolder(folderId: id, toParent: folderId)
-                    return true
-                }
-                return false
-            } isTargeted: { isTargeted in
-                if isTargeted {
-                    dropTargetedFolderId.wrappedValue = folderId
-                } else if dropTargetedFolderId.wrappedValue == folderId {
-                    dropTargetedFolderId.wrappedValue = nil
-                }
+        self.dropDestination(for: String.self) { items, _ in
+            guard let uuidString = items.first, let id = UUID(uuidString: uuidString) else { return false }
+            if id == folderId { return false }
+            if documentManager.documents.contains(where: { $0.id == id }) {
+                documentManager.moveDocument(documentId: id, toFolder: folderId)
+                return true
+            } else if documentManager.folders.contains(where: { $0.id == id }) {
+                documentManager.moveFolder(folderId: id, toParent: folderId)
+                return true
             }
-        } else {
-            self
+            return false
+        } isTargeted: { isTargeted in
+            if isTargeted {
+                dropTargetedFolderId.wrappedValue = folderId
+            } else if dropTargetedFolderId.wrappedValue == folderId {
+                dropTargetedFolderId.wrappedValue = nil
+            }
         }
     }
 }
@@ -54,11 +46,7 @@ private struct TabBarVisibilityModifier: ViewModifier {
     let isHidden: Bool
 
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.toolbar(isHidden ? .hidden : .visible, for: .tabBar)
-        } else {
-            content
-        }
+        content.toolbar(isHidden ? .hidden : .visible, for: .tabBar)
     }
 }
 
@@ -66,11 +54,7 @@ private struct BottomBarVisibilityModifier: ViewModifier {
     let isVisible: Bool
 
     func body(content: Content) -> some View {
-        if #available(iOS 16.0, *) {
-            content.toolbar(isVisible ? .visible : .hidden, for: .bottomBar)
-        } else {
-            content
-        }
+        content.toolbar(isVisible ? .visible : .hidden, for: .bottomBar)
     }
 }
 
@@ -92,11 +76,7 @@ private extension View {
     }
 
     func tabBarHiddenCompat(_ isHidden: Bool) -> some View {
-        if #available(iOS 16.0, *) {
-            return AnyView(self)
-        } else {
-            return AnyView(self.background(TabBarControllerAccessor(isHidden: isHidden)))
-        }
+        AnyView(self)
     }
 
     func bottomBarVisibility(_ isVisible: Bool) -> some View {
@@ -883,14 +863,10 @@ struct DocumentsView: View {
         .tabBarHiddenCompat(shouldHideTabBar)
         .bindGlobalOperationLoading(isProcessing || isOpeningPreview)
         .sheet(isPresented: $showingSettings) {
-            if #available(iOS 16.0, *) {
-                SettingsView()
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    .modifier(SettingsSheetBackgroundModifier())
-            } else {
-                SettingsView()
-            }
+            SettingsView()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .modifier(SettingsSheetBackgroundModifier())
         }
         .onChange(of: isSelectionMode) { active in
             editMode = active ? .active : .inactive
@@ -2319,11 +2295,7 @@ private struct FolderDropDelegate: DropDelegate {
 
 private struct SettingsSheetBackgroundModifier: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 16.4, *) {
-            content.presentationBackground(.regularMaterial)
-        } else {
-            content
-        }
+        content.presentationBackground(.regularMaterial)
     }
 }
 
@@ -3076,7 +3048,6 @@ struct FolderDocumentsView: View {
         }
     }
 
-    @available(iOS 16.0, *)
     @ToolbarContentBuilder
     private var folderToolbar: some ToolbarContent {
         if isSelectionMode {
@@ -3087,20 +3058,8 @@ struct FolderDocumentsView: View {
     }
 
     var body: some View {
-        Group {
-            if #available(iOS 16.0, *) {
-                folderBaseContent
-                    .toolbar { folderToolbar }
-            } else {
-                if isSelectionMode {
-                    folderBaseContent
-                        .toolbar { folderSelectionToolbar }
-                } else {
-                    folderBaseContent
-                        .toolbar { folderNormalToolbar }
-                }
-            }
-        }
+        folderBaseContent
+            .toolbar { folderToolbar }
         .navigationBarBackButtonHidden(isSelectionMode)
         .tabBarVisibility(isSelectionMode)
         .tabBarHiddenCompat(isSelectionMode)
@@ -3164,14 +3123,10 @@ struct FolderDocumentsView: View {
             .environmentObject(documentManager)
         }
     .sheet(isPresented: $showingSettings) {
-            if #available(iOS 16.0, *) {
-                SettingsView()
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    .modifier(SettingsSheetBackgroundModifier())
-            } else {
-                SettingsView()
-            }
+            SettingsView()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .modifier(SettingsSheetBackgroundModifier())
     }
             .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker { urls in

@@ -10,10 +10,6 @@
 		13B07FB71A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		A1B2C3D4E5F60718293A4B5C /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */; };
-		C1A0C1A0C1A0C1A0C1A0C1A1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A0 /* ChatView.swift */; };
-		C1A0C1A0C1A0C1A0C1A0C1A3 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A2 /* SearchView.swift */; };
-		C1A0C1A0C1A0C1A0C1A0C1A5 /* ToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */; };
-		C1A0C1A0C1A0C1A0C1A0C1A7 /* ConvertView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */; };
 		AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */; };
 		AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD28532F0B119400C3390F /* DocumentManager.swift */; };
 		AEDA82D82F1FBA4100550D74 /* DocumentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */; };
@@ -21,7 +17,6 @@
 		AEDA82DA2F1FBA4100550D74 /* DocumentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEDA82D52F1FBA4100550D74 /* DocumentsView.swift */; };
 		AEDA82DB2F1FBA4100550D74 /* MarkdownHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEDA82D62F1FBA4100550D74 /* MarkdownHelpers.swift */; };
 		AEDA82DC2F1FBA4100550D74 /* DocumentPreviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEDA82D42F1FBA4100550D74 /* DocumentPreviewViews.swift */; };
-		AEDA82DD2F1FBA4100550D74 /* ConversionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEDA82D22F1FBA4100550D74 /* ConversionView.swift */; };
 		AEE10FE02F0B0A8800D8EFF7 /* NativeChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */; };
 		AEE10FE12F0B0A8800D8EFF7 /* NativeChatViewManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */; };
 		AEE10FE22F0B0A8800D8EFF7 /* EdgeAI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */; };
@@ -30,30 +25,27 @@
 		AEE10FEF2F99B2B700D8EFF7 /* ConversionService.m in Sources */ = {isa = PBXBuildFile; fileRef = AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */; };
 		AEFE19AE2F20EE9400108CD3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */; };
 		AEFE19B02F20F03D00108CD3 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */; };
-		AEFE19B22F20F55F00108CD3 /* PDFEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19B12F20F55F00108CD3 /* PDFEditView.swift */; };
 		AEFE19B42F21089900108CD3 /* ZipExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19B32F21089900108CD3 /* ZipExportView.swift */; };
-		B12D6F9E03A4A66CA4E522E0 /* libPods-VaultAI.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 43A934517A58E224B45297CF /* libPods-VaultAI.a */; };
+		B12D6F9E03A4A66CA4E522E0 /* libPods-Identity.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 43A934517A58E224B45297CF /* libPods-Identity.a */; };
 		B51DE01B08C2900F75FA8AC0 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		C1A0C1A0C1A0C1A0C1A0C1A3 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A2 /* SearchView.swift */; };
+		C1A0C1A0C1A0C1A0C1A0C1A5 /* ToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */; };
+		C1A0C1A0C1A0C1A0C1A0C1A7 /* ConvertView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		13B07F961A680F5B00A75B9A /* VaultAI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VaultAI.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = VaultAI/Images.xcassets; sourceTree = "<group>"; };
-		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = VaultAI/Info.plist; sourceTree = "<group>"; };
-		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = VaultAI/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		43A934517A58E224B45297CF /* libPods-VaultAI.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-VaultAI.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		13B07F961A680F5B00A75B9A /* Identity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Identity.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Identity/Images.xcassets; sourceTree = "<group>"; };
+		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Identity/Info.plist; sourceTree = "<group>"; };
+		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = Identity/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		43A934517A58E224B45297CF /* libPods-Identity.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Identity.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.release.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.release.xcconfig"; sourceTree = "<group>"; };
-		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = VaultAI/AppDelegate.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = VaultAI/SceneDelegate.swift; sourceTree = "<group>"; };
-		C1A0C1A0C1A0C1A0C1A0C1A0 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
-		C1A0C1A0C1A0C1A0C1A0C1A2 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
-		C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolsView.swift; sourceTree = "<group>"; };
-		C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertView.swift; sourceTree = "<group>"; };
-		8187BEE6B6DC936AAA3D94C7 /* Pods-VaultAI.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VaultAI.debug.xcconfig"; path = "Target Support Files/Pods-VaultAI/Pods-VaultAI.debug.xcconfig"; sourceTree = "<group>"; };
-		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = VaultAI/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Identity/AppDelegate.swift; sourceTree = "<group>"; };
+		8187BEE6B6DC936AAA3D94C7 /* Pods-Identity.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Identity.debug.xcconfig"; path = "Target Support Files/Pods-Identity/Pods-Identity.debug.xcconfig"; sourceTree = "<group>"; };
+		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Identity/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = Identity/SceneDelegate.swift; sourceTree = "<group>"; };
 		AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDatabase.swift; sourceTree = "<group>"; };
 		AEBD28532F0B119400C3390F /* DocumentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentManager.swift; sourceTree = "<group>"; };
-		AEDA82D22F1FBA4100550D74 /* ConversionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversionView.swift; sourceTree = "<group>"; };
 		AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentModels.swift; sourceTree = "<group>"; };
 		AEDA82D42F1FBA4100550D74 /* DocumentPreviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPreviewViews.swift; sourceTree = "<group>"; };
 		AEDA82D52F1FBA4100550D74 /* DocumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsView.swift; sourceTree = "<group>"; };
@@ -63,15 +55,17 @@
 		AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeAI.swift; sourceTree = "<group>"; };
 		AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatView.swift; sourceTree = "<group>"; };
 		AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatViewManager.swift; sourceTree = "<group>"; };
+		AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EdgeLLMTuto-Bridging-Header.h"; sourceTree = "<group>"; };
 		AEE10FEC2F99B2B700D8EFF7 /* ConversionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversionService.swift; sourceTree = "<group>"; };
 		AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ConversionService.m; sourceTree = "<group>"; };
-		AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EdgeLLMTuto-Bridging-Header.h"; sourceTree = "<group>"; };
 		AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
-		AEFE19B12F20F55F00108CD3 /* PDFEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFEditView.swift; sourceTree = "<group>"; };
 		AEFE19B32F21089900108CD3 /* ZipExportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZipExportView.swift; sourceTree = "<group>"; };
 		B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.debug.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.debug.xcconfig"; sourceTree = "<group>"; };
-		DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-VaultAI.release.xcconfig"; path = "Target Support Files/Pods-VaultAI/Pods-VaultAI.release.xcconfig"; sourceTree = "<group>"; };
+		C1A0C1A0C1A0C1A0C1A0C1A2 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolsView.swift; sourceTree = "<group>"; };
+		C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertView.swift; sourceTree = "<group>"; };
+		DF91F9C1F571638680FAB7A1 /* Pods-Identity.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Identity.release.xcconfig"; path = "Target Support Files/Pods-Identity/Pods-Identity.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -80,21 +74,19 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B12D6F9E03A4A66CA4E522E0 /* libPods-VaultAI.a in Frameworks */,
+				B12D6F9E03A4A66CA4E522E0 /* libPods-Identity.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		13B07FAE1A68108700A75B9A /* VaultAI */ = {
+		13B07FAE1A68108700A75B9A /* Identity */ = {
 			isa = PBXGroup;
 			children = (
 				AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */,
-				C1A0C1A0C1A0C1A0C1A0C1A0 /* ChatView.swift */,
-				AEDA82D22F1FBA4100550D74 /* ConversionView.swift */,
 				C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */,
 				AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */,
 				AEBD28532F0B119400C3390F /* DocumentManager.swift */,
@@ -114,20 +106,19 @@
 				AEDA82D62F1FBA4100550D74 /* MarkdownHelpers.swift */,
 				AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */,
 				AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */,
-				AEFE19B12F20F55F00108CD3 /* PDFEditView.swift */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
 				C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */,
 				AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */,
 				AEDA82D72F1FBA4100550D74 /* TabContainerView.swift */,
 			);
-			name = VaultAI;
+			name = Identity;
 			sourceTree = "<group>";
 		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				43A934517A58E224B45297CF /* libPods-VaultAI.a */,
+				43A934517A58E224B45297CF /* libPods-Identity.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -142,7 +133,7 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
-				13B07FAE1A68108700A75B9A /* VaultAI */,
+				13B07FAE1A68108700A75B9A /* Identity */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
@@ -156,7 +147,7 @@
 		83CBBA001A601CBA00E9B192 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				13B07F961A680F5B00A75B9A /* VaultAI.app */,
+				13B07F961A680F5B00A75B9A /* Identity.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -166,8 +157,8 @@
 			children = (
 				B1D2528A2BEAE71DCD36C413 /* Pods-EdgeLLMTuto.debug.xcconfig */,
 				537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */,
-				8187BEE6B6DC936AAA3D94C7 /* Pods-VaultAI.debug.xcconfig */,
-				DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */,
+				8187BEE6B6DC936AAA3D94C7 /* Pods-Identity.debug.xcconfig */,
+				DF91F9C1F571638680FAB7A1 /* Pods-Identity.release.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -175,9 +166,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		13B07F861A680F5B00A75B9A /* VaultAI */ = {
+		13B07F861A680F5B00A75B9A /* Identity */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "VaultAI" */;
+			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */;
 			buildPhases = (
 				5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
@@ -191,9 +182,9 @@
 			);
 			dependencies = (
 			);
-			name = VaultAI;
-			productName = VaultAI;
-			productReference = 13B07F961A680F5B00A75B9A /* VaultAI.app */;
+			name = Identity;
+			productName = Identity;
+			productReference = 13B07F961A680F5B00A75B9A /* Identity.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -203,14 +194,14 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2610;
+				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					13B07F861A680F5B00A75B9A = {
 						LastSwiftMigration = 2610;
 					};
 				};
 			};
-			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "VaultAI" */;
+			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */;
 			compatibilityVersion = "Xcode 12.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -223,7 +214,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				13B07F861A680F5B00A75B9A /* VaultAI */,
+				13B07F861A680F5B00A75B9A /* Identity */,
 			);
 		};
 /* End PBXProject section */
@@ -265,19 +256,15 @@
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-resources-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			inputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Identity/Pods-Identity-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-resources-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Identity/Pods-Identity-resources-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-resources.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Identity/Pods-Identity-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */ = {
@@ -295,7 +282,7 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-VaultAI-checkManifestLockResult.txt",
+				"$(DERIVED_FILE_DIR)/Pods-Identity-checkManifestLockResult.txt",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -308,19 +295,15 @@
 			files = (
 			);
 			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			inputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Identity/Pods-Identity-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-Identity/Pods-Identity-frameworks-${CONFIGURATION}-output-files.xcfilelist",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-VaultAI/Pods-VaultAI-frameworks.sh\"\n";
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Identity/Pods-Identity-frameworks.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -336,20 +319,17 @@
 				AEE10FE32F0B0A8800D8EFF7 /* EdgeAI.m in Sources */,
 				AEE10FEE2F99B2B700D8EFF7 /* ConversionService.swift in Sources */,
 				AEE10FEF2F99B2B700D8EFF7 /* ConversionService.m in Sources */,
-				C1A0C1A0C1A0C1A0C1A0C1A1 /* ChatView.swift in Sources */,
 				C1A0C1A0C1A0C1A0C1A0C1A7 /* ConvertView.swift in Sources */,
 				AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */,
 				AEDA82D82F1FBA4100550D74 /* DocumentModels.swift in Sources */,
 				AEFE19B42F21089900108CD3 /* ZipExportView.swift in Sources */,
 				AEDA82D92F1FBA4100550D74 /* TabContainerView.swift in Sources */,
-				AEFE19B22F20F55F00108CD3 /* PDFEditView.swift in Sources */,
 				C1A0C1A0C1A0C1A0C1A0C1A3 /* SearchView.swift in Sources */,
 				AEFE19AE2F20EE9400108CD3 /* SettingsView.swift in Sources */,
 				AEFE19B02F20F03D00108CD3 /* KeychainService.swift in Sources */,
 				AEDA82DA2F1FBA4100550D74 /* DocumentsView.swift in Sources */,
 				AEDA82DB2F1FBA4100550D74 /* MarkdownHelpers.swift in Sources */,
 				AEDA82DC2F1FBA4100550D74 /* DocumentPreviewViews.swift in Sources */,
-				AEDA82DD2F1FBA4100550D74 /* ConversionView.swift in Sources */,
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
 				C1A0C1A0C1A0C1A0C1A0C1A5 /* ToolsView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5C /* SceneDelegate.swift in Sources */,
@@ -362,7 +342,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 8187BEE6B6DC936AAA3D94C7 /* Pods-VaultAI.debug.xcconfig */;
+			baseConfigurationReference = 8187BEE6B6DC936AAA3D94C7 /* Pods-Identity.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -372,8 +352,10 @@
 				ENABLE_BITCODE = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				EXCLUDED_SOURCE_FILE_NAMES = main.jsbundle;
-				INFOPLIST_FILE = VaultAI/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				INFOPLIST_FILE = Identity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Identity;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -383,19 +365,23 @@
 					"$(inherited)",
 					"-ObjC",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.vaultai;
-				PRODUCT_NAME = VaultAI;
+				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.identity;
+				PRODUCT_NAME = Identity;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "EdgeLLMTuto-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = DF91F9C1F571638680FAB7A1 /* Pods-VaultAI.release.xcconfig */;
+			baseConfigurationReference = DF91F9C1F571638680FAB7A1 /* Pods-Identity.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -404,8 +390,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				EXCLUDED_SOURCE_FILE_NAMES = main.jsbundle;
-				INFOPLIST_FILE = VaultAI/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				INFOPLIST_FILE = Identity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Identity;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -415,11 +403,15 @@
 					"$(inherited)",
 					"-ObjC",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.vaultai;
-				PRODUCT_NAME = VaultAI;
+				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.identity;
+				PRODUCT_NAME = Identity;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "EdgeLLMTuto-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
@@ -428,6 +420,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
 				CLANG_CXX_LIBRARY = "libc++";
@@ -475,7 +468,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					/usr/lib/swift,
 					"$(inherited)",
@@ -495,7 +488,10 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = "$(inherited)  ";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					" ",
+				);
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -508,6 +504,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
 				CLANG_CXX_LIBRARY = "libc++";
@@ -548,7 +545,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					/usr/lib/swift,
 					"$(inherited)",
@@ -567,7 +564,10 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = "$(inherited)  ";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					" ",
+				);
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -580,7 +580,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "VaultAI" */ = {
+		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				13B07F941A680F5B00A75B9A /* Debug */,
@@ -589,7 +589,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "VaultAI" */ = {
+		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,
