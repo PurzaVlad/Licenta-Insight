@@ -148,7 +148,8 @@ struct TabContainerView: View {
                             onAISummary: shouldShowSummary ? {
                                 previewItem = nil
                                 summaryDocument = item.document
-                            } : nil
+                            } : nil,
+                            documentManager: documentManager
                         )
                     }
                     .sheet(item: $summaryDocument) { document in

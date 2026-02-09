@@ -704,21 +704,258 @@ struct PDFViewRepresentable: UIViewRepresentable {
     }
 }
 
+struct SearchablePDFView: UIViewRepresentable {
+    let url: URL
+    /// Kept for API compatibility; the native find bar handles search internally.
+    @Binding var searchQuery: String
+    @Binding var searchRequestID: Int
+    @Binding var nextRequestID: Int
+    @Binding var previousRequestID: Int
+    @Binding var matchSummary: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        pdfView.autoScales = false
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.backgroundColor = UIColor.systemBackground
+        pdfView.tintColor = primaryTintColor()
+        pdfView.usePageViewController(false)
+
+        // Enable the native iOS find bar (UIFindInteraction) on the PDFView.
+        pdfView.isFindInteractionEnabled = true
+
+        if let document = PDFDocument(url: url) {
+            pdfView.document = document
+        } else if let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) {
+            pdfView.document = document
+        }
+
+        DispatchQueue.main.async {
+            let fitScale = pdfView.scaleFactorForSizeToFit
+            pdfView.scaleFactor = fitScale
+            pdfView.minScaleFactor = fitScale * 0.9
+            pdfView.maxScaleFactor = fitScale * 4.0
+        }
+
+        context.coordinator.attach(pdfView)
+        return pdfView
+    }
+
+    func updateUIView(_ pdfView: PDFView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.attach(pdfView)
+        pdfView.tintColor = primaryTintColor()
+        applyPrimaryTint(to: pdfView)
+
+        DispatchQueue.main.async {
+            let fitScale = pdfView.scaleFactorForSizeToFit
+            if pdfView.scaleFactor < fitScale * 0.9 {
+                pdfView.scaleFactor = fitScale
+            }
+            pdfView.minScaleFactor = fitScale * 0.9
+            pdfView.maxScaleFactor = fitScale * 4.0
+        }
+    }
+
+    final class Coordinator {
+        var parent: SearchablePDFView
+        weak var pdfView: PDFView?
+
+        init(parent: SearchablePDFView) {
+            self.parent = parent
+        }
+
+        func attach(_ pdfView: PDFView) {
+            self.pdfView = pdfView
+        }
+
+        /// Present the native system find panel.
+        func presentFindNavigator() {
+            guard let pdfView else { return }
+            pdfView.tintColor = primaryTintColor()
+            applyPrimaryTint(to: pdfView)
+            pdfView.findInteraction.presentFindNavigator(showingReplace: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak pdfView] in
+                guard let pdfView else { return }
+                retintNativeFindNavigator(from: pdfView)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak pdfView] in
+                guard let pdfView else { return }
+                retintNativeFindNavigator(from: pdfView)
+            }
+        }
+
+        /// Dismiss the native system find panel.
+        func dismissFindNavigator() {
+            guard let pdfView else { return }
+            pdfView.findInteraction.dismissFindNavigator()
+        }
+    }
+}
+
+/// Thin wrapper around `SearchablePDFView` that exposes the coordinator
+/// so the container can call `presentFindNavigator()` from its toolbar.
+struct SearchablePDFPreviewView: UIViewRepresentable {
+    let url: URL
+    let onCoordinatorReady: (SearchablePDFView.Coordinator) -> Void
+
+    func makeCoordinator() -> SearchablePDFView.Coordinator {
+        SearchablePDFView.Coordinator(parent: SearchablePDFView(
+            url: url,
+            searchQuery: .constant(""),
+            searchRequestID: .constant(0),
+            nextRequestID: .constant(0),
+            previousRequestID: .constant(0),
+            matchSummary: .constant("")
+        ))
+    }
+
+    func makeUIView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        pdfView.autoScales = false
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.backgroundColor = UIColor.systemBackground
+        pdfView.tintColor = primaryTintColor()
+        pdfView.usePageViewController(false)
+
+        // Enable the native iOS find bar (UIFindInteraction).
+        pdfView.isFindInteractionEnabled = true
+
+        if let document = PDFDocument(url: url) {
+            pdfView.document = document
+        } else if let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) {
+            pdfView.document = document
+        }
+
+        DispatchQueue.main.async {
+            let fitScale = pdfView.scaleFactorForSizeToFit
+            pdfView.scaleFactor = fitScale
+            pdfView.minScaleFactor = fitScale * 0.9
+            pdfView.maxScaleFactor = fitScale * 4.0
+        }
+
+        context.coordinator.attach(pdfView)
+        DispatchQueue.main.async {
+            self.onCoordinatorReady(context.coordinator)
+        }
+        return pdfView
+    }
+
+    func updateUIView(_ pdfView: PDFView, context: Context) {
+        pdfView.tintColor = primaryTintColor()
+        applyPrimaryTint(to: pdfView)
+        DispatchQueue.main.async {
+            let fitScale = pdfView.scaleFactorForSizeToFit
+            if pdfView.scaleFactor < fitScale * 0.9 {
+                pdfView.scaleFactor = fitScale
+            }
+            pdfView.minScaleFactor = fitScale * 0.9
+            pdfView.maxScaleFactor = fitScale * 4.0
+        }
+    }
+}
+
+private func primaryTintColor() -> UIColor {
+    UIColor(Color("Primary"))
+}
+
+private func applyPrimaryTint(to view: UIView) {
+    let tint = primaryTintColor()
+    view.tintColor = tint
+
+    var current: UIView? = view
+    while let host = current {
+        host.tintColor = tint
+        current = host.superview
+    }
+
+    if let window = view.window {
+        window.tintColor = tint
+        window.rootViewController?.view.tintColor = tint
+    }
+}
+
+private func retintNativeFindNavigator(from sourceView: UIView) {
+    guard let window = sourceView.window else { return }
+    retintFindViews(in: window, inFindContext: false)
+}
+
+private func retintFindViews(in view: UIView, inFindContext: Bool) {
+    let typeName = String(describing: type(of: view)).lowercased()
+    let nowInFindContext = inFindContext
+        || typeName.contains("find")
+        || typeName.contains("search")
+        || typeName.contains("navigator")
+
+    if nowInFindContext {
+        let tint = primaryTintColor()
+        view.tintColor = tint
+
+        if let button = view as? UIButton {
+            button.tintColor = tint
+            button.setTitleColor(tint, for: .normal)
+        } else if let textField = view as? UITextField {
+            textField.tintColor = tint
+        } else if let searchBar = view as? UISearchBar {
+            searchBar.tintColor = tint
+            if let searchField = searchBar.searchTextField as UITextField? {
+                searchField.tintColor = tint
+            }
+        }
+    }
+
+    for subview in view.subviews {
+        retintFindViews(in: subview, inFindContext: nowInFindContext)
+    }
+}
+
 // MARK: - QuickLook Document Preview
 struct DocumentPreviewContainerView: View {
     let url: URL
     let document: Document?
     let onAISummary: (() -> Void)?
+    let documentManager: DocumentManager?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showingInfo = false
+    @State private var showingSummary = false
     @State private var showingSearchSheet = false
     @State private var previewController: CustomQLPreviewController?
+    @State private var pdfSearchCoordinator: SearchablePDFView.Coordinator?
 
-    init(url: URL, document: Document? = nil, onAISummary: (() -> Void)? = nil) {
+    init(
+        url: URL,
+        document: Document? = nil,
+        onAISummary: (() -> Void)? = nil,
+        documentManager: DocumentManager? = nil
+    ) {
         self.url = url
         self.document = document
         self.onAISummary = onAISummary
+        self.documentManager = documentManager
+    }
+
+    private var usesInlinePDFSearch: Bool {
+        if let type = document?.type {
+            return type == .pdf || type == .scanned
+        }
+        return url.pathExtension.lowercased() == "pdf"
+    }
+
+    private var usesSearchPopupForOfficeDocs: Bool {
+        guard let type = document?.type else { return false }
+        return type == .docx || type == .pptx
+    }
+
+    private var previewTitle: String {
+        document.map { splitDisplayTitle($0.title).base } ?? "Preview"
     }
 
     // Match navigation-style dismissal: edge swipe from left to right only.
@@ -737,122 +974,93 @@ struct DocumentPreviewContainerView: View {
             }
     }
 
-    var body: some View {
-        ZStack {
-            // Full screen PDF preview
-            DocumentPreviewNavControllerView(
-                url: url,
-                title: document.map { splitDisplayTitle($0.title).base } ?? "Preview",
-                onDismiss: { dismiss() },
-                onControllerReady: { controller in
-                    previewController = controller
+    @ToolbarContentBuilder
+    private var previewBottomToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .bottomBar) {
+            if document != nil {
+                Button {
+                    showingInfo = true
+                } label: {
+                    Label("Info", systemImage: "info.circle")
                 }
-            )
-            .ignoresSafeArea()
-
-            // Top overlay with title and buttons
-            VStack {
-                ZStack(alignment: .top) {
-                    HStack(alignment: .top) {
-                        // Back button
-                        Button {
-                            dismiss()
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(.white)
-                                .frame(width: 44, height: 44)
-                                .background(Color.black.opacity(0.6))
-                                .clipShape(Circle())
-                        }
-                        .padding(.leading, 20)
-                        
-                        Spacer()
-                        
-                        // Search button
-                        VStack(spacing: 10) {
-                            Button {
-                                if document != nil {
-                                    showingSearchSheet = true
-                                } else {
-                                    // Fallback to QuickLook search when no document context exists.
-                                    triggerSearch()
-                                }
-                            } label: {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .frame(width: 44, height: 44)
-                                    .background(Color.black.opacity(0.6))
-                                    .clipShape(Circle())
-                            }
-
-                            Button {
-                                shareCurrent()
-                            } label: {
-                                Image(systemName: "square.and.arrow.up")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .frame(width: 44, height: 44)
-                                    .background(Color.black.opacity(0.6))
-                                    .clipShape(Circle())
-                            }
-                        }
-                        .padding(.trailing, 20)
-                    }
-
-                    // Document title
-                    Text(document.map { splitDisplayTitle($0.title).base } ?? "Preview")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.6))
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                }
-                .padding(.top, 10)
-                
-                Spacer()
             }
 
-            // Bottom buttons
-            ZStack {
-                if document != nil {
-                    Button {
-                        showingInfo = true
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 54, height: 54)
-                            .background(Color(.systemGray))
-                            .clipShape(Circle())
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .padding(.leading, 20)
-                    .padding(.bottom, 8)
-                }
+            Button {
+                shareCurrent()
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
 
-                if onAISummary != nil {
-                    Button {
+            Button {
+                triggerSearch()
+            } label: {
+                Label("Search", systemImage: "text.magnifyingglass")
+            }
+
+            Spacer()
+
+            if onAISummary != nil {
+                Button {
+                    if document != nil, documentManager != nil {
+                        showingSummary = true
+                    } else {
                         onAISummary?()
-                    } label: {
-                        Image(systemName: "brain.head.profile")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 50, height: 50)
-                            .background(Color(.systemBlue))
-                            .clipShape(Circle())
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 8)
+                } label: {
+                    Label("AI Summary", systemImage: "brain.head.profile")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
             }
         }
+    }
+
+    @ToolbarContentBuilder
+    private var previewTopToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button {
+                dismiss()
+            } label: {
+                Label("Back", systemImage: "chevron.backward")
+            }
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                if usesInlinePDFSearch {
+                    SearchablePDFPreviewView(
+                        url: url,
+                        onCoordinatorReady: { coordinator in
+                            pdfSearchCoordinator = coordinator
+                        }
+                    )
+                    .ignoresSafeArea()
+                } else {
+                    DocumentPreviewNavControllerView(
+                        url: url,
+                        title: previewTitle,
+                        onControllerReady: { controller in
+                            previewController = controller
+                        }
+                    )
+                    .ignoresSafeArea()
+                }
+            }
+            .navigationTitle(previewTitle)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .toolbar {
+            previewTopToolbar
+            previewBottomToolbar
+        }
+        .toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(.primary, for: .navigationBar)
+        .toolbarColorScheme(colorScheme == .light ? .dark : .light, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbar(.visible, for: .bottomBar)
+        .toolbarBackground(.visible, for: .bottomBar)
         .interactiveDismissDisabled(true)
         .simultaneousGesture(edgeSwipeToDismiss)
         .sheet(isPresented: $showingInfo) {
@@ -860,16 +1068,39 @@ struct DocumentPreviewContainerView: View {
                 DocumentInfoView(document: doc, fileURL: url)
             }
         }
+        .sheet(isPresented: $showingSummary) {
+            if let doc = document, let manager = documentManager {
+                DocumentSummaryView(document: doc)
+                    .environmentObject(manager)
+            }
+        }
         .sheet(isPresented: $showingSearchSheet) {
             if let doc = document {
                 SearchInDocumentSheet(document: doc)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
     
     private func triggerSearch() {
-        // Directly trigger search on the preview controller if available
-        previewController?.triggerSearchDirectly()
+        if usesInlinePDFSearch {
+            // Present the native iOS find bar on the PDFView.
+            pdfSearchCoordinator?.presentFindNavigator()
+            return
+        }
+
+        if usesSearchPopupForOfficeDocs, document != nil {
+            showingSearchSheet = true
+            return
+        }
+
+        // Fallback to Quick Look's native search for the rest of non-PDF previews.
+        if let previewController {
+            previewController.triggerSearchDirectly()
+            return
+        }
+        UIApplication.shared.sendAction(#selector(UIResponder.find(_:)), to: nil, from: nil, for: nil)
     }
 
     private func shareCurrent() {
@@ -945,16 +1176,8 @@ struct SearchInDocumentSheet: View {
     @State private var results: [String] = []
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 12) {
-                TextField("Search text", text: $query)
-                    .textInputAutocapitalization(.none)
-                    .disableAutocorrection(true)
-                    .padding(12)
-                    .background(Color(.tertiarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .padding(.horizontal)
-
                 if document.content.isEmpty {
                     Text("No text content available for this document.")
                         .foregroundColor(.secondary)
@@ -976,9 +1199,22 @@ struct SearchInDocumentSheet: View {
             }
             .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(
+                text: $query,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Find in document"
+            )
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color("Primary"))
                 }
             }
             .onChange(of: query) { _ in
@@ -1026,11 +1262,10 @@ struct SearchInDocumentSheet: View {
 struct DocumentPreviewNavControllerView: UIViewControllerRepresentable {
     let url: URL
     let title: String
-    let onDismiss: () -> Void
     let onControllerReady: (CustomQLPreviewController) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(url: url, onDismiss: onDismiss)
+        Coordinator(url: url)
     }
 
     func makeUIViewController(context: Context) -> UIViewController {
@@ -1052,11 +1287,9 @@ struct DocumentPreviewNavControllerView: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
         let url: URL
-        let onDismiss: () -> Void
 
-        init(url: URL, onDismiss: @escaping () -> Void) {
+        init(url: URL) {
             self.url = url
-            self.onDismiss = onDismiss
         }
 
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
@@ -1080,92 +1313,114 @@ struct DocumentPreviewNavControllerView: UIViewControllerRepresentable {
             return CGRect.zero
         }
 
-        @objc func handleBack() {
-            onDismiss()
-        }
     }
 }
 
 // Custom QLPreviewController to remove unwanted UI elements
 class CustomQLPreviewController: QLPreviewController {
+    override var canBecomeFirstResponder: Bool { true }
     
     func triggerSearchDirectly() {
-        // Use the standard iOS search functionality
-        becomeFirstResponder()
-        let searchCommand = #selector(UIResponder.find(_:))
-        if canPerformAction(searchCommand, withSender: self) {
-            perform(searchCommand, with: self)
+        DispatchQueue.main.async {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.becomeFirstResponder()
+
+                // 1️⃣ Try UIFindInteraction on any subview first (iOS 16+).
+                if self.presentFindInteractionInHierarchy(self.view) {
+                    return
+                }
+
+                // 2️⃣ Fall back to the legacy responder chain approach.
+                self.openFindNavigatorWithRetries(12)
+            }
         }
     }
-    
-    private func findAndActivateSearch() {
-        // Look for search functionality in the view hierarchy
-        func findSearchController(in view: UIView) -> UISearchController? {
-            if let searchController = view as? UISearchController {
-                return searchController
+
+    /// Recursively look for a view with an active UIFindInteraction and present it.
+    private func presentFindInteractionInHierarchy(_ root: UIView) -> Bool {
+        // UIFindInteraction lives in the view's `interactions` array, not a dedicated property.
+        for interaction in root.interactions {
+            if let fi = interaction as? UIFindInteraction, !fi.isFindNavigatorVisible {
+                fi.presentFindNavigator(showingReplace: false)
+                return true
             }
-            for subview in view.subviews {
-                if let found = findSearchController(in: subview) {
-                    return found
+        }
+        for subview in root.subviews {
+            if presentFindInteractionInHierarchy(subview) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func openFindNavigatorWithRetries(_ retries: Int) {
+        if attemptOpenFindNavigator() { return }
+        guard retries > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.openFindNavigatorWithRetries(retries - 1)
+        }
+    }
+
+    private func attemptOpenFindNavigator() -> Bool {
+        let action = #selector(UIResponder.find(_:))
+        if let navBar = navigationController?.navigationBar, tapSearchButtonIfPresent(in: navBar) {
+            return true
+        }
+        if let navView = navigationController?.view, tapSearchButtonIfPresent(in: navView) {
+            return true
+        }
+        if UIApplication.shared.sendAction(action, to: nil, from: self, for: nil) {
+            return true
+        }
+        if let navView = navigationController?.view,
+           let responder = findResponderCapableOfFind(in: navView),
+           responder.canPerformAction(action, withSender: nil) {
+            return UIApplication.shared.sendAction(action, to: responder, from: self, for: nil)
+        }
+        if let responder = findResponderCapableOfFind(in: view),
+           responder.canPerformAction(action, withSender: nil) {
+            return UIApplication.shared.sendAction(action, to: responder, from: self, for: nil)
+        }
+        return tapSearchButtonIfPresent(in: view)
+    }
+
+    private func findResponderCapableOfFind(in view: UIView) -> UIResponder? {
+        if view.canPerformAction(#selector(UIResponder.find(_:)), withSender: nil) {
+            return view
+        }
+        for subview in view.subviews {
+            if let responder = findResponderCapableOfFind(in: subview) {
+                return responder
+            }
+        }
+        return nil
+    }
+
+    private func tapSearchButtonIfPresent(in view: UIView) -> Bool {
+        for subview in view.subviews {
+            if let button = subview as? UIButton {
+                let id = (button.accessibilityIdentifier ?? "").lowercased()
+                let label = (button.accessibilityLabel ?? "").lowercased()
+                let typeName = String(describing: type(of: button)).lowercased()
+                if id.contains("search") || label.contains("search") || typeName.contains("search") {
+                    button.sendActions(for: .touchUpInside)
+                    return true
                 }
             }
-            return nil
+            if tapSearchButtonIfPresent(in: subview) {
+                return true
+            }
         }
-        
-        // Try to activate search through menu system
-        let menuController = UIMenuController.shared
-        menuController.showMenu(from: self.view, rect: CGRect(x: 0, y: 0, width: 1, height: 1))
-    }
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        
-        // Hide navigation bar and toolbar
-        navigationController?.setNavigationBarHidden(true, animated: false)
-        navigationController?.setToolbarHidden(true, animated: false)
+        return false
     }
     
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
-    
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        
-        // Force hide all bars and remove unwanted buttons
-        navigationController?.setNavigationBarHidden(true, animated: false)
-        navigationController?.setToolbarHidden(true, animated: false)
-        
-        // Remove share button and action button
-        navigationItem.rightBarButtonItem = nil
-        navigationItem.leftBarButtonItem = nil
-        toolbarItems = []
-        
-        // Remove the dropdown button by searching through subviews
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.removeUnwantedButtons()
-        }
-    }
-    
-    private func removeUnwantedButtons() {
-        // Recursively search for and hide share/action buttons
-        func hideShareButtons(in view: UIView) {
-            for subview in view.subviews {
-                if let button = subview as? UIButton {
-                    // Hide share/action buttons but keep search
-                    if button.accessibilityIdentifier?.contains("share") == true ||
-                       button.accessibilityIdentifier?.contains("action") == true {
-                        button.isHidden = true
-                    }
-                }
-                hideShareButtons(in: subview)
-            }
-        }
-        hideShareButtons(in: self.view)
-    }
-    
-    override var canBecomeFirstResponder: Bool {
-        return true
+        navigationController?.setNavigationBarHidden(false, animated: false)
     }
 }
 
