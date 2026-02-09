@@ -143,27 +143,13 @@ struct SearchView: View {
                 .focused($isSearchFocused)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemGroupedBackground).ignoresSafeArea())
-                .overlay {
-                    if isOpeningPreview {
-                        ZStack {
-                            Rectangle()
-                                .fill(.ultraThinMaterial)
-                                .ignoresSafeArea()
-                            VStack(spacing: 12) {
-                                ProgressView()
-                                    .scaleEffect(1.2)
-                                Text("Opening preview...")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .onAppear {
                     focusSearchField()
                 }
         }
+        .bindGlobalOperationLoading(isOpeningPreview)
     }
 
     @ViewBuilder

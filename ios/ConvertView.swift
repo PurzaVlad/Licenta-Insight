@@ -312,6 +312,7 @@ private struct ConvertFlowView: View {
             }
         }
         .overlay(conversionOverlay)
+        .bindGlobalOperationLoading(isConverting)
     }
 
     @ViewBuilder

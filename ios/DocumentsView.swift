@@ -555,18 +555,6 @@ struct DocumentsView: View {
         } else {
             rootGridView
         }
-        if isOpeningPreview {
-            ZStack {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(1.2)
-                    Text("Opening preview...")
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
     }
 
     private var processingOverlayView: some View {
@@ -868,11 +856,6 @@ struct DocumentsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .overlay {
-            if isProcessing {
-                processingOverlayView
-            }
-        }
-        .overlay {
             NavigationLink(
                 destination: activeFolderDestinationView,
                 isActive: isShowingActiveFolder
@@ -898,6 +881,7 @@ struct DocumentsView: View {
         .navigationViewStyle(.stack)
         .tabBarVisibility(shouldHideTabBar)
         .tabBarHiddenCompat(shouldHideTabBar)
+        .bindGlobalOperationLoading(isProcessing || isOpeningPreview)
         .sheet(isPresented: $showingSettings) {
             if #available(iOS 16.0, *) {
                 SettingsView()
@@ -1023,16 +1007,18 @@ struct DocumentsView: View {
             // Force refresh when the view appears to show newly converted documents
             documentManager.objectWillChange.send()
         }
-        .sheet(isPresented: $showingScanner) {
+        .fullScreenCover(isPresented: $showingScanner) {
             if scannerMode == .document, VNDocumentCameraViewController.isSupported {
                 DocumentScannerView { scannedImages in
                     self.scannedImages = scannedImages
                     self.prepareNamingDialog(for: scannedImages)
                 }
+                .ignoresSafeArea()
             } else {
                 SimpleCameraView { scannedText in
                     processScannedText(scannedText)
                 }
+                .ignoresSafeArea()
             }
         }
         .alert("Camera Access Needed", isPresented: $showingCameraPermissionAlert) {
@@ -1306,7 +1292,7 @@ struct DocumentsView: View {
 
         let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
         let document = Document(
-            title: titleCaseFromOCR(cappedText),
+            title: normalizedScannedTitle(titleCaseFromOCR(cappedText)),
             content: cappedText,
             summary: "Processing summary...",
             tags: [],
@@ -1350,10 +1336,16 @@ struct DocumentsView: View {
             }
         }
 
-        suggestedName = titleCaseFromOCR(extractedText.isEmpty ? firstPageText : extractedText)
-        customName = suggestedName
-        isProcessing = false
-        showingNamingDialog = true
+        let namingSeed = extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? firstPageText : extractedText
+
+        if !namingSeed.isEmpty {
+            generateAIDocumentName(from: namingSeed)
+        } else {
+            suggestedName = titleCaseFromOCR(firstPageText)
+            customName = suggestedName
+            isProcessing = false
+            showingNamingDialog = true
+        }
     }
 
     private func titleCaseFromOCR(_ text: String) -> String {
@@ -1365,12 +1357,90 @@ struct DocumentsView: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         let normalized = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        let words = normalized.lowercased().split(separator: " ").map(String.init)
+        let words = normalized.split(separator: " ").map(String.init)
+        let acronymWords: Set<String> = ["ai", "ocr", "pdf", "docx", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png"]
         let cased = words.map { word -> String in
-            guard let first = word.first else { return "" }
-            return String(first).uppercased() + word.dropFirst()
+            guard !word.isEmpty else { return "" }
+            let lowered = word.lowercased()
+            let plain = lowered.replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
+            if acronymWords.contains(plain) { return word.uppercased() }
+            if word == word.uppercased(), word.count <= 4 { return word }
+
+            var result = ""
+            var didCapitalizeLetter = false
+            for scalar in word.unicodeScalars {
+                let char = Character(scalar)
+                if CharacterSet.letters.contains(scalar) {
+                    if didCapitalizeLetter {
+                        result.append(String(char).lowercased())
+                    } else {
+                        result.append(String(char).uppercased())
+                        didCapitalizeLetter = true
+                    }
+                } else {
+                    result.append(char)
+                }
+            }
+            return result
         }
-        return cased.joined()
+        return cased.joined(separator: " ")
+    }
+
+    private func compactPascalCaseTitle(_ value: String, maxWords: Int) -> String {
+        let expanded = value
+            .replacingOccurrences(of: "([a-z0-9])([A-Z])", with: "$1 $2", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expanded.isEmpty else { return "" }
+
+        let acronymWords: Set<String> = ["ai", "ocr", "pdf", "docx", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png", "heic", "csv"]
+        return expanded
+            .split { $0.isWhitespace }
+            .prefix(maxWords)
+            .map { token in
+                let raw = String(token)
+                let lowered = raw.lowercased()
+                if acronymWords.contains(lowered) {
+                    return lowered.uppercased()
+                }
+                let first = raw.prefix(1).uppercased()
+                let rest = raw.dropFirst().lowercased()
+                return first + rest
+            }
+            .joined()
+    }
+
+    private func normalizedScannedTitle(_ raw: String) -> String {
+        let trimmed = raw
+            .replacingOccurrences(of: "^(?i)\\s*(suggested\\s+)?(document\\s+)?title\\s*[:\\-]\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "(?i)\\btitle\\b", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = "Scanned Document"
+        guard !trimmed.isEmpty else { return "ScannedDocument.pdf" }
+
+        let typedURL = URL(fileURLWithPath: trimmed)
+        let typedExt = typedURL.pathExtension.lowercased()
+        let knownExts: Set<String> = ["pdf", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "png", "jpg", "jpeg", "heic"]
+        let base = knownExts.contains(typedExt) ? typedURL.deletingPathExtension().lastPathComponent : trimmed
+
+        let cleanedBase = base
+            .replacingOccurrences(of: "[\\r\\n]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+
+        let safeBaseRaw = cleanedBase.isEmpty ? fallback : cleanedBase
+        let safeBase = compactPascalCaseTitle(
+            safeBaseRaw
+            .replacingOccurrences(of: "(?i)\\btitle\\b", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            maxWords: 10
+        )
+        let finalBase = safeBase.isEmpty ? "ScannedDocument" : safeBase
+        return "\(finalBase).pdf"
     }
 
     private func finalizeDocument(with name: String) {
@@ -1394,7 +1464,7 @@ struct DocumentsView: View {
         let pagesToStore = pendingOCRPages.isEmpty ? cappedPages : pendingOCRPages
 
         let document = Document(
-            title: name,
+            title: normalizedScannedTitle(name),
             content: cappedText,
             summary: "Processing summary...",
             ocrPages: pagesToStore,
@@ -1617,10 +1687,13 @@ struct DocumentsView: View {
         let base = extractHeadingsAndFirstParagraph(from: text)
         let seed = base.isEmpty ? text : base
         let candidates = extractTitleCandidates(from: seed)
-        let fallback = candidates.first ?? titleCaseFromOCR(text)
+        let fallbackRaw = compactPascalCaseTitle(candidates.first ?? titleCaseFromOCR(text), maxWords: 4)
+        let fallback = fallbackRaw.isEmpty ? "ScannedDocument" : fallbackRaw
 
         let prompt = """
-            Choose the best candidate and output a 1–4 word Title Case title. No punctuation. Output only the title.
+            Choose the best candidate and output a short Title Case title (2-4 words).
+            Keep useful characters when they are part of the real name.
+            Output only the title.
 
             CANDIDATES:
             \(candidates.map { "- \($0)" }.joined(separator: "\n"))
@@ -1738,7 +1811,7 @@ struct DocumentsView: View {
         let stripped = firstLine
             .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
             .replacingOccurrences(of: "[\"'“”`]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9\\s&\\-\\/]", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.isEmpty { return "" }
@@ -1746,29 +1819,54 @@ struct DocumentsView: View {
     }
 
     private func normalizeSuggestedTitle(_ raw: String, fallback: String) -> String {
-        let firstLine = raw.components(separatedBy: .newlines).first ?? ""
-        let stripped = firstLine
-            .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[\"'“”`]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+        func compactAndCap(_ value: String) -> String {
+            compactPascalCaseTitle(
+                value
+                    .replacingOccurrences(of: "\"", with: "")
+                    .replacingOccurrences(of: ":", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                maxWords: 4
+            )
+        }
+
+        let normalizedFallback = compactAndCap(fallback)
+        let extractedFromQuotedTitle: String = {
+            let fullRange = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+            guard let regex = try? NSRegularExpression(pattern: #"(?i)title\s*:\s*"([^"]+)""#),
+                  let match = regex.firstMatch(in: raw, options: [], range: fullRange),
+                  match.numberOfRanges > 1,
+                  let groupRange = Range(match.range(at: 1), in: raw) else {
+                return raw
+            }
+            return String(raw[groupRange])
+        }()
+
+        let stripped = extractedFromQuotedTitle
+            .replacingOccurrences(of: "^(?i)\\s*(suggested\\s+)?(document\\s+)?title\\s*[:\\-]\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\"", with: "")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let words = stripped.split(separator: " ").map(String.init)
-        var seen = Set<String>()
-        var unique: [String] = []
-        for word in words {
-            let key = word.lowercased()
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            unique.append(word)
-            if unique.count == 4 { break }
+        if stripped.isEmpty {
+            return normalizedFallback
+        }
+        let cleaned = stripped
+            .replacingOccurrences(of: "(?i)\\btitle\\b", with: "", options: .regularExpression)
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            return normalizedFallback
+        }
+        if isMetadataLine(cleaned) {
+            return normalizedFallback
+        }
+        let words = cleaned.split { $0.isWhitespace }
+        if words.count > 14 || cleaned.count > 90 {
+            return normalizedFallback
         }
 
-        let cleaned = unique.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.isEmpty { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
-        if isMetadataLine(cleaned) { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
-        return enforceTitleCase(cleaned)
+        let normalized = compactAndCap(cleaned)
+        return normalized.isEmpty ? normalizedFallback : normalized
     }
 
     private func buildNamingSeed(from pages: [OCRPage], fallback: String) -> String {
@@ -3007,6 +3105,7 @@ struct FolderDocumentsView: View {
         .tabBarVisibility(isSelectionMode)
         .tabBarHiddenCompat(isSelectionMode)
         .bottomBarVisibility(isSelectionMode)
+        .bindGlobalOperationLoading(isProcessing)
         .onAppear {
             if isSelectionMode {
                 editMode = .active
@@ -3079,16 +3178,18 @@ struct FolderDocumentsView: View {
                 processImportedFiles(urls)
             }
         }
-            .sheet(isPresented: $showingScanner) {
+        .fullScreenCover(isPresented: $showingScanner) {
             if scannerMode == .document, VNDocumentCameraViewController.isSupported {
                 DocumentScannerView { scannedImages in
                     self.scannedImages = scannedImages
                     self.prepareNamingDialog(for: scannedImages)
                 }
+                .ignoresSafeArea()
             } else {
                 SimpleCameraView { scannedText in
                     processScannedText(scannedText)
                 }
+                .ignoresSafeArea()
             }
         }
         .alert("Camera Access Needed", isPresented: $showingCameraPermissionAlert) {
@@ -3516,7 +3617,7 @@ struct FolderDocumentsView: View {
 
         let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
         let document = Document(
-            title: titleCaseFromOCR(cappedText),
+            title: normalizedScannedTitle(titleCaseFromOCR(cappedText)),
             content: cappedText,
             summary: "Processing summary...",
             tags: [],
@@ -3599,7 +3700,7 @@ struct FolderDocumentsView: View {
         let pagesToStore = pendingOCRPages.isEmpty ? cappedPages : pendingOCRPages
 
         let document = Document(
-            title: name,
+            title: normalizedScannedTitle(name),
             content: cappedText,
             summary: "Processing summary...",
             ocrPages: pagesToStore,
@@ -3632,10 +3733,13 @@ struct FolderDocumentsView: View {
         let base = extractHeadingsAndFirstParagraph(from: text)
         let seed = base.isEmpty ? text : base
         let candidates = extractTitleCandidates(from: seed)
-        let fallback = candidates.first ?? titleCaseFromOCR(text)
+        let fallbackRaw = compactPascalCaseTitle(candidates.first ?? titleCaseFromOCR(text), maxWords: 4)
+        let fallback = fallbackRaw.isEmpty ? "ScannedDocument" : fallbackRaw
 
         let prompt = """
-            Choose the best candidate and output a 1–4 word Title Case title. No punctuation. Output only the title.
+            Choose the best candidate and output a short Title Case title (2-4 words).
+            Keep useful characters when they are part of the real name.
+            Output only the title.
 
             CANDIDATES:
             \(candidates.map { "- \($0)" }.joined(separator: "\n"))
@@ -3749,7 +3853,7 @@ struct FolderDocumentsView: View {
         let stripped = firstLine
             .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
             .replacingOccurrences(of: "[\"'`]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9\\s&\\-\\/]", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if stripped.isEmpty { return "" }
@@ -3757,29 +3861,54 @@ struct FolderDocumentsView: View {
     }
 
     private func normalizeSuggestedTitle(_ raw: String, fallback: String) -> String {
-        let firstLine = raw.components(separatedBy: .newlines).first ?? ""
-        let stripped = firstLine
-            .replacingOccurrences(of: "^[\\s•\\-–—*]+", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[\"'`]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[^A-Za-z0-9\\s]", with: " ", options: .regularExpression)
+        func compactAndCap(_ value: String) -> String {
+            compactPascalCaseTitle(
+                value
+                    .replacingOccurrences(of: "\"", with: "")
+                    .replacingOccurrences(of: ":", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                maxWords: 4
+            )
+        }
+
+        let normalizedFallback = compactAndCap(fallback)
+        let extractedFromQuotedTitle: String = {
+            let fullRange = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+            guard let regex = try? NSRegularExpression(pattern: #"(?i)title\s*:\s*"([^"]+)""#),
+                  let match = regex.firstMatch(in: raw, options: [], range: fullRange),
+                  match.numberOfRanges > 1,
+                  let groupRange = Range(match.range(at: 1), in: raw) else {
+                return raw
+            }
+            return String(raw[groupRange])
+        }()
+
+        let stripped = extractedFromQuotedTitle
+            .replacingOccurrences(of: "^(?i)\\s*(suggested\\s+)?(document\\s+)?title\\s*[:\\-]\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\"", with: "")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let words = stripped.split(separator: " ").map(String.init)
-        var seen = Set<String>()
-        var unique: [String] = []
-        for word in words {
-            let key = word.lowercased()
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            unique.append(word)
-            if unique.count == 4 { break }
+        if stripped.isEmpty {
+            return normalizedFallback
+        }
+        let cleaned = stripped
+            .replacingOccurrences(of: "(?i)\\btitle\\b", with: "", options: .regularExpression)
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            return normalizedFallback
+        }
+        if isMetadataLine(cleaned) {
+            return normalizedFallback
+        }
+        let words = cleaned.split { $0.isWhitespace }
+        if words.count > 14 || cleaned.count > 90 {
+            return normalizedFallback
         }
 
-        let cleaned = unique.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.isEmpty { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
-        if isMetadataLine(cleaned) { return enforceTitleCase(normalizeTitleCandidate(fallback, maxWords: 4)) }
-        return enforceTitleCase(cleaned)
+        let normalized = compactAndCap(cleaned)
+        return normalized.isEmpty ? normalizedFallback : normalized
     }
 
     private func extractHeadingsAndFirstParagraph(from text: String) -> String {
@@ -3807,12 +3936,90 @@ struct FolderDocumentsView: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         let normalized = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        let words = normalized.lowercased().split(separator: " ").map(String.init)
+        let words = normalized.split(separator: " ").map(String.init)
+        let acronymWords: Set<String> = ["ai", "ocr", "pdf", "docx", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png"]
         let cased = words.map { word -> String in
-            guard let first = word.first else { return "" }
-            return String(first).uppercased() + word.dropFirst()
+            guard !word.isEmpty else { return "" }
+            let lowered = word.lowercased()
+            let plain = lowered.replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
+            if acronymWords.contains(plain) { return word.uppercased() }
+            if word == word.uppercased(), word.count <= 4 { return word }
+
+            var result = ""
+            var didCapitalizeLetter = false
+            for scalar in word.unicodeScalars {
+                let char = Character(scalar)
+                if CharacterSet.letters.contains(scalar) {
+                    if didCapitalizeLetter {
+                        result.append(String(char).lowercased())
+                    } else {
+                        result.append(String(char).uppercased())
+                        didCapitalizeLetter = true
+                    }
+                } else {
+                    result.append(char)
+                }
+            }
+            return result
         }
-        return cased.joined()
+        return cased.joined(separator: " ")
+    }
+
+    private func compactPascalCaseTitle(_ value: String, maxWords: Int) -> String {
+        let expanded = value
+            .replacingOccurrences(of: "([a-z0-9])([A-Z])", with: "$1 $2", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expanded.isEmpty else { return "" }
+
+        let acronymWords: Set<String> = ["ai", "ocr", "pdf", "docx", "ppt", "pptx", "xls", "xlsx", "jpg", "jpeg", "png", "heic", "csv"]
+        return expanded
+            .split { $0.isWhitespace }
+            .prefix(maxWords)
+            .map { token in
+                let raw = String(token)
+                let lowered = raw.lowercased()
+                if acronymWords.contains(lowered) {
+                    return lowered.uppercased()
+                }
+                let first = raw.prefix(1).uppercased()
+                let rest = raw.dropFirst().lowercased()
+                return first + rest
+            }
+            .joined()
+    }
+
+    private func normalizedScannedTitle(_ raw: String) -> String {
+        let trimmed = raw
+            .replacingOccurrences(of: "^(?i)\\s*(suggested\\s+)?(document\\s+)?title\\s*[:\\-]\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "(?i)\\btitle\\b", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = "Scanned Document"
+        guard !trimmed.isEmpty else { return "ScannedDocument.pdf" }
+
+        let typedURL = URL(fileURLWithPath: trimmed)
+        let typedExt = typedURL.pathExtension.lowercased()
+        let knownExts: Set<String> = ["pdf", "docx", "ppt", "pptx", "xls", "xlsx", "txt", "png", "jpg", "jpeg", "heic"]
+        let base = knownExts.contains(typedExt) ? typedURL.deletingPathExtension().lastPathComponent : trimmed
+
+        let cleanedBase = base
+            .replacingOccurrences(of: "[\\r\\n]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+
+        let safeBaseRaw = cleanedBase.isEmpty ? fallback : cleanedBase
+        let safeBase = compactPascalCaseTitle(
+            safeBaseRaw
+            .replacingOccurrences(of: "(?i)\\btitle\\b", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: ":", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            maxWords: 10
+        )
+        let finalBase = safeBase.isEmpty ? "ScannedDocument" : safeBase
+        return "\(finalBase).pdf"
     }
 
     private func performOCRDetailed(on image: UIImage, pageIndex: Int) -> (text: String, page: OCRPage) {
@@ -4342,6 +4549,7 @@ struct SimpleCameraView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
         picker.delegate = context.coordinator
+        picker.modalPresentationStyle = .fullScreen
         
         // Check if camera is available
         if UIImagePickerController.isSourceTypeAvailable(.camera) {

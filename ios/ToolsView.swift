@@ -644,6 +644,7 @@ struct CompressPDFView: View {
                 showingPicker = true
             }
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private func compressSelected() {
@@ -761,6 +762,7 @@ struct ProtectPDFView: View {
                 showingPicker = true
             }
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private func protectSelected() {

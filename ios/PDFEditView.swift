@@ -157,6 +157,7 @@ struct SignPDFView: View {
         } message: {
             Text(alertMessage)
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private var signaturePanel: some View {
@@ -1029,6 +1030,7 @@ struct MergePDFsView: View {
         } message: {
             Text(alertMessage)
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private func mergeSelected() {
@@ -1198,6 +1200,7 @@ struct SplitPDFView: View {
         } message: {
             Text(alertMessage)
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private func splitSelected() {
@@ -1372,6 +1375,7 @@ struct RearrangePDFView: View {
         } message: {
             Text(alertMessage)
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private func loadPages(for document: Document?) {
@@ -1554,6 +1558,7 @@ struct RotatePDFView: View {
         } message: {
             Text(alertMessage)
         }
+        .bindGlobalOperationLoading(isSaving)
     }
 
     private func loadPages(for document: Document?) {

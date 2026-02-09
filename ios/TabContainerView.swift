@@ -2,6 +2,39 @@ import SwiftUI
 import UIKit
 import LocalAuthentication
 
+extension NSNotification.Name {
+    static let globalOperationLoading = NSNotification.Name("GlobalOperationLoading")
+}
+
+enum GlobalLoadingBridge {
+    static func setOperationLoading(_ isActive: Bool) {
+        NotificationCenter.default.post(
+            name: .globalOperationLoading,
+            object: nil,
+            userInfo: ["isActive": isActive]
+        )
+    }
+}
+
+extension View {
+    func bindGlobalOperationLoading(_ isActive: Bool) -> some View {
+        self
+            .onAppear {
+                if isActive {
+                    GlobalLoadingBridge.setOperationLoading(true)
+                }
+            }
+            .onChange(of: isActive) { active in
+                GlobalLoadingBridge.setOperationLoading(active)
+            }
+            .onDisappear {
+                if isActive {
+                    GlobalLoadingBridge.setOperationLoading(false)
+                }
+            }
+    }
+}
+
 // ViewModifier for navigation bar transparency with iOS 15 compatibility
 struct NavBarBlurModifier: ViewModifier {
     func body(content: Content) -> some View {
@@ -70,6 +103,13 @@ struct TabContainerView: View {
     @State private var summaryDocument: Document?
     @AppStorage("pendingToolsDeepLink") private var pendingToolsDeepLink = ""
     @AppStorage("pendingConvertDeepLink") private var pendingConvertDeepLink = ""
+    @AppStorage("hasShownInitialStartupLoading") private var hasShownInitialStartupLoading = false
+    @State private var didStartInitialBootstrap = false
+    @State private var isInitialStartupLoading = false
+    @State private var isInitialStartupLoadingVisible = false
+    @State private var operationLoadingCount = 0
+    @State private var isOperationLoadingVisible = false
+    @State private var operationLoadingVisibilityToken: Int = 0
 
     private struct SummaryJob: Equatable {
         let documentId: UUID
@@ -118,8 +158,23 @@ struct TabContainerView: View {
             if isLocked {
                 lockOverlay
             }
+
+            if isOperationLoadingVisible && !isInitialStartupLoadingVisible {
+                LoadingScreenView2()
+                    .transition(.opacity)
+                    .ignoresSafeArea()
+                    .zIndex(5)
+            }
+
+            if isInitialStartupLoadingVisible {
+                LoadingScreenView()
+                    .transition(.opacity)
+                    .ignoresSafeArea()
+                    .zIndex(10)
+            }
         }
         .onAppear {
+            startInitialBootstrapIfNeeded()
             applyUserInterfaceStyle()
             for doc in documentManager.documents
             where isSummaryPlaceholder(doc.summary) && shouldAutoSummarize(doc) {
@@ -182,6 +237,15 @@ struct TabContainerView: View {
             let job = SummaryJob(documentId: docId, prompt: prompt)
             summaryQueue.append(job)
             processNextSummaryIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .globalOperationLoading)) { notification in
+            guard let isActive = notification.userInfo?["isActive"] as? Bool else { return }
+            if isActive {
+                operationLoadingCount += 1
+            } else {
+                operationLoadingCount = max(0, operationLoadingCount - 1)
+            }
+            updateOperationLoadingVisibility()
         }
     }
 
@@ -577,4 +641,169 @@ struct TabContainerView: View {
         }
     }
 
+    private func startInitialBootstrapIfNeeded() {
+        guard !didStartInitialBootstrap else { return }
+        didStartInitialBootstrap = true
+        guard !hasShownInitialStartupLoading else { return }
+
+        isInitialStartupLoading = true
+        scheduleInitialStartupLoadingVisibility()
+        Task {
+            async let bootstrap: Void = performInitialBootstrap()
+            _ = await bootstrap
+
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    isInitialStartupLoading = false
+                    isInitialStartupLoadingVisible = false
+                }
+                hasShownInitialStartupLoading = true
+            }
+        }
+    }
+
+    private func updateOperationLoadingVisibility() {
+        operationLoadingVisibilityToken += 1
+        let token = operationLoadingVisibilityToken
+
+        if operationLoadingCount <= 0 {
+            withAnimation(.easeOut(duration: 0.12)) {
+                isOperationLoadingVisible = false
+            }
+            return
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await MainActor.run {
+                guard operationLoadingVisibilityToken == token else { return }
+                guard operationLoadingCount > 0 else { return }
+                withAnimation(.easeIn(duration: 0.15)) {
+                    isOperationLoadingVisible = true
+                }
+            }
+        }
+    }
+
+    private func scheduleInitialStartupLoadingVisibility() {
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await MainActor.run {
+                guard isInitialStartupLoading else { return }
+                withAnimation(.easeIn(duration: 0.15)) {
+                    isInitialStartupLoadingVisible = true
+                }
+            }
+        }
+    }
+
+    private func performInitialBootstrap() async {
+        // Give the app one async cycle to finish attaching root views/state restoration.
+        await Task.yield()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+    }
+}
+
+struct LoadingScreenView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var circleOffset: CGFloat = 16.3
+
+    var body: some View {
+        ZStack {
+            (colorScheme == .dark ? Color.black : Color.white)
+                .ignoresSafeArea()
+
+            Image("LogoComplet")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 100, height: 100)
+                .accessibilityLabel("LogoComplet")
+                .overlay {
+                    Rectangle()
+                        .fill(.background)
+                        .frame(width: 220, height: 220)
+                        .mask {
+                            Rectangle()
+                                .overlay {
+                                    Circle()
+                                        .frame(width: 64.4, height: 64.4)
+                                        .offset(y: circleOffset)
+                                        .blendMode(.destinationOut)
+                                }
+                        }
+                        .compositingGroup()
+                }
+        }
+        .onAppear {
+            Task {
+                while !Task.isCancelled {
+                    circleOffset = 16.3
+                    withAnimation(.easeInOut(duration: 1.5)) {
+                        circleOffset = -16.3
+                    }
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+                    withAnimation(.easeInOut(duration: 1.5)) {
+                        circleOffset = 16.3
+                    }
+                    try? await Task.sleep(nanoseconds: 2_400_000_000)
+                }
+            }
+        }
+    }
+}
+
+struct LoadingScreenView2: View {
+    @State private var circleOffset: CGFloat = 16.3
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(Color.gray.opacity(0.06))
+                .ignoresSafeArea()
+
+            Image("LogoComplet")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 100, height: 100)
+                .mask {
+                    Circle()
+                        .frame(width: 64.4, height: 64.4)
+                        .offset(y: circleOffset)
+                }
+                .accessibilityLabel("LogoComplet")
+
+            Rectangle()
+                .fill(Color.gray.opacity(0.14))
+                .ignoresSafeArea()
+                .mask {
+                    Rectangle()
+                        .ignoresSafeArea()
+                        .overlay {
+                            Circle()
+                                .frame(width: 64.4, height: 64.4)
+                                .offset(y: circleOffset)
+                                .blendMode(.destinationOut)
+                        }
+                }
+                .compositingGroup()
+        }
+        .onAppear {
+            Task {
+                while !Task.isCancelled {
+                    circleOffset = 16.3
+                    withAnimation(.easeInOut(duration: 1.5)) {
+                        circleOffset = -16.3
+                    }
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+                    withAnimation(.easeInOut(duration: 1.5)) {
+                        circleOffset = 16.3
+                    }
+                    try? await Task.sleep(nanoseconds: 2_400_000_000)
+                }
+            }
+        }
+    }
 }
