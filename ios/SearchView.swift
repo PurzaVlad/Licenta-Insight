@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PDFKit
 
 struct SearchView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -344,6 +345,15 @@ struct SearchView: View {
                                     .foregroundColor(.white)
                                     .font(.system(size: 20))
                             }
+                        } else if isProtectedPDFPreviewInSearch(document) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color("Primary"))
+
+                                Image(systemName: "lock.fill")
+                                    .foregroundColor(.white)
+                                    .font(.system(size: 20))
+                            }
                         } else {
                             DocumentThumbnailView(document: document, size: CGSize(width: 50, height: 50))
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -475,4 +485,11 @@ struct SearchView: View {
             return "zip"
         }
     }
+}
+
+private func isProtectedPDFPreviewInSearch(_ document: Document) -> Bool {
+    guard document.type == .pdf || document.type == .scanned else { return false }
+    guard let data = document.pdfData ?? document.originalFileData,
+          let pdf = PDFDocument(data: data) else { return false }
+    return pdf.isEncrypted
 }

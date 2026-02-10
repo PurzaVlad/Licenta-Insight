@@ -1551,6 +1551,11 @@ struct DocumentInfoView: View {
     }
 
     private var ocrText: String {
+        let hasLiveSource = document.sourceDocumentId != nil &&
+            document.summary == DocumentManager.summaryUnavailableMessage
+        if hasLiveSource {
+            return DocumentManager.ocrUnavailableWhileSourceExistsMessage
+        }
         guard let pages = document.ocrPages, !pages.isEmpty else { return "" }
         return buildStructuredText(from: pages, includePageLabels: true)
     }
@@ -1640,13 +1645,11 @@ struct DocumentSummaryView: View {
                             Text("Summary")
                                 .font(.headline)
                             Spacer()
-                            if supportsAISummary {
+                            if supportsAISummary && !hasLiveSource {
                                 if isGeneratingSummary {
                                     Button("Cancel") { cancelSummary() }
                                 } else if hasUsableSummary {
                                     Button("Regenerate") { generateAISummary(force: true) }
-                                } else if isSummaryUnavailable {
-                                    Button("Generate Anyway") { generateAISummary(force: true) }
                                 } else {
                                     Button("Generate") { generateAISummary(force: false) }
                                 }

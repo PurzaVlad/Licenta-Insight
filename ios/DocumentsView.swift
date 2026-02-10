@@ -2103,6 +2103,15 @@ struct DocumentRowView: View {
                                 .foregroundColor(.white)
                                 .font(.system(size: 20))
                         }
+                    } else if isProtectedPDFPreview(document) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color("Primary"))
+
+                            Image(systemName: "lock.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 20))
+                        }
                     } else {
                         DocumentThumbnailView(document: document, size: CGSize(width: 50, height: 50))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -2183,6 +2192,12 @@ struct DocumentGridItemView: View {
                         RoundedRectangle(cornerRadius: 10)
                             .fill(Color("Primary"))
                         Image(systemName: zipSymbolName())
+                            .font(.system(size: 28))
+                            .foregroundColor(.white)
+                    } else if isProtectedPDFPreview(document) {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color("Primary"))
+                        Image(systemName: "lock.fill")
                             .font(.system(size: 28))
                             .foregroundColor(.white)
                     } else {
@@ -4580,6 +4595,13 @@ private func zipShortDateString() -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyyMMdd-HHmm"
     return formatter.string(from: Date())
+}
+
+private func isProtectedPDFPreview(_ document: Document) -> Bool {
+    guard document.type == .pdf || document.type == .scanned else { return false }
+    guard let data = document.pdfData ?? document.originalFileData,
+          let pdf = PDFDocument(data: data) else { return false }
+    return pdf.isEncrypted
 }
 
 private func makeZipDocument(title: String, data: Data, folderId: UUID?) -> Document {

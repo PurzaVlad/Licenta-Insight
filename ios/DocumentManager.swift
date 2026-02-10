@@ -7,6 +7,7 @@ import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
     static let summaryUnavailableMessage = "Not available as source file is still available."
+    static let ocrUnavailableWhileSourceExistsMessage = "No OCR because source file is still available."
     @Published var documents: [Document] = []
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
@@ -89,7 +90,7 @@ class DocumentManager: ObservableObject {
         let hasLiveSource = updated.sourceDocumentId != nil &&
             (updated.sourceDocumentId.flatMap { getDocument(by: $0) } != nil)
 
-        if shouldAutoOCR(for: updated.type) {
+        if shouldAutoOCR(for: updated.type) && !hasLiveSource {
             if updated.content.count > maxOCRChars {
                 let truncated = Self.truncateText(updated.content, maxChars: maxOCRChars)
                 updated = Document(
@@ -113,7 +114,7 @@ class DocumentManager: ObservableObject {
             }
         }
 
-        if updated.ocrPages == nil && shouldAutoOCR(for: updated.type) {
+        if updated.ocrPages == nil && shouldAutoOCR(for: updated.type) && !hasLiveSource {
             let pages = buildPseudoOCRPages(from: updated.content)
             if let pages = pages, !pages.isEmpty {
                 updated = Document(
@@ -143,7 +144,7 @@ class DocumentManager: ObservableObject {
                 title: updated.title,
                 content: updated.content,
                 summary: Self.summaryUnavailableMessage,
-                ocrPages: updated.ocrPages,
+                ocrPages: nil,
                 category: updated.category,
                 keywordsResume: updated.keywordsResume,
                 tags: [],

@@ -628,25 +628,26 @@ func convertDocument(
 ) -> ConversionView.ConversionResult {
     let latestDocument = documentManager.getDocument(by: document.id) ?? document
     let baseName = normalizedConversionBaseName(latestDocument.title)
-    let fallbackFilename = "\(baseName.replacingOccurrences(of: " ", with: "_")).\(targetFormat.fileExtension)"
+    let canonicalFilename = conversionOutputFilename(
+        sourceBaseName: baseName,
+        targetExtension: targetFormat.fileExtension
+    )
+    let fallbackFilename = canonicalFilename
 
     do {
         let outputData: Data?
         var serverError: String? = nil
-        var serverFilename: String? = nil
 
         switch (sourceFormat, targetFormat) {
         case (.docx, .pdf):
             let result = convertViaServer(document: latestDocument, to: targetFormat)
             outputData = result.data
             serverError = result.error
-            serverFilename = result.filename
 
         case (.pptx, .pdf), (.xlsx, .pdf):
             let result = convertViaServer(document: latestDocument, to: targetFormat)
             outputData = result.data
             serverError = result.error
-            serverFilename = result.filename
 
         case (.image, .pdf):
             if let imageData = latestDocument.imageData {
@@ -660,13 +661,11 @@ func convertDocument(
             let result = convertViaServer(document: latestDocument, to: targetFormat)
             outputData = result.data
             serverError = result.error
-            serverFilename = result.filename
 
         case (.pdf, .xlsx), (.pdf, .pptx):
             let result = convertViaServer(document: latestDocument, to: targetFormat)
             outputData = result.data
             serverError = result.error
-            serverFilename = result.filename
 
         case (.pdf, .image):
             outputData = conversionConvertToImage(content: latestDocument.content)
@@ -683,7 +682,7 @@ func convertDocument(
             throw ConversionView.ConversionError.conversionFailed
         }
 
-        let filename = serverFilename ?? fallbackFilename
+        let filename = canonicalFilename
 
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let fileURL = documentsPath.appendingPathComponent(filename)
@@ -703,6 +702,16 @@ func convertDocument(
             message: "Conversion failed: \(error.localizedDescription)"
         )
     }
+}
+
+private func conversionOutputFilename(sourceBaseName: String, targetExtension: String) -> String {
+    let normalizedBase = sourceBaseName
+        .replacingOccurrences(of: " ", with: "_")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let safeBase = normalizedBase.isEmpty ? "converted" : normalizedBase
+    let safeExt = targetExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let ext = safeExt.isEmpty ? "bin" : safeExt
+    return "\(safeBase)_\(ext).\(ext)"
 }
 
 func saveConversionResult(
@@ -784,7 +793,7 @@ func normalizedConversionTitle(from filename: String) -> String {
     let knownExts: Set<String> = ["pdf","docx","doc","ppt","pptx","xls","xlsx","txt","rtf","png","jpg","jpeg","heic","html"]
     let ext = (base as NSString).pathExtension.lowercased()
     let cleaned = knownExts.contains(ext) ? (base as NSString).deletingPathExtension : base
-    return cleaned.replacingOccurrences(of: "_", with: " ").capitalized
+    return cleaned
 }
 
 func conversionExtractContent(from data: Data, type: Document.DocumentType) -> String {
