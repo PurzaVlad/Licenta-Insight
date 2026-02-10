@@ -929,6 +929,7 @@ struct DocumentsView: View {
         .sheet(isPresented: $showingBulkMoveSheet) {
             BulkMoveSheet(
                 folders: documentManager.folders,
+                currentParentId: nil,
                 onSelectParent: { parentId in
                     moveSelectedItems(to: parentId)
                     showingBulkMoveSheet = false
@@ -961,7 +962,8 @@ struct DocumentsView: View {
             MoveToFolderSheet(
                 document: doc,
                 folders: documentManager.folders(in: nil),
-                currentFolderName: documentManager.folderName(for: doc.folderId),
+                currentFolderId: doc.folderId,
+                allFolders: documentManager.folders,
                 currentContainerName: "Documents",
                 allowRootSelection: true,
                 onSelectFolder: { folderId in
@@ -3192,7 +3194,8 @@ struct FolderDocumentsView: View {
             MoveToFolderSheet(
                 document: doc,
                 folders: documentManager.folders(in: folder.id),
-                currentFolderName: documentManager.folderName(for: doc.folderId),
+                currentFolderId: doc.folderId,
+                allFolders: documentManager.folders,
                 currentContainerName: folder.name,
                 allowRootSelection: true,
                 onSelectFolder: { folderId in
@@ -3215,6 +3218,7 @@ struct FolderDocumentsView: View {
         .sheet(isPresented: $showingBulkMoveSheet) {
             BulkMoveSheet(
                 folders: documentManager.folders,
+                currentParentId: folder.id,
                 onSelectParent: { parentId in
                     moveSelectedItems(to: parentId)
                     showingBulkMoveSheet = false
@@ -4289,7 +4293,8 @@ struct FolderDocumentsView: View {
 struct MoveToFolderSheet: View {
     let document: Document
     let folders: [DocumentFolder]
-    let currentFolderName: String?
+    let currentFolderId: UUID?
+    let allFolders: [DocumentFolder]
     let currentContainerName: String
     let allowRootSelection: Bool
     let onSelectFolder: (UUID?) -> Void
@@ -4306,7 +4311,7 @@ struct MoveToFolderSheet: View {
                             title: "Documents",
                             subtitle: "Root",
                             icon: "folder",
-                            isSelected: currentFolderName == nil
+                            isSelected: currentFolderId == nil
                         )
                     }
                 }
@@ -4317,9 +4322,9 @@ struct MoveToFolderSheet: View {
                     } label: {
                         moveDestinationRow(
                             title: folder.name,
-                            subtitle: "Folder",
+                            subtitle: parentLabel(for: folder),
                             icon: "folder.fill",
-                            isSelected: currentFolderName == folder.name
+                            isSelected: currentFolderId == folder.id
                         )
                     }
                 }
@@ -4333,6 +4338,11 @@ struct MoveToFolderSheet: View {
                 }
             }
         }
+    }
+
+    private func parentLabel(for folder: DocumentFolder) -> String {
+        guard let parentId = folder.parentId else { return "Documents" }
+        return allFolders.first(where: { $0.id == parentId })?.name ?? "Documents"
     }
 }
 
@@ -4363,7 +4373,7 @@ struct MoveFolderSheet: View {
                     } label: {
                         moveDestinationRow(
                             title: dest.name,
-                            subtitle: "Folder",
+                            subtitle: parentLabel(for: dest),
                             icon: "folder.fill",
                             isSelected: currentParentId == dest.id
                         )
@@ -4379,6 +4389,11 @@ struct MoveFolderSheet: View {
                 }
             }
         }
+    }
+
+    private func parentLabel(for folder: DocumentFolder) -> String {
+        guard let parentId = folder.parentId else { return "Documents" }
+        return folders.first(where: { $0.id == parentId })?.name ?? "Documents"
     }
 }
 
@@ -4437,6 +4452,7 @@ struct DocumentNameSearchSheet: View {
 
 struct BulkMoveSheet: View {
     let folders: [DocumentFolder]
+    let currentParentId: UUID?
     let onSelectParent: (UUID?) -> Void
     let onCancel: () -> Void
 
@@ -4450,7 +4466,7 @@ struct BulkMoveSheet: View {
                         title: "Documents",
                         subtitle: "Root",
                         icon: "folder",
-                        isSelected: false
+                        isSelected: currentParentId == nil
                     )
                 }
 
@@ -4460,9 +4476,9 @@ struct BulkMoveSheet: View {
                     } label: {
                         moveDestinationRow(
                             title: dest.name,
-                            subtitle: "Folder",
+                            subtitle: parentLabel(for: dest),
                             icon: "folder.fill",
-                            isSelected: false
+                            isSelected: currentParentId == dest.id
                         )
                     }
                 }
@@ -4476,6 +4492,11 @@ struct BulkMoveSheet: View {
                 }
             }
         }
+    }
+
+    private func parentLabel(for folder: DocumentFolder) -> String {
+        guard let parentId = folder.parentId else { return "Documents" }
+        return folders.first(where: { $0.id == parentId })?.name ?? "Documents"
     }
 }
 
