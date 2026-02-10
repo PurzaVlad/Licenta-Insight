@@ -765,13 +765,31 @@ struct SearchablePDFView: UIViewRepresentable {
     final class Coordinator {
         var parent: SearchablePDFView
         weak var pdfView: PDFView?
+        var onPageChanged: ((Int, Int) -> Void)?
+        private var pageChangeObserver: NSObjectProtocol?
 
         init(parent: SearchablePDFView) {
             self.parent = parent
         }
 
         func attach(_ pdfView: PDFView) {
-            self.pdfView = pdfView
+            if self.pdfView !== pdfView {
+                if let pageChangeObserver {
+                    NotificationCenter.default.removeObserver(pageChangeObserver)
+                    self.pageChangeObserver = nil
+                }
+                self.pdfView = pdfView
+                pageChangeObserver = NotificationCenter.default.addObserver(
+                    forName: Notification.Name.PDFViewPageChanged,
+                    object: pdfView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.emitPageState()
+                }
+            } else {
+                self.pdfView = pdfView
+            }
+            emitPageState()
         }
 
         /// Present the native system find panel.
@@ -794,6 +812,22 @@ struct SearchablePDFView: UIViewRepresentable {
         func dismissFindNavigator() {
             guard let pdfView else { return }
             pdfView.findInteraction.dismissFindNavigator()
+        }
+
+        private func emitPageState() {
+            guard let pdfView,
+                  let document = pdfView.document,
+                  let page = pdfView.currentPage else {
+                onPageChanged?(0, 0)
+                return
+            }
+            onPageChanged?(document.index(for: page) + 1, document.pageCount)
+        }
+
+        deinit {
+            if let pageChangeObserver {
+                NotificationCenter.default.removeObserver(pageChangeObserver)
+            }
         }
     }
 }
@@ -923,12 +957,10 @@ struct DocumentPreviewContainerView: View {
     let documentManager: DocumentManager?
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
     @State private var showingInfo = false
     @State private var showingSummary = false
     @State private var showingSearchSheet = false
     @State private var previewController: CustomQLPreviewController?
-    @State private var pdfSearchCoordinator: SearchablePDFView.Coordinator?
 
     init(
         url: URL,
@@ -940,13 +972,6 @@ struct DocumentPreviewContainerView: View {
         self.document = document
         self.onAISummary = onAISummary
         self.documentManager = documentManager
-    }
-
-    private var usesInlinePDFSearch: Bool {
-        if let type = document?.type {
-            return type == .pdf || type == .scanned
-        }
-        return url.pathExtension.lowercased() == "pdf"
     }
 
     private var usesSearchPopupForOfficeDocs: Bool {
@@ -1017,50 +1042,45 @@ struct DocumentPreviewContainerView: View {
 
     @ToolbarContentBuilder
     private var previewTopToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
+        ToolbarItem(placement: .topBarLeading) {
             Button {
                 dismiss()
             } label: {
                 Label("Back", systemImage: "chevron.backward")
             }
+            .tint(.primary)
+        }
+        ToolbarItem(placement: .principal) {
+            Text(previewTitle)
+                .font(.headline)
+                .lineLimit(1)
+                .foregroundStyle(.primary)
         }
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                if usesInlinePDFSearch {
-                    SearchablePDFPreviewView(
-                        url: url,
-                        onCoordinatorReady: { coordinator in
-                            pdfSearchCoordinator = coordinator
-                        }
-                    )
-                    .ignoresSafeArea()
-                } else {
-                    DocumentPreviewNavControllerView(
-                        url: url,
-                        title: previewTitle,
-                        onControllerReady: { controller in
-                            previewController = controller
-                        }
-                    )
-                    .ignoresSafeArea()
-                }
+                DocumentPreviewNavControllerView(
+                    url: url,
+                    title: previewTitle,
+                    onControllerReady: { controller in
+                        previewController = controller
+                    }
+                )
+                .ignoresSafeArea()
             }
             .navigationTitle(previewTitle)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                previewTopToolbar
+                previewBottomToolbar
+            }
+            .toolbar(.visible, for: .navigationBar)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar(.visible, for: .bottomBar)
+            .toolbarBackground(.visible, for: .bottomBar)
         }
-        .toolbar {
-            previewTopToolbar
-            previewBottomToolbar
-        }
-        .toolbar(.visible, for: .navigationBar)
-        .toolbarBackground(.primary, for: .navigationBar)
-        .toolbarColorScheme(colorScheme == .light ? .dark : .light, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar(.visible, for: .bottomBar)
-        .toolbarBackground(.visible, for: .bottomBar)
         .interactiveDismissDisabled(true)
         .simultaneousGesture(edgeSwipeToDismiss)
         .sheet(isPresented: $showingInfo) {
@@ -1084,18 +1104,12 @@ struct DocumentPreviewContainerView: View {
     }
     
     private func triggerSearch() {
-        if usesInlinePDFSearch {
-            // Present the native iOS find bar on the PDFView.
-            pdfSearchCoordinator?.presentFindNavigator()
-            return
-        }
-
         if usesSearchPopupForOfficeDocs, document != nil {
             showingSearchSheet = true
             return
         }
 
-        // Fallback to Quick Look's native search for the rest of non-PDF previews.
+        // Use Quick Look's native search.
         if let previewController {
             previewController.triggerSearchDirectly()
             return

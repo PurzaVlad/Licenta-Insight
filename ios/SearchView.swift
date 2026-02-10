@@ -13,6 +13,7 @@ struct SearchView: View {
     @FocusState private var isSearchFocused: Bool
     @State private var searchText = ""
     @State private var isSearchPresented = false
+    @State private var openedFolder: DocumentFolder?
 
     private var recentDocuments: [Document] {
         documentManager.documents.sorted {
@@ -51,6 +52,11 @@ struct SearchView: View {
         var searchableText: String {
             ([title] + keywords).joined(separator: " ").lowercased()
         }
+    }
+
+    private struct SearchFolderResult: Identifiable {
+        let id: UUID
+        let folder: DocumentFolder
     }
 
     private var documentResults: [SearchDocumentResult] {
@@ -137,6 +143,26 @@ struct SearchView: View {
         }
     }
 
+    private var folderResults: [SearchFolderResult] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let q = trimmed.lowercased()
+
+        return documentManager.folders
+            .filter { folder in
+                folder.name.lowercased().contains(q)
+            }
+            .sorted { a, b in
+                let aName = a.name.lowercased()
+                let bName = b.name.lowercased()
+                let aStarts = aName.hasPrefix(q)
+                let bStarts = bName.hasPrefix(q)
+                if aStarts != bStarts { return aStarts }
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+            .map { SearchFolderResult(id: $0.id, folder: $0) }
+    }
+
     var body: some View {
         NavigationView {
             searchList
@@ -182,7 +208,7 @@ struct SearchView: View {
                     }
                 }
             } else {
-                if documentResults.isEmpty && featureResults.isEmpty {
+                if documentResults.isEmpty && featureResults.isEmpty && folderResults.isEmpty {
                     Text("No matches found.")
                         .foregroundColor(.secondary)
                 } else {
@@ -238,6 +264,17 @@ struct SearchView: View {
                             }
                         }
                     }
+
+                    if !folderResults.isEmpty {
+                        Section(header: searchSectionHeader("Folders")) {
+                            ForEach(folderResults) { item in
+                                searchFolderRow(item.folder)
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -254,6 +291,22 @@ struct SearchView: View {
             )
             .onSubmit(of: .search) {
                 dismissSearchKeyboard()
+            }
+            .sheet(item: $openedFolder) { folder in
+                NavigationView {
+                    FolderDocumentsView(
+                        folder: folder,
+                        onOpenDocument: { doc in
+                            openDocumentPreview(document: doc)
+                        }
+                    )
+                    .environmentObject(documentManager)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button("Close") { openedFolder = nil }
+                        }
+                    }
+                }
             }
     }
 
@@ -337,6 +390,22 @@ struct SearchView: View {
         }
         .padding(.leading, 8)
         .padding(.top, 0)
+    }
+
+    private func searchFolderRow(_ folder: DocumentFolder) -> some View {
+        FolderRowView(
+            folder: folder,
+            docCount: documentManager.documents(in: folder.id).count,
+            isSelected: false,
+            isSelectionMode: false,
+            usesNativeSelection: false,
+            onSelectToggle: {},
+            onOpen: { openedFolder = folder },
+            onRename: {},
+            onMove: {},
+            onDelete: {},
+            isDropTargeted: false
+        )
     }
 
     private func openDocumentPreview(document: Document) {

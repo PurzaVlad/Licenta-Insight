@@ -7,6 +7,7 @@ import PDFKit
 import QuickLookThumbnailing
 import Foundation
 import AVFoundation
+import SSZipArchive
 
 // MARK: - Drag & Drop modifiers
 extension View {
@@ -203,6 +204,10 @@ struct DocumentsView: View {
     @State private var folderToDelete: DocumentFolder?
 
     @State private var showingZipExportSheet = false
+    @State private var showingQuickZipNamePrompt = false
+    @State private var quickZipName = ""
+    @State private var showingQuickZipAlert = false
+    @State private var quickZipAlertMessage = ""
 
     @State private var isSelectionMode = false
     @State private var selectedDocumentIds: Set<UUID> = []
@@ -646,7 +651,8 @@ struct DocumentsView: View {
             .disabled(!hasSelection)
 
             Button {
-                showingZipExportSheet = true
+                quickZipName = ""
+                showingQuickZipNamePrompt = true
             } label: {
                 Label("Compress", systemImage: zipSymbolName())
             }
@@ -978,6 +984,26 @@ struct DocumentsView: View {
                 preselectedFolderIds: selectedFolderIds
             )
                 .environmentObject(documentManager)
+        }
+        .alert("ZIP Name", isPresented: $showingQuickZipNamePrompt) {
+            TextField("Archive name", text: $quickZipName)
+            Button("Create") {
+                let trimmed = quickZipName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    quickZipAlertMessage = "Please enter a name."
+                    showingQuickZipAlert = true
+                } else {
+                    createQuickZip(named: trimmed, targetFolderId: nil)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a name for the ZIP file.")
+        }
+        .alert("Create Zip", isPresented: $showingQuickZipAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(quickZipAlertMessage)
         }
         .onAppear {
             // Force refresh when the view appears to show newly converted documents
@@ -1646,6 +1672,77 @@ struct DocumentsView: View {
         }
 
         clearSelection()
+    }
+
+    private func createQuickZip(named name: String, targetFolderId: UUID?) {
+        isProcessing = true
+        let selectedDocIds = selectedDocumentIds
+        let selectedFldIds = selectedFolderIds
+
+        let workItem = DispatchWorkItem {
+            let selectedDocs = documentsForZipExport(
+                documentManager: documentManager,
+                selectedDocumentIds: selectedDocIds,
+                selectedFolderIds: selectedFldIds
+            )
+            guard !selectedDocs.isEmpty else {
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    quickZipAlertMessage = "No documents found to zip."
+                    showingQuickZipAlert = true
+                }
+                return
+            }
+
+            let tempDir = FileManager.default.temporaryDirectory
+            let stagingURL = tempDir.appendingPathComponent("zip_export_\(UUID().uuidString)", isDirectory: true)
+            let safeName = zipSanitizedFileName(name)
+            let fileName = safeName.isEmpty ? "Identity_Archive_\(zipShortDateString()).zip" : "\(safeName).zip"
+            let zipURL = tempDir.appendingPathComponent(fileName)
+
+            defer {
+                try? FileManager.default.removeItem(at: stagingURL)
+                try? FileManager.default.removeItem(at: zipURL)
+            }
+
+            do {
+                try FileManager.default.createDirectory(at: stagingURL, withIntermediateDirectories: true)
+
+                for doc in selectedDocs {
+                    let relativePath = zipRelativePathForDocument(doc, folders: documentManager.folders)
+                    let fileURL = stagingURL.appendingPathComponent(relativePath)
+                    let folderURL = fileURL.deletingLastPathComponent()
+                    try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+                    if let data = zipDataForDocument(doc) {
+                        try data.write(to: fileURL, options: [.atomic])
+                    }
+                }
+
+                let ok = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: stagingURL.path)
+                guard ok, let zipData = try? Data(contentsOf: zipURL) else {
+                    DispatchQueue.main.async {
+                        isProcessing = false
+                        quickZipAlertMessage = "Failed to create ZIP archive."
+                        showingQuickZipAlert = true
+                    }
+                    return
+                }
+
+                let zipDoc = makeZipDocument(title: fileName, data: zipData, folderId: targetFolderId)
+                DispatchQueue.main.async {
+                    documentManager.addDocument(zipDoc)
+                    isProcessing = false
+                    clearSelection()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    quickZipAlertMessage = "ZIP creation failed: \(error.localizedDescription)"
+                    showingQuickZipAlert = true
+                }
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
     
     private func deleteDocument(_ document: Document) {
@@ -2490,6 +2587,10 @@ struct FolderDocumentsView: View {
     @State private var showingBulkDeleteDialog = false
     @State private var showingBulkMoveSheet = false
     @State private var showingZipExportSheet = false
+    @State private var showingQuickZipNamePrompt = false
+    @State private var quickZipName = ""
+    @State private var showingQuickZipAlert = false
+    @State private var quickZipAlertMessage = ""
 
     @State private var showingRenameFolderDialog = false
     @State private var renameFolderText = ""
@@ -2869,7 +2970,8 @@ struct FolderDocumentsView: View {
             .disabled(!hasSelection)
 
             Button {
-                showingZipExportSheet = true
+                quickZipName = ""
+                showingQuickZipNamePrompt = true
             } label: {
                 Label("Compress", systemImage: zipSymbolName())
             }
@@ -3058,6 +3160,10 @@ struct FolderDocumentsView: View {
     }
 
     var body: some View {
+        folderComposedBody
+    }
+
+    private var folderScaffold: some View {
         folderBaseContent
             .toolbar { folderToolbar }
         .navigationBarBackButtonHidden(isSelectionMode)
@@ -3078,6 +3184,10 @@ struct FolderDocumentsView: View {
         .onDisappear {
             onSelectionModeChange(false)
         }
+    }
+
+    private var folderComposedBody: some View {
+        folderScaffold
         .sheet(item: $documentToMove) { doc in
             MoveToFolderSheet(
                 document: doc,
@@ -3121,6 +3231,26 @@ struct FolderDocumentsView: View {
                 targetFolderId: folder.id
             )
             .environmentObject(documentManager)
+        }
+        .alert("ZIP Name", isPresented: $showingQuickZipNamePrompt) {
+            TextField("Archive name", text: $quickZipName)
+            Button("Create") {
+                let trimmed = quickZipName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    quickZipAlertMessage = "Please enter a name."
+                    showingQuickZipAlert = true
+                } else {
+                    createQuickZip(named: trimmed, targetFolderId: folder.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a name for the ZIP file.")
+        }
+        .alert("Create Zip", isPresented: $showingQuickZipAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(quickZipAlertMessage)
         }
     .sheet(isPresented: $showingSettings) {
             SettingsView()
@@ -3409,6 +3539,77 @@ struct FolderDocumentsView: View {
         }
 
         clearSelection()
+    }
+
+    private func createQuickZip(named name: String, targetFolderId: UUID?) {
+        isProcessing = true
+        let selectedDocIds = selectedDocumentIds
+        let selectedFldIds = selectedFolderIds
+
+        let workItem = DispatchWorkItem {
+            let selectedDocs = documentsForZipExport(
+                documentManager: documentManager,
+                selectedDocumentIds: selectedDocIds,
+                selectedFolderIds: selectedFldIds
+            )
+            guard !selectedDocs.isEmpty else {
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    quickZipAlertMessage = "No documents found to zip."
+                    showingQuickZipAlert = true
+                }
+                return
+            }
+
+            let tempDir = FileManager.default.temporaryDirectory
+            let stagingURL = tempDir.appendingPathComponent("zip_export_\(UUID().uuidString)", isDirectory: true)
+            let safeName = zipSanitizedFileName(name)
+            let fileName = safeName.isEmpty ? "Identity_Archive_\(zipShortDateString()).zip" : "\(safeName).zip"
+            let zipURL = tempDir.appendingPathComponent(fileName)
+
+            defer {
+                try? FileManager.default.removeItem(at: stagingURL)
+                try? FileManager.default.removeItem(at: zipURL)
+            }
+
+            do {
+                try FileManager.default.createDirectory(at: stagingURL, withIntermediateDirectories: true)
+
+                for doc in selectedDocs {
+                    let relativePath = zipRelativePathForDocument(doc, folders: documentManager.folders)
+                    let fileURL = stagingURL.appendingPathComponent(relativePath)
+                    let folderURL = fileURL.deletingLastPathComponent()
+                    try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+                    if let data = zipDataForDocument(doc) {
+                        try data.write(to: fileURL, options: [.atomic])
+                    }
+                }
+
+                let ok = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: stagingURL.path)
+                guard ok, let zipData = try? Data(contentsOf: zipURL) else {
+                    DispatchQueue.main.async {
+                        isProcessing = false
+                        quickZipAlertMessage = "Failed to create ZIP archive."
+                        showingQuickZipAlert = true
+                    }
+                    return
+                }
+
+                let zipDoc = makeZipDocument(title: fileName, data: zipData, folderId: targetFolderId)
+                DispatchQueue.main.async {
+                    documentManager.addDocument(zipDoc)
+                    isProcessing = false
+                    clearSelection()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isProcessing = false
+                    quickZipAlertMessage = "ZIP creation failed: \(error.localizedDescription)"
+                    showingQuickZipAlert = true
+                }
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
 
     private func shareSelectedDocuments() {
@@ -4097,24 +4298,16 @@ struct MoveToFolderSheet: View {
     var body: some View {
         NavigationView {
             List {
-                HStack {
-                    Text(currentContainerName)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-
                 if allowRootSelection {
                     Button {
                         onSelectFolder(nil)
                     } label: {
-                        HStack {
-                            Text("Documents")
-                            Spacer()
-                            if currentFolderName == nil {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
-                            }
-                        }
+                        moveDestinationRow(
+                            title: "Documents",
+                            subtitle: "Root",
+                            icon: "folder",
+                            isSelected: currentFolderName == nil
+                        )
                     }
                 }
 
@@ -4122,17 +4315,16 @@ struct MoveToFolderSheet: View {
                     Button {
                         onSelectFolder(folder.id)
                     } label: {
-                        HStack {
-                            Text(folder.name)
-                            Spacer()
-                            if currentFolderName == folder.name {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
-                            }
-                        }
+                        moveDestinationRow(
+                            title: folder.name,
+                            subtitle: "Folder",
+                            icon: "folder.fill",
+                            isSelected: currentFolderName == folder.name
+                        )
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("Move")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4157,31 +4349,28 @@ struct MoveFolderSheet: View {
                 Button {
                     onSelectParent(nil)
                 } label: {
-                    HStack {
-                        Text("On My iPhone")
-                        Spacer()
-                        if currentParentId == nil {
-                            Image(systemName: "checkmark")
-                                .foregroundColor(.blue)
-                        }
-                    }
+                    moveDestinationRow(
+                        title: "Documents",
+                        subtitle: "Root",
+                        icon: "folder",
+                        isSelected: currentParentId == nil
+                    )
                 }
 
                 ForEach(folders.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })) { dest in
                     Button {
                         onSelectParent(dest.id)
                     } label: {
-                        HStack {
-                            Text(dest.name)
-                            Spacer()
-                            if currentParentId == dest.id {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
-                            }
-                        }
+                        moveDestinationRow(
+                            title: dest.name,
+                            subtitle: "Folder",
+                            icon: "folder.fill",
+                            isSelected: currentParentId == dest.id
+                        )
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("Move")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4257,23 +4446,28 @@ struct BulkMoveSheet: View {
                 Button {
                     onSelectParent(nil)
                 } label: {
-                    HStack {
-                        Text("On My iPhone")
-                        Spacer()
-                    }
+                    moveDestinationRow(
+                        title: "Documents",
+                        subtitle: "Root",
+                        icon: "folder",
+                        isSelected: false
+                    )
                 }
 
                 ForEach(folders.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })) { dest in
                     Button {
                         onSelectParent(dest.id)
                     } label: {
-                        HStack {
-                            Text(dest.name)
-                            Spacer()
-                        }
+                        moveDestinationRow(
+                            title: dest.name,
+                            subtitle: "Folder",
+                            icon: "folder.fill",
+                            isSelected: false
+                        )
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("Move")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4283,6 +4477,102 @@ struct BulkMoveSheet: View {
             }
         }
     }
+}
+
+@ViewBuilder
+private func moveDestinationRow(title: String, subtitle: String, icon: String, isSelected: Bool) -> some View {
+    HStack(spacing: 12) {
+        Image(systemName: icon)
+            .foregroundColor(Color("Primary"))
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.headline)
+                .foregroundColor(.primary)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        Spacer()
+        if isSelected {
+            Image(systemName: "checkmark")
+                .foregroundColor(Color("Primary"))
+        }
+    }
+}
+
+private func documentsForZipExport(
+    documentManager: DocumentManager,
+    selectedDocumentIds: Set<UUID>,
+    selectedFolderIds: Set<UUID>
+) -> [Document] {
+    var ids = selectedDocumentIds
+    for folderId in selectedFolderIds {
+        let descendantIds = documentManager.descendantFolderIds(of: folderId).union([folderId])
+        for doc in documentManager.documents {
+            if let docFolderId = doc.folderId, descendantIds.contains(docFolderId) {
+                ids.insert(doc.id)
+            }
+        }
+    }
+    return documentManager.documents.filter { ids.contains($0.id) }
+}
+
+private func zipRelativePathForDocument(_ document: Document, folders: [DocumentFolder]) -> String {
+    let parts = zipFolderPathComponents(for: document.folderId, folders: folders)
+    let fileName = zipFileNameForDocument(document)
+    if parts.isEmpty { return fileName }
+    return parts.joined(separator: "/") + "/" + fileName
+}
+
+private func zipFolderPathComponents(for folderId: UUID?, folders: [DocumentFolder]) -> [String] {
+    guard let folderId else { return [] }
+    var components: [String] = []
+    var currentId: UUID? = folderId
+    while let id = currentId,
+          let folder = folders.first(where: { $0.id == id }) {
+        components.append(folder.name)
+        currentId = folder.parentId
+    }
+    return components.reversed()
+}
+
+private func zipFileNameForDocument(_ document: Document) -> String {
+    let parts = splitDisplayTitle(document.title)
+    let base = zipSanitizedFileName(parts.base.isEmpty ? "Document" : parts.base)
+    let ext = parts.ext.isEmpty ? fileExtension(for: document.type) : parts.ext
+    return base + "." + ext
+}
+
+private func zipSanitizedFileName(_ name: String) -> String {
+    let invalid = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+    return name.components(separatedBy: invalid).joined(separator: "-")
+}
+
+private func zipDataForDocument(_ document: Document) -> Data? {
+    if let original = document.originalFileData { return original }
+    if let pdf = document.pdfData { return pdf }
+    if let img = document.imageData?.first { return img }
+    return document.content.data(using: .utf8)
+}
+
+private func zipShortDateString() -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyyMMdd-HHmm"
+    return formatter.string(from: Date())
+}
+
+private func makeZipDocument(title: String, data: Data, folderId: UUID?) -> Document {
+    Document(
+        title: title,
+        content: "ZIP archive",
+        summary: "ZIP archive",
+        dateCreated: Date(),
+        folderId: folderId,
+        type: .zip,
+        imageData: nil,
+        pdfData: nil,
+        originalFileData: data
+    )
 }
 
 struct PDFThumbnailView: UIViewRepresentable {

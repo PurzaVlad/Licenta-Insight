@@ -1,6 +1,7 @@
 import SwiftUI
 import PDFKit
 import UIKit
+import QuickLook
 
 struct ToolsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -55,7 +56,8 @@ struct ToolsView: View {
                                     .environmentObject(documentManager)
                             }
                             ToolRow(icon: "pencil", title: "Edit PDF") {
-                                ComingSoonView(title: "Edit PDF")
+                                ToolsFlowView(tool: .edit)
+                                    .environmentObject(documentManager)
                             }
 
                             SectionHeader(title: "Protect & Sign")
@@ -64,7 +66,8 @@ struct ToolsView: View {
                                     .environmentObject(documentManager)
                             }
                             ToolRow(icon: "lock.fill", title: "Protect PDF", showsDivider: false) {
-                                ComingSoonView(title: "Protect PDF")
+                                ToolsFlowView(tool: .protect)
+                                    .environmentObject(documentManager)
                             }
                         }
                         .padding(16)
@@ -151,7 +154,9 @@ struct ToolsView: View {
         case "tool-arrange": return .rearrange
         case "tool-rotate": return .rotate
         case "tool-compress": return .compress
+        case "tool-edit": return .edit
         case "tool-sign": return .sign
+        case "tool-protect": return .protect
         default: return nil
         }
     }
@@ -212,7 +217,9 @@ private enum ToolKind: String, Hashable {
     case rearrange
     case rotate
     case compress
+    case edit
     case sign
+    case protect
 
     var title: String {
         switch self {
@@ -221,7 +228,9 @@ private enum ToolKind: String, Hashable {
         case .rearrange: return "Arrange PDF"
         case .rotate: return "Rotate PDF"
         case .compress: return "Compress PDF"
+        case .edit: return "Edit PDF"
         case .sign: return "Sign PDF"
+        case .protect: return "Protect PDF"
         }
     }
 
@@ -478,8 +487,20 @@ private struct ToolsEditorView: View {
                 allowsPicker: false,
                 onComplete: handleCompletion
             )
+        case .edit:
+            EditPDFView(
+                preselectedDocument: selectedDocuments.first,
+                allowsPicker: false,
+                onComplete: handleCompletion
+            )
         case .sign:
             SignPDFView(
+                preselectedDocument: selectedDocuments.first,
+                allowsPicker: false,
+                onComplete: handleCompletion
+            )
+        case .protect:
+            ProtectPDFView(
                 preselectedDocument: selectedDocuments.first,
                 allowsPicker: false,
                 onComplete: handleCompletion
@@ -693,6 +714,529 @@ struct CompressPDFView: View {
                     showingAlert = true
                 }
             }
+        }
+    }
+}
+
+struct ProtectPDFView: View {
+    @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
+    @State private var didAutoPresent = false
+    @State private var selectedDocument: Document?
+    @State private var showingPicker = false
+    @State private var password = ""
+    @State private var confirmPassword = ""
+    @State private var isSaving = false
+    @State private var showingAlert = false
+    @State private var alertMessage = ""
+
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if let document = selectedDocument {
+                VStack(spacing: 6) {
+                    Text(document.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text("Set a password required by any PDF reader.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+
+                SecureField("Password", text: $password)
+                    .textContentType(.newPassword)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .padding(.horizontal)
+
+                SecureField("Confirm Password", text: $confirmPassword)
+                    .textContentType(.newPassword)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .padding(.horizontal)
+
+                Button(isSaving ? "Securing..." : "Protect PDF") {
+                    protectSelected()
+                }
+                .disabled(isSaving)
+
+                if allowsPicker {
+                    Button("Choose Different PDF") { showingPicker = true }
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                if allowsPicker {
+                    Button("Choose PDF") { showingPicker = true }
+                } else {
+                    Text("No PDF selected.")
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding()
+        .navigationTitle("Protect PDF")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingPicker) {
+            PDFSinglePickerSheet(
+                documents: documentManager.documents.filter { isPDFDocument($0) },
+                selectedDocument: $selectedDocument
+            )
+        }
+        .alert("Protect PDF", isPresented: $showingAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage)
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
+            }
+        }
+        .bindGlobalOperationLoading(isSaving)
+    }
+
+    private func protectSelected() {
+        guard let document = selectedDocument,
+              let sourceData = pdfData(from: document) else {
+            alertMessage = "Please choose a PDF first."
+            showingAlert = true
+            return
+        }
+
+        let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            alertMessage = "Password cannot be empty."
+            showingAlert = true
+            return
+        }
+        guard trimmed == confirmPassword else {
+            alertMessage = "Passwords do not match."
+            showingAlert = true
+            return
+        }
+
+        isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
+        let workItem = DispatchWorkItem {
+            guard let pdf = PDFDocument(data: sourceData) else {
+                DispatchQueue.main.async {
+                    isSaving = false
+                    alertMessage = "Failed to read the selected PDF."
+                    showingAlert = true
+                }
+                return
+            }
+
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("protected_\(UUID().uuidString).pdf")
+            let options: [PDFDocumentWriteOption: Any] = [
+                .userPasswordOption: trimmed,
+                .ownerPasswordOption: trimmed
+            ]
+
+            let writeOK = pdf.write(to: tempURL, withOptions: options)
+            guard writeOK, let outData = try? Data(contentsOf: tempURL) else {
+                DispatchQueue.main.async {
+                    isSaving = false
+                    alertMessage = "Failed to encrypt PDF."
+                    showingAlert = true
+                }
+                return
+            }
+            try? FileManager.default.removeItem(at: tempURL)
+
+            guard let verifyPDF = PDFDocument(data: outData), verifyPDF.isEncrypted else {
+                DispatchQueue.main.async {
+                    isSaving = false
+                    alertMessage = "PDF encryption failed."
+                    showingAlert = true
+                }
+                return
+            }
+
+            var existingTitles = initialTitles
+            let base = baseTitle(for: document.title)
+            let preferredBase = "\(base)_protected"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
+            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+
+            DispatchQueue.main.async {
+                documentManager.addDocument(newDoc)
+                password = ""
+                confirmPassword = ""
+                isSaving = false
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Password-protected PDF saved to Documents."
+                    showingAlert = true
+                }
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
+    }
+}
+
+struct EditPDFView: View {
+    @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
+    @State private var didAutoPresent = false
+    @State private var selectedDocument: Document?
+    @State private var showingPicker = false
+    @State private var isSaving = false
+    @State private var showingAlert = false
+    @State private var alertMessage = ""
+    @State private var workingFileURL: URL?
+    @State private var editedData: Data?
+    @State private var originalData: Data?
+    @State private var hasMarkupUpdates = false
+
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if let document = selectedDocument {
+                VStack(spacing: 10) {
+                    if let workingFileURL {
+                        NativeMarkupEditorViewRepresentable(
+                            fileURL: workingFileURL,
+                            onDidUpdate: { updatedURL in
+                                hasMarkupUpdates = true
+                                editedData = try? Data(contentsOf: updatedURL)
+                            },
+                            onDidSaveCopy: { copiedURL in
+                                hasMarkupUpdates = true
+                                if let data = try? Data(contentsOf: copiedURL) {
+                                    editedData = data
+                                    try? data.write(to: workingFileURL, options: .atomic)
+                                }
+                            }
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 420)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal)
+                    } else {
+                        ProgressView("Loading native markup...")
+                            .frame(maxWidth: .infinity, minHeight: 280)
+                    }
+                }
+
+                if allowsPicker {
+                    Button("Choose Different PDF") { showingPicker = true }
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                if allowsPicker {
+                    Button("Choose PDF") { showingPicker = true }
+                } else {
+                    Text("No PDF selected.")
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(.top, 8)
+        .navigationTitle("Edit PDF")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Saving..." : "Save") {
+                    saveEditedPDF()
+                }
+                .disabled(isSaving || selectedDocument == nil || !hasMarkupUpdates)
+            }
+        }
+        .sheet(isPresented: $showingPicker) {
+            PDFSinglePickerSheet(
+                documents: documentManager.documents.filter { isPDFDocument($0) },
+                selectedDocument: $selectedDocument
+            )
+        }
+        .alert("Edit PDF", isPresented: $showingAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage)
+        }
+        .onAppear {
+            guard autoPresentPicker, !didAutoPresent else { return }
+            didAutoPresent = true
+            DispatchQueue.main.async {
+                showingPicker = true
+            }
+        }
+        .onChange(of: selectedDocument) { newDocument in
+            cleanupWorkingFile()
+            prepareWorkingFile(for: newDocument)
+        }
+        .onAppear {
+            if selectedDocument != nil {
+                prepareWorkingFile(for: selectedDocument)
+            }
+        }
+        .onDisappear {
+            cleanupWorkingFile()
+        }
+        .bindGlobalOperationLoading(isSaving)
+    }
+
+    private func prepareWorkingFile(for document: Document?) {
+        guard let document,
+              let sourceData = pdfData(from: document) else {
+            workingFileURL = nil
+            return
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("markup_\(UUID().uuidString).pdf")
+        do {
+            try sourceData.write(to: tempURL, options: .atomic)
+            workingFileURL = tempURL
+            editedData = nil
+            originalData = sourceData
+            hasMarkupUpdates = false
+        } catch {
+            workingFileURL = nil
+            alertMessage = "Could not prepare native markup file."
+            showingAlert = true
+        }
+    }
+
+    private func saveEditedPDF() {
+        guard let document = selectedDocument else {
+            alertMessage = "Please choose a valid PDF."
+            showingAlert = true
+            return
+        }
+
+        guard let outData = latestEditedData() else {
+            alertMessage = "Could not read edited PDF."
+            showingAlert = true
+            return
+        }
+
+        if let originalData, outData == originalData {
+            alertMessage = "No changes detected."
+            showingAlert = true
+            return
+        }
+
+        isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
+        let workItem = DispatchWorkItem {
+            var existingTitles = initialTitles
+            let base = baseTitle(for: document.title)
+            let preferredBase = "\(base)_edited"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
+            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+
+            DispatchQueue.main.async {
+                documentManager.addDocument(newDoc)
+                hasMarkupUpdates = false
+                self.originalData = outData
+                isSaving = false
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Edited PDF saved to Documents."
+                    showingAlert = true
+                }
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
+    }
+
+    private func latestEditedData() -> Data? {
+        if let editedData {
+            return editedData
+        }
+        if let workingFileURL {
+            return try? Data(contentsOf: workingFileURL)
+        }
+        return nil
+    }
+
+    private func cleanupWorkingFile() {
+        if let url = workingFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        workingFileURL = nil
+        editedData = nil
+        originalData = nil
+        hasMarkupUpdates = false
+    }
+}
+
+private struct NativeMarkupEditorViewRepresentable: UIViewControllerRepresentable {
+    let fileURL: URL
+    let onDidUpdate: (URL) -> Void
+    let onDidSaveCopy: (URL) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let previewController = TitleHiddenQLPreviewController()
+        previewController.dataSource = context.coordinator
+        previewController.delegate = context.coordinator
+        context.coordinator.previewController = previewController
+
+        let nav = UINavigationController(rootViewController: previewController)
+        nav.navigationBar.isHidden = false
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithTransparentBackground()
+        nav.navigationBar.standardAppearance = appearance
+        nav.navigationBar.scrollEdgeAppearance = appearance
+        nav.navigationBar.compactAppearance = appearance
+        nav.setToolbarHidden(false, animated: false)
+        return nav
+    }
+
+    func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {
+        if let preview = context.coordinator.previewController {
+            if uiViewController.topViewController !== preview {
+                uiViewController.setViewControllers([preview], animated: false)
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
+        let parent: NativeMarkupEditorViewRepresentable
+        weak var previewController: TitleHiddenQLPreviewController?
+
+        init(parent: NativeMarkupEditorViewRepresentable) {
+            self.parent = parent
+        }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            parent.fileURL as NSURL
+        }
+
+        func previewController(_ controller: QLPreviewController, editingModeFor previewItem: QLPreviewItem) -> QLPreviewItemEditingMode {
+            .updateContents
+        }
+
+        func previewController(_ controller: QLPreviewController, didUpdateContentsOf previewItem: QLPreviewItem) {
+            parent.onDidUpdate(parent.fileURL)
+        }
+
+        func previewController(_ controller: QLPreviewController, didSaveEditedCopyOf previewItem: QLPreviewItem, at modifiedContentsURL: URL) {
+            parent.onDidSaveCopy(modifiedContentsURL)
+        }
+    }
+}
+
+/// Hides only the document title + chevron. Everything else (ellipsis, markup, etc.) stays.
+private final class TitleHiddenQLPreviewController: QLPreviewController {
+    private var uiTimer: Timer?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        hideTitleAndChevron()
+        uiTimer?.invalidate()
+        uiTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            self?.hideTitleAndChevron()
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        hideTitleAndChevron()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        uiTimer?.invalidate()
+        uiTimer = nil
+    }
+
+    private func hideTitleAndChevron() {
+        // Replace titleView with empty view to hide doc name + chevron
+        let empty = UIView(frame: .zero)
+        empty.isUserInteractionEnabled = false
+        navigationItem.titleView = empty
+        navigationItem.title = nil
+
+        for navItem in navigationController?.navigationBar.items ?? [] {
+            let v = UIView(frame: .zero)
+            v.isUserInteractionEnabled = false
+            navItem.titleView = v
+            navItem.title = nil
+        }
+
+        // Walk the nav bar to find and hide any remaining chevron/title views
+        if let navBar = navigationController?.navigationBar {
+            hideChevronViews(in: navBar)
+        }
+    }
+
+    private func hideChevronViews(in view: UIView) {
+        for subview in view.subviews {
+            let cls = String(describing: type(of: subview)).lowercased()
+            let label = (subview.accessibilityLabel ?? "").lowercased()
+            let id = (subview.accessibilityIdentifier ?? "").lowercased()
+
+            // Hide any chevron / disclosure indicator
+            if cls.contains("chevron") || cls.contains("disclosure")
+                || label.contains("chevron") || id.contains("chevron")
+                || label.contains("disclosure") || label.contains("pop up") {
+                subview.alpha = 0
+                subview.isHidden = true
+                continue
+            }
+
+            // Check image views for chevron SF symbols
+            if let imgView = subview as? UIImageView, let img = imgView.image {
+                let imgId = (img.accessibilityIdentifier ?? "").lowercased()
+                let imgDesc = img.description.lowercased()
+                if imgId.contains("chevron") || imgDesc.contains("chevron") {
+                    imgView.alpha = 0
+                    imgView.isHidden = true
+                    continue
+                }
+            }
+
+            // Tiny centered views that act as a pull-down chevron
+            if subview.bounds.height > 0 && subview.bounds.height < 12
+                && subview.bounds.width > 10 && subview.bounds.width < 50 {
+                let parentW = subview.superview?.bounds.width ?? 0
+                if parentW > 0 && abs(subview.center.x - parentW / 2) < 40 {
+                    subview.alpha = 0
+                    subview.isHidden = true
+                    continue
+                }
+            }
+
+            hideChevronViews(in: subview)
         }
     }
 }

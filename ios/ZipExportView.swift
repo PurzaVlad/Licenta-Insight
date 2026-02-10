@@ -12,91 +12,115 @@ struct ZipExportView: View {
     @State private var alertMessage = ""
     @State private var showingNamePrompt = false
     @State private var zipName = ""
+    @State private var editMode: EditMode = .active
+    @State private var searchText = ""
+    @State private var didAutoPromptName = false
+    private let launchedFromSelection: Bool
 
     init(preselectedDocumentIds: Set<UUID> = [], preselectedFolderIds: Set<UUID> = [], targetFolderId: UUID? = nil) {
         _selectedDocumentIds = State(initialValue: preselectedDocumentIds)
         _selectedFolderIds = State(initialValue: preselectedFolderIds)
         self.targetFolderId = targetFolderId
+        self.launchedFromSelection = !preselectedDocumentIds.isEmpty || !preselectedFolderIds.isEmpty
     }
 
     var body: some View {
         NavigationView {
-            List {
-                Section(header: Text("Folders")) {
-                    if folderRows.isEmpty {
-                        Text("No folders available.")
-                            .foregroundColor(.secondary)
-                    } else {
-                        ForEach(folderRows) { row in
-                            Button {
-                                toggleFolder(row.folder.id)
-                            } label: {
-                                HStack {
-                                    Text(row.folder.name)
-                                        .padding(.leading, CGFloat(row.depth) * 12)
-                                    Spacer()
-                                    if selectedFolderIds.contains(row.folder.id) {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(.blue)
-                                    }
+            Group {
+                if launchedFromSelection {
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: selectionBinding) {
+                        if filteredItems.isEmpty {
+                            Text("No documents or folders available.")
+                                .foregroundColor(.secondary)
+                        } else {
+                            ForEach(filteredItems) { item in
+                                switch item.kind {
+                                case .folder(let folder):
+                                    FolderRowView(
+                                        folder: folder,
+                                        docCount: documentManager.documents(in: folder.id).count,
+                                        isSelected: selectedFolderIds.contains(folder.id),
+                                        isSelectionMode: true,
+                                        usesNativeSelection: true,
+                                        onSelectToggle: {},
+                                        onOpen: {},
+                                        onRename: {},
+                                        onMove: {},
+                                        onDelete: {},
+                                        isDropTargeted: false
+                                    )
+                                    .tag(ZipSelectionID.folder(folder.id))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+                                case .document(let document):
+                                    DocumentRowView(
+                                        document: document,
+                                        isSelected: selectedDocumentIds.contains(document.id),
+                                        isSelectionMode: true,
+                                        usesNativeSelection: true,
+                                        onSelectToggle: {},
+                                        onOpen: {},
+                                        onRename: {},
+                                        onMoveToFolder: {},
+                                        onDelete: {},
+                                        onConvert: {},
+                                        onShare: {}
+                                    )
+                                    .tag(ZipSelectionID.document(document.id))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
                                 }
                             }
                         }
                     }
-                }
-
-                Section(header: Text("Documents")) {
-                    if documentRows.isEmpty {
-                        Text("No documents available.")
-                            .foregroundColor(.secondary)
-                    } else {
-                        ForEach(documentRows) { row in
-                            Button {
-                                toggleDocument(row.document.id)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(row.document.title)
-                                            .lineLimit(1)
-                                        if !row.path.isEmpty {
-                                            Text(row.path)
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                    Spacer()
-                                    if selectedDocumentIds.contains(row.document.id) {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(.blue)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    .environment(\.editMode, $editMode)
+                    .listStyle(.plain)
+                    .hideScrollBackground()
+                    .scrollDismissesKeyboardIfAvailable()
+                    .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search documents")
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(launchedFromSelection ? "" : "Zip")
+            .toolbar(launchedFromSelection ? .hidden : .visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Text(" Zip ")
-                        .font(.headline)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(isZipping ? "Zipping..." : "Create") {
-                        if zipName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            showingNamePrompt = true
-                        } else {
-                            createZip(named: zipName)
-                        }
+                if !launchedFromSelection {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Cancel") { dismiss() }
+                            .foregroundColor(.primary)
                     }
-                    .disabled(!canCreateZip)
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Cancel") { dismiss() }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button(isZipping ? "Zipping..." : "Create") {
+                            if zipName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                showingNamePrompt = true
+                            } else {
+                                createZip(named: zipName)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color("Primary"))
+                        .disabled(!canCreateZip)
+                    }
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Clear") {
+                            selectedFolderIds.removeAll()
+                            selectedDocumentIds.removeAll()
+                        }
+                        .foregroundColor(.primary)
+                        .disabled(!canCreateZip)
+                    }
                 }
             }
+        }
+        .onAppear {
+            guard launchedFromSelection, !didAutoPromptName, canCreateZip else { return }
+            didAutoPromptName = true
+            showingNamePrompt = true
         }
         .alert("Create Zip", isPresented: $showingAlert) {
             Button("OK", role: .cancel) {}
@@ -114,7 +138,11 @@ struct ZipExportView: View {
                     createZip(named: trimmed)
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) {
+                if launchedFromSelection {
+                    dismiss()
+                }
+            }
         } message: {
             Text("Enter a name for the ZIP file.")
         }
@@ -124,16 +152,60 @@ struct ZipExportView: View {
         !isZipping && (!selectedFolderIds.isEmpty || !selectedDocumentIds.isEmpty)
     }
 
+    private var selectionBinding: Binding<Set<ZipSelectionID>> {
+        Binding(
+            get: {
+                Set(selectedFolderIds.map { ZipSelectionID.folder($0) })
+                    .union(Set(selectedDocumentIds.map { ZipSelectionID.document($0) }))
+            },
+            set: { newValue in
+                selectedFolderIds = Set(newValue.compactMap { id in
+                    if case let .folder(folderId) = id { return folderId }
+                    return nil
+                })
+                selectedDocumentIds = Set(newValue.compactMap { id in
+                    if case let .document(docId) = id { return docId }
+                    return nil
+                })
+            }
+        )
+    }
+
     private var folderRows: [FolderRow] {
         buildFolderRows(parentId: nil, depth: 0)
     }
 
-    private var documentRows: [DocumentRow] {
-        documentManager.documents.map { doc in
-            let path = folderPathString(for: doc.folderId)
-            return DocumentRow(document: doc, path: path)
+    private var sortedDocuments: [Document] {
+        documentManager.documents.sorted { lhs, rhs in
+            splitDisplayTitle(lhs.title).base.localizedCaseInsensitiveCompare(splitDisplayTitle(rhs.title).base) == .orderedAscending
         }
-        .sorted { $0.document.title.localizedCaseInsensitiveCompare($1.document.title) == .orderedAscending }
+    }
+
+    private var allItems: [ZipItem] {
+        let folders: [ZipItem] = folderRows.map { row in
+            ZipItem(
+                id: ZipSelectionID.folder(row.folder.id),
+                kind: .folder(row.folder),
+                name: row.folder.name
+            )
+        }
+        let documents: [ZipItem] = sortedDocuments.map { doc in
+            ZipItem(
+                id: ZipSelectionID.document(doc.id),
+                kind: .document(doc),
+                name: splitDisplayTitle(doc.title).base
+            )
+        }
+        return (folders + documents).sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var filteredItems: [ZipItem] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return allItems }
+        let needle = trimmed.lowercased()
+        return allItems.filter { $0.name.lowercased().contains(needle) }
     }
 
     private func buildFolderRows(parentId: UUID?, depth: Int) -> [FolderRow] {
@@ -146,12 +218,6 @@ struct ZipExportView: View {
         return rows
     }
 
-    private func folderPathString(for folderId: UUID?) -> String {
-        guard let folderId else { return "" }
-        let parts = folderPathComponents(for: folderId)
-        return parts.joined(separator: "/")
-    }
-
     private func folderPathComponents(for folderId: UUID?) -> [String] {
         guard let folderId else { return [] }
         var components: [String] = []
@@ -162,22 +228,6 @@ struct ZipExportView: View {
             currentId = folder.parentId
         }
         return components.reversed()
-    }
-
-    private func toggleFolder(_ id: UUID) {
-        if selectedFolderIds.contains(id) {
-            selectedFolderIds.remove(id)
-        } else {
-            selectedFolderIds.insert(id)
-        }
-    }
-
-    private func toggleDocument(_ id: UUID) {
-        if selectedDocumentIds.contains(id) {
-            selectedDocumentIds.remove(id)
-        } else {
-            selectedDocumentIds.insert(id)
-        }
     }
 
     private func createZip(named name: String) {
@@ -289,16 +339,26 @@ struct ZipExportView: View {
     }
 }
 
+private enum ZipSelectionID: Hashable {
+    case folder(UUID)
+    case document(UUID)
+}
+
+private enum ZipItemKind {
+    case folder(DocumentFolder)
+    case document(Document)
+}
+
+private struct ZipItem: Identifiable {
+    let id: ZipSelectionID
+    let kind: ZipItemKind
+    let name: String
+}
+
 struct FolderRow: Identifiable {
     let id = UUID()
     let folder: DocumentFolder
     let depth: Int
-}
-
-struct DocumentRow: Identifiable {
-    let id = UUID()
-    let document: Document
-    let path: String
 }
 
 private func makeZipDocument(title: String, data: Data, folderId: UUID?) -> Document {
