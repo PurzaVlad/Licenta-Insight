@@ -7,8 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		13B07FB71A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
-		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+			13B07FB71A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+			F10A00000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10A00000000000000000021 /* ShareViewController.swift */; };
+			F10A00000000000000000002 /* IdentityShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F10A00000000000000000020 /* IdentityShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+			761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		A1B2C3D4E5F60718293A4B5C /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */; };
 		AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */; };
 		AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD28532F0B119400C3390F /* DocumentManager.swift */; };
@@ -33,9 +35,38 @@
 		C1A0C1A0C1A0C1A0C1A0C1A7 /* ConvertView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+			F10A00000000000000000060 /* PBXContainerItemProxy */ = {
+				isa = PBXContainerItemProxy;
+				containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+				proxyType = 1;
+				remoteGlobalIDString = F10A00000000000000000050;
+				remoteInfo = IdentityShareExtension;
+			};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+			F10A00000000000000000010 /* Embed App Extensions */ = {
+				isa = PBXCopyFilesBuildPhase;
+				buildActionMask = 2147483647;
+				dstPath = "";
+				dstSubfolderSpec = 13;
+				files = (
+					F10A00000000000000000002 /* IdentityShareExtension.appex in Embed App Extensions */,
+				);
+				name = "Embed App Extensions";
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		13B07F961A680F5B00A75B9A /* Identity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Identity.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Identity/Images.xcassets; sourceTree = "<group>"; };
+			13B07F961A680F5B00A75B9A /* Identity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Identity.app; sourceTree = BUILT_PRODUCTS_DIR; };
+			F10A00000000000000000020 /* IdentityShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IdentityShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+			F10A00000000000000000021 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+			F10A00000000000000000022 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+			F10A00000000000000000023 /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
+			F10A00000000000000000024 /* Identity.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Identity/Identity.entitlements; sourceTree = "<group>"; };
+			13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Identity/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Identity/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = Identity/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		43A934517A58E224B45297CF /* libPods-Identity.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Identity.a"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -70,21 +101,29 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		13B07F8C1A680F5B00A75B9A /* Frameworks */ = {
+			13B07F8C1A680F5B00A75B9A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				B12D6F9E03A4A66CA4E522E0 /* libPods-Identity.a in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+			F10A00000000000000000030 /* Frameworks */ = {
+				isa = PBXFrameworksBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		13B07FAE1A68108700A75B9A /* Identity */ = {
-			isa = PBXGroup;
-			children = (
-				AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
+			13B07FAE1A68108700A75B9A /* Identity */ = {
+				isa = PBXGroup;
+				children = (
+					F10A00000000000000000024 /* Identity.entitlements */,
+					AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */,
 				C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */,
@@ -112,8 +151,18 @@
 				AEDA82D72F1FBA4100550D74 /* TabContainerView.swift */,
 			);
 			name = Identity;
-			sourceTree = "<group>";
-		};
+				sourceTree = "<group>";
+			};
+			F10A00000000000000000040 /* ShareExtension */ = {
+				isa = PBXGroup;
+				children = (
+					F10A00000000000000000021 /* ShareViewController.swift */,
+					F10A00000000000000000022 /* Info.plist */,
+					F10A00000000000000000023 /* ShareExtension.entitlements */,
+				);
+				path = ShareExtension;
+				sourceTree = "<group>";
+			};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -130,11 +179,12 @@
 			name = Libraries;
 			sourceTree = "<group>";
 		};
-		83CBB9F61A601CBA00E9B192 = {
-			isa = PBXGroup;
-			children = (
-				13B07FAE1A68108700A75B9A /* Identity */,
-				832341AE1AAA6A7D00B99B32 /* Libraries */,
+			83CBB9F61A601CBA00E9B192 = {
+				isa = PBXGroup;
+				children = (
+					13B07FAE1A68108700A75B9A /* Identity */,
+					F10A00000000000000000040 /* ShareExtension */,
+					832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
@@ -144,14 +194,15 @@
 			tabWidth = 2;
 			usesTabs = 0;
 		};
-		83CBBA001A601CBA00E9B192 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				13B07F961A680F5B00A75B9A /* Identity.app */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
+			83CBBA001A601CBA00E9B192 /* Products */ = {
+				isa = PBXGroup;
+				children = (
+					13B07F961A680F5B00A75B9A /* Identity.app */,
+					F10A00000000000000000020 /* IdentityShareExtension.appex */,
+				);
+				name = Products;
+				sourceTree = "<group>";
+			};
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
 			isa = PBXGroup;
 			children = (
@@ -166,27 +217,46 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		13B07F861A680F5B00A75B9A /* Identity */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */;
-			buildPhases = (
-				5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */,
-				13B07F871A680F5B00A75B9A /* Sources */,
-				13B07F8C1A680F5B00A75B9A /* Frameworks */,
-				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
-				D311E31CB2A18094574EDFBE /* [CP] Embed Pods Frameworks */,
-				2C1B12108D9BEC4F6BD3D32A /* [CP] Copy Pods Resources */,
-				B37103DE89BE196AF47A910B /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = Identity;
-			productName = Identity;
-			productReference = 13B07F961A680F5B00A75B9A /* Identity.app */;
-			productType = "com.apple.product-type.application";
-		};
+			13B07F861A680F5B00A75B9A /* Identity */ = {
+				isa = PBXNativeTarget;
+				buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */;
+				buildPhases = (
+					5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */,
+					13B07F871A680F5B00A75B9A /* Sources */,
+					13B07F8C1A680F5B00A75B9A /* Frameworks */,
+					F10A00000000000000000010 /* Embed App Extensions */,
+					00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
+					D311E31CB2A18094574EDFBE /* [CP] Embed Pods Frameworks */,
+					2C1B12108D9BEC4F6BD3D32A /* [CP] Copy Pods Resources */,
+					B37103DE89BE196AF47A910B /* Resources */,
+				);
+				buildRules = (
+				);
+				dependencies = (
+					F10A00000000000000000061 /* PBXTargetDependency */,
+				);
+				name = Identity;
+				productName = Identity;
+				productReference = 13B07F961A680F5B00A75B9A /* Identity.app */;
+				productType = "com.apple.product-type.application";
+			};
+			F10A00000000000000000050 /* IdentityShareExtension */ = {
+				isa = PBXNativeTarget;
+				buildConfigurationList = F10A00000000000000000090 /* Build configuration list for PBXNativeTarget "IdentityShareExtension" */;
+				buildPhases = (
+					F10A00000000000000000071 /* Sources */,
+					F10A00000000000000000030 /* Frameworks */,
+					F10A00000000000000000070 /* Resources */,
+				);
+				buildRules = (
+				);
+				dependencies = (
+				);
+				name = IdentityShareExtension;
+				productName = IdentityShareExtension;
+				productReference = F10A00000000000000000020 /* IdentityShareExtension.appex */;
+				productType = "com.apple.product-type.app-extension";
+			};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -195,12 +265,15 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2620;
-				TargetAttributes = {
-					13B07F861A680F5B00A75B9A = {
-						LastSwiftMigration = 2610;
+					TargetAttributes = {
+						13B07F861A680F5B00A75B9A = {
+							LastSwiftMigration = 2610;
+						};
+						F10A00000000000000000050 = {
+							LastSwiftMigration = 2610;
+						};
 					};
 				};
-			};
 			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */;
 			compatibilityVersion = "Xcode 12.0";
 			developmentRegion = en;
@@ -213,22 +286,30 @@
 			productRefGroup = 83CBBA001A601CBA00E9B192 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (
-				13B07F861A680F5B00A75B9A /* Identity */,
-			);
-		};
+				targets = (
+					13B07F861A680F5B00A75B9A /* Identity */,
+					F10A00000000000000000050 /* IdentityShareExtension */,
+				);
+			};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		B37103DE89BE196AF47A910B /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
+			B37103DE89BE196AF47A910B /* Resources */ = {
+				isa = PBXResourcesBuildPhase;
+				buildActionMask = 2147483647;
 			files = (
 				13B07FB71A68108700A75B9A /* Images.xcassets in Resources */,
 				B51DE01B08C2900F75FA8AC0 /* PrivacyInfo.xcprivacy in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+			F10A00000000000000000070 /* Resources */ = {
+				isa = PBXResourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -309,8 +390,8 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		13B07F871A680F5B00A75B9A /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
+			13B07F871A680F5B00A75B9A /* Sources */ = {
+				isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				AEE10FE02F0B0A8800D8EFF7 /* NativeChatView.swift in Sources */,
@@ -334,19 +415,36 @@
 				C1A0C1A0C1A0C1A0C1A0C1A5 /* ToolsView.swift in Sources */,
 				A1B2C3D4E5F60718293A4B5C /* SceneDelegate.swift in Sources */,
 				AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+			F10A00000000000000000071 /* Sources */ = {
+				isa = PBXSourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					F10A00000000000000000001 /* ShareViewController.swift in Sources */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+			F10A00000000000000000061 /* PBXTargetDependency */ = {
+				isa = PBXTargetDependency;
+				target = F10A00000000000000000050 /* IdentityShareExtension */;
+				targetProxy = F10A00000000000000000060 /* PBXContainerItemProxy */;
+			};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
-		13B07F941A680F5B00A75B9A /* Debug */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = 8187BEE6B6DC936AAA3D94C7 /* Pods-Identity.debug.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
+			13B07F941A680F5B00A75B9A /* Debug */ = {
+				isa = XCBuildConfiguration;
+				baseConfigurationReference = 8187BEE6B6DC936AAA3D94C7 /* Pods-Identity.debug.xcconfig */;
+				buildSettings = {
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					CLANG_ENABLE_MODULES = YES;
+					CODE_SIGN_ENTITLEMENTS = Identity/Identity.entitlements;
+					CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_BITCODE = NO;
@@ -379,13 +477,14 @@
 			};
 			name = Debug;
 		};
-		13B07F951A680F5B00A75B9A /* Release */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = DF91F9C1F571638680FAB7A1 /* Pods-Identity.release.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
+			13B07F951A680F5B00A75B9A /* Release */ = {
+				isa = XCBuildConfiguration;
+				baseConfigurationReference = DF91F9C1F571638680FAB7A1 /* Pods-Identity.release.xcconfig */;
+				buildSettings = {
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					CLANG_ENABLE_MODULES = YES;
+					CODE_SIGN_ENTITLEMENTS = Identity/Identity.entitlements;
+					CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -413,9 +512,63 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				VERSIONING_SYSTEM = "apple-generic";
+				};
+				name = Release;
 			};
-			name = Release;
-		};
+			F10A00000000000000000080 /* Debug */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					APPLICATION_EXTENSION_API_ONLY = YES;
+					CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+					CODE_SIGN_IDENTITY = "Apple Development";
+					CODE_SIGN_STYLE = Automatic;
+					CURRENT_PROJECT_VERSION = 1;
+					DEVELOPMENT_TEAM = Z42Y3J55L6;
+					GENERATE_INFOPLIST_FILE = NO;
+					INFOPLIST_FILE = ShareExtension/Info.plist;
+					IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+						"@executable_path/../../Frameworks",
+					);
+					MARKETING_VERSION = 1.0;
+					PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.identity.shareextension;
+					PRODUCT_NAME = "$(TARGET_NAME)";
+					SKIP_INSTALL = YES;
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+					SWIFT_VERSION = 5.0;
+					TARGETED_DEVICE_FAMILY = 1;
+				};
+				name = Debug;
+			};
+			F10A00000000000000000081 /* Release */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					APPLICATION_EXTENSION_API_ONLY = YES;
+					CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+					CODE_SIGN_IDENTITY = "Apple Development";
+					CODE_SIGN_STYLE = Automatic;
+					CURRENT_PROJECT_VERSION = 1;
+					DEVELOPMENT_TEAM = Z42Y3J55L6;
+					GENERATE_INFOPLIST_FILE = NO;
+					INFOPLIST_FILE = ShareExtension/Info.plist;
+					IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+						"@executable_path/../../Frameworks",
+					);
+					MARKETING_VERSION = 1.0;
+					PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.identity.shareextension;
+					PRODUCT_NAME = "$(TARGET_NAME)";
+					SKIP_INSTALL = YES;
+					SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+					SWIFT_VERSION = 5.0;
+					TARGETED_DEVICE_FAMILY = 1;
+				};
+				name = Release;
+			};
 		83CBBA201A601CBA00E9B192 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -580,17 +733,26 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */ = {
-			isa = XCConfigurationList;
+			13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */ = {
+				isa = XCConfigurationList;
 			buildConfigurations = (
 				13B07F941A680F5B00A75B9A /* Debug */,
 				13B07F951A680F5B00A75B9A /* Release */,
 			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */ = {
-			isa = XCConfigurationList;
+				defaultConfigurationIsVisible = 0;
+				defaultConfigurationName = Release;
+			};
+			F10A00000000000000000090 /* Build configuration list for PBXNativeTarget "IdentityShareExtension" */ = {
+				isa = XCConfigurationList;
+				buildConfigurations = (
+					F10A00000000000000000080 /* Debug */,
+					F10A00000000000000000081 /* Release */,
+				);
+				defaultConfigurationIsVisible = 0;
+				defaultConfigurationName = Release;
+			};
+			83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */ = {
+				isa = XCConfigurationList;
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,
 				83CBBA211A601CBA00E9B192 /* Release */,

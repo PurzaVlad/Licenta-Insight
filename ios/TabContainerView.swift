@@ -177,6 +177,7 @@ struct TabContainerView: View {
             }
         }
         .onAppear {
+            documentManager.importSharedInboxIfNeeded()
             let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
             if modelReady != persistedModelReady {
                 modelReady = persistedModelReady
@@ -223,6 +224,7 @@ struct TabContainerView: View {
             if phase == .background {
                 lastBackgroundDate = Date()
             } else if phase == .active {
+                documentManager.importSharedInboxIfNeeded()
                 guard !isInitialStartupLoadingVisible else { return }
                 lockIfNeeded(force: false)
             }

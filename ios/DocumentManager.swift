@@ -8,6 +8,8 @@ import QuickLookThumbnailing
 class DocumentManager: ObservableObject {
     static let summaryUnavailableMessage = "Not available as source file is still available."
     static let ocrUnavailableWhileSourceExistsMessage = "No OCR because source file is still available."
+    private static let appGroupIdentifier = "group.com.purzavlad.identity"
+    private static let sharedInboxFolderName = "ShareInbox"
     @Published var documents: [Document] = []
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
@@ -16,6 +18,8 @@ class DocumentManager: ObservableObject {
     private let documentsKey = "SavedDocuments_v2" // legacy (migration only)
     private let documentsFileName = "SavedDocuments_v2.json"
     private let lastAccessedKey = "LastAccessedMap_v1"
+    private let sharedInboxImportQueue = DispatchQueue(label: "com.purzavlad.identity.sharedInboxImport", qos: .utility)
+    private var isImportingSharedInbox = false
 
     private struct PersistedState: Codable {
         var documents: [Document]
@@ -26,6 +30,61 @@ class DocumentManager: ObservableObject {
     init() {
         loadDocuments()
         lastAccessedMap = loadLastAccessedMap()
+        importSharedInboxIfNeeded()
+    }
+
+    func importSharedInboxIfNeeded() {
+        guard !isImportingSharedInbox else { return }
+        guard let inboxURL = sharedInboxURL(createIfMissing: true) else { return }
+
+        isImportingSharedInbox = true
+        sharedInboxImportQueue.async { [weak self] in
+            guard let self else { return }
+
+            let fm = FileManager.default
+            let urls = (try? fm.contentsOfDirectory(
+                at: inboxURL,
+                includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            let fileURLs = urls.filter { url in
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+                return values?.isDirectory != true
+            }
+            .sorted { a, b in
+                let aDate = (try? a.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                let bDate = (try? b.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+                return aDate < bDate
+            }
+
+            guard !fileURLs.isEmpty else {
+                DispatchQueue.main.async {
+                    self.isImportingSharedInbox = false
+                }
+                return
+            }
+
+            var importedDocuments: [Document] = []
+            var consumedURLs: [URL] = []
+
+            for url in fileURLs {
+                if let document = self.processFile(at: url) {
+                    importedDocuments.append(document)
+                    consumedURLs.append(url)
+                }
+            }
+
+            DispatchQueue.main.async {
+                for document in importedDocuments {
+                    self.addDocument(document)
+                }
+                for url in consumedURLs {
+                    try? fm.removeItem(at: url)
+                }
+                self.isImportingSharedInbox = false
+            }
+        }
     }
 
     func updateLastAccessed(id: UUID) {
@@ -80,6 +139,20 @@ class DocumentManager: ObservableObject {
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         return dir.appendingPathComponent(documentsFileName)
+    }
+
+    private func sharedInboxURL(createIfMissing: Bool) -> URL? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
+        ) else {
+            return nil
+        }
+
+        let inbox = container.appendingPathComponent(Self.sharedInboxFolderName, isDirectory: true)
+        if createIfMissing && !FileManager.default.fileExists(atPath: inbox.path) {
+            try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        }
+        return inbox
     }
     
     // MARK: - Document Management
