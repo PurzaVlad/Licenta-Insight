@@ -1,7 +1,6 @@
 import SwiftUI
 import PDFKit
 import UIKit
-import QuickLook
 
 struct ToolsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -55,8 +54,8 @@ struct ToolsView: View {
                                 ToolsFlowView(tool: .compress)
                                     .environmentObject(documentManager)
                             }
-                            ToolRow(icon: "pencil", title: "Edit PDF") {
-                                ToolsFlowView(tool: .edit)
+                            ToolRow(icon: "crop", title: "Crop PDF") {
+                                ToolsFlowView(tool: .crop)
                                     .environmentObject(documentManager)
                             }
 
@@ -154,7 +153,7 @@ struct ToolsView: View {
         case "tool-arrange": return .rearrange
         case "tool-rotate": return .rotate
         case "tool-compress": return .compress
-        case "tool-edit": return .edit
+        case "tool-crop": return .crop
         case "tool-sign": return .sign
         case "tool-protect": return .protect
         default: return nil
@@ -217,7 +216,7 @@ private enum ToolKind: String, Hashable {
     case rearrange
     case rotate
     case compress
-    case edit
+    case crop
     case sign
     case protect
 
@@ -228,7 +227,7 @@ private enum ToolKind: String, Hashable {
         case .rearrange: return "Arrange PDF"
         case .rotate: return "Rotate PDF"
         case .compress: return "Compress PDF"
-        case .edit: return "Edit PDF"
+        case .crop: return "Crop PDF"
         case .sign: return "Sign PDF"
         case .protect: return "Protect PDF"
         }
@@ -487,8 +486,8 @@ private struct ToolsEditorView: View {
                 allowsPicker: false,
                 onComplete: handleCompletion
             )
-        case .edit:
-            EditPDFView(
+        case .crop:
+            CropPDFView(
                 preselectedDocument: selectedDocuments.first,
                 allowsPicker: false,
                 onComplete: handleCompletion
@@ -888,356 +887,6 @@ struct ProtectPDFView: View {
             }
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
-    }
-}
-
-struct EditPDFView: View {
-    @EnvironmentObject private var documentManager: DocumentManager
-    let autoPresentPicker: Bool
-    let allowsPicker: Bool
-    let onComplete: (([Document]) -> Void)?
-    @State private var didAutoPresent = false
-    @State private var selectedDocument: Document?
-    @State private var showingPicker = false
-    @State private var isSaving = false
-    @State private var showingAlert = false
-    @State private var alertMessage = ""
-    @State private var workingFileURL: URL?
-    @State private var editedData: Data?
-    @State private var originalData: Data?
-    @State private var hasMarkupUpdates = false
-
-    init(
-        autoPresentPicker: Bool = false,
-        preselectedDocument: Document? = nil,
-        allowsPicker: Bool = true,
-        onComplete: (([Document]) -> Void)? = nil
-    ) {
-        self.autoPresentPicker = autoPresentPicker && allowsPicker
-        self.allowsPicker = allowsPicker
-        self.onComplete = onComplete
-        _selectedDocument = State(initialValue: preselectedDocument)
-    }
-
-    var body: some View {
-        VStack(spacing: 12) {
-            if let document = selectedDocument {
-                VStack(spacing: 10) {
-                    if let workingFileURL {
-                        NativeMarkupEditorViewRepresentable(
-                            fileURL: workingFileURL,
-                            onDidUpdate: { updatedURL in
-                                hasMarkupUpdates = true
-                                editedData = try? Data(contentsOf: updatedURL)
-                            },
-                            onDidSaveCopy: { copiedURL in
-                                hasMarkupUpdates = true
-                                if let data = try? Data(contentsOf: copiedURL) {
-                                    editedData = data
-                                    try? data.write(to: workingFileURL, options: .atomic)
-                                }
-                            }
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 420)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
-                        .padding(.horizontal)
-                    } else {
-                        ProgressView("Loading native markup...")
-                            .frame(maxWidth: .infinity, minHeight: 280)
-                    }
-                }
-
-                if allowsPicker {
-                    Button("Choose Different PDF") { showingPicker = true }
-                        .foregroundColor(.secondary)
-                }
-            } else {
-                if allowsPicker {
-                    Button("Choose PDF") { showingPicker = true }
-                } else {
-                    Text("No PDF selected.")
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .padding(.top, 8)
-        .navigationTitle("Edit PDF")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(isSaving ? "Saving..." : "Save") {
-                    saveEditedPDF()
-                }
-                .disabled(isSaving || selectedDocument == nil || !hasMarkupUpdates)
-            }
-        }
-        .sheet(isPresented: $showingPicker) {
-            PDFSinglePickerSheet(
-                documents: documentManager.documents.filter { isPDFDocument($0) },
-                selectedDocument: $selectedDocument
-            )
-        }
-        .alert("Edit PDF", isPresented: $showingAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(alertMessage)
-        }
-        .onAppear {
-            guard autoPresentPicker, !didAutoPresent else { return }
-            didAutoPresent = true
-            DispatchQueue.main.async {
-                showingPicker = true
-            }
-        }
-        .onChange(of: selectedDocument) { newDocument in
-            cleanupWorkingFile()
-            prepareWorkingFile(for: newDocument)
-        }
-        .onAppear {
-            if selectedDocument != nil {
-                prepareWorkingFile(for: selectedDocument)
-            }
-        }
-        .onDisappear {
-            cleanupWorkingFile()
-        }
-        .bindGlobalOperationLoading(isSaving)
-    }
-
-    private func prepareWorkingFile(for document: Document?) {
-        guard let document,
-              let sourceData = pdfData(from: document) else {
-            workingFileURL = nil
-            return
-        }
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("markup_\(UUID().uuidString).pdf")
-        do {
-            try sourceData.write(to: tempURL, options: .atomic)
-            workingFileURL = tempURL
-            editedData = nil
-            originalData = sourceData
-            hasMarkupUpdates = false
-        } catch {
-            workingFileURL = nil
-            alertMessage = "Could not prepare native markup file."
-            showingAlert = true
-        }
-    }
-
-    private func saveEditedPDF() {
-        guard let document = selectedDocument else {
-            alertMessage = "Please choose a valid PDF."
-            showingAlert = true
-            return
-        }
-
-        guard let outData = latestEditedData() else {
-            alertMessage = "Could not read edited PDF."
-            showingAlert = true
-            return
-        }
-
-        if let originalData, outData == originalData {
-            alertMessage = "No changes detected."
-            showingAlert = true
-            return
-        }
-
-        isSaving = true
-        let initialTitles = existingDocumentTitles(in: documentManager)
-        let workItem = DispatchWorkItem {
-            var existingTitles = initialTitles
-            let base = baseTitle(for: document.title)
-            let preferredBase = "\(base)_edited"
-            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
-            existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
-
-            DispatchQueue.main.async {
-                documentManager.addDocument(newDoc)
-                hasMarkupUpdates = false
-                self.originalData = outData
-                isSaving = false
-                if let onComplete {
-                    onComplete([newDoc])
-                } else {
-                    alertMessage = "Edited PDF saved to Documents."
-                    showingAlert = true
-                }
-            }
-        }
-        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
-    }
-
-    private func latestEditedData() -> Data? {
-        if let editedData {
-            return editedData
-        }
-        if let workingFileURL {
-            return try? Data(contentsOf: workingFileURL)
-        }
-        return nil
-    }
-
-    private func cleanupWorkingFile() {
-        if let url = workingFileURL {
-            try? FileManager.default.removeItem(at: url)
-        }
-        workingFileURL = nil
-        editedData = nil
-        originalData = nil
-        hasMarkupUpdates = false
-    }
-}
-
-private struct NativeMarkupEditorViewRepresentable: UIViewControllerRepresentable {
-    let fileURL: URL
-    let onDidUpdate: (URL) -> Void
-    let onDidSaveCopy: (URL) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeUIViewController(context: Context) -> UINavigationController {
-        let previewController = TitleHiddenQLPreviewController()
-        previewController.dataSource = context.coordinator
-        previewController.delegate = context.coordinator
-        context.coordinator.previewController = previewController
-
-        let nav = UINavigationController(rootViewController: previewController)
-        nav.navigationBar.isHidden = false
-        let appearance = UINavigationBarAppearance()
-        appearance.configureWithTransparentBackground()
-        nav.navigationBar.standardAppearance = appearance
-        nav.navigationBar.scrollEdgeAppearance = appearance
-        nav.navigationBar.compactAppearance = appearance
-        nav.setToolbarHidden(false, animated: false)
-        return nav
-    }
-
-    func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {
-        if let preview = context.coordinator.previewController {
-            if uiViewController.topViewController !== preview {
-                uiViewController.setViewControllers([preview], animated: false)
-            }
-        }
-    }
-
-    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
-        let parent: NativeMarkupEditorViewRepresentable
-        weak var previewController: TitleHiddenQLPreviewController?
-
-        init(parent: NativeMarkupEditorViewRepresentable) {
-            self.parent = parent
-        }
-
-        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
-
-        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
-            parent.fileURL as NSURL
-        }
-
-        func previewController(_ controller: QLPreviewController, editingModeFor previewItem: QLPreviewItem) -> QLPreviewItemEditingMode {
-            .updateContents
-        }
-
-        func previewController(_ controller: QLPreviewController, didUpdateContentsOf previewItem: QLPreviewItem) {
-            parent.onDidUpdate(parent.fileURL)
-        }
-
-        func previewController(_ controller: QLPreviewController, didSaveEditedCopyOf previewItem: QLPreviewItem, at modifiedContentsURL: URL) {
-            parent.onDidSaveCopy(modifiedContentsURL)
-        }
-    }
-}
-
-/// Hides only the document title + chevron. Everything else (ellipsis, markup, etc.) stays.
-private final class TitleHiddenQLPreviewController: QLPreviewController {
-    private var uiTimer: Timer?
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        hideTitleAndChevron()
-        uiTimer?.invalidate()
-        uiTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-            self?.hideTitleAndChevron()
-        }
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        hideTitleAndChevron()
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        uiTimer?.invalidate()
-        uiTimer = nil
-    }
-
-    private func hideTitleAndChevron() {
-        // Replace titleView with empty view to hide doc name + chevron
-        let empty = UIView(frame: .zero)
-        empty.isUserInteractionEnabled = false
-        navigationItem.titleView = empty
-        navigationItem.title = nil
-
-        for navItem in navigationController?.navigationBar.items ?? [] {
-            let v = UIView(frame: .zero)
-            v.isUserInteractionEnabled = false
-            navItem.titleView = v
-            navItem.title = nil
-        }
-
-        // Walk the nav bar to find and hide any remaining chevron/title views
-        if let navBar = navigationController?.navigationBar {
-            hideChevronViews(in: navBar)
-        }
-    }
-
-    private func hideChevronViews(in view: UIView) {
-        for subview in view.subviews {
-            let cls = String(describing: type(of: subview)).lowercased()
-            let label = (subview.accessibilityLabel ?? "").lowercased()
-            let id = (subview.accessibilityIdentifier ?? "").lowercased()
-
-            // Hide any chevron / disclosure indicator
-            if cls.contains("chevron") || cls.contains("disclosure")
-                || label.contains("chevron") || id.contains("chevron")
-                || label.contains("disclosure") || label.contains("pop up") {
-                subview.alpha = 0
-                subview.isHidden = true
-                continue
-            }
-
-            // Check image views for chevron SF symbols
-            if let imgView = subview as? UIImageView, let img = imgView.image {
-                let imgId = (img.accessibilityIdentifier ?? "").lowercased()
-                let imgDesc = img.description.lowercased()
-                if imgId.contains("chevron") || imgDesc.contains("chevron") {
-                    imgView.alpha = 0
-                    imgView.isHidden = true
-                    continue
-                }
-            }
-
-            // Tiny centered views that act as a pull-down chevron
-            if subview.bounds.height > 0 && subview.bounds.height < 12
-                && subview.bounds.width > 10 && subview.bounds.width < 50 {
-                let parentW = subview.superview?.bounds.width ?? 0
-                if parentW > 0 && abs(subview.center.x - parentW / 2) < 40 {
-                    subview.alpha = 0
-                    subview.isHidden = true
-                    continue
-                }
-            }
-
-            hideChevronViews(in: subview)
-        }
     }
 }
 
@@ -2652,6 +2301,432 @@ struct PDFPageItem: Identifiable {
     let id = UUID()
     let index: Int
     let thumbnail: UIImage
+}
+
+// MARK: - Crop
+
+struct CropPDFView: View {
+    @EnvironmentObject private var documentManager: DocumentManager
+    let autoPresentPicker: Bool
+    let allowsPicker: Bool
+    let onComplete: (([Document]) -> Void)?
+    @State private var selectedDocument: Document?
+    @State private var showingPicker = false
+    @State private var didAutoPresent = false
+    @State private var isSaving = false
+    @State private var showingAlert = false
+    @State private var alertMessage = ""
+    @State private var workingPDF: PDFDocument?
+    @State private var pageThumbnails: [UIImage] = []
+    @State private var currentPageIndex = 0
+    @State private var cropValuesByPage: [Int: PageCropValues] = [:]
+
+    init(
+        autoPresentPicker: Bool = false,
+        preselectedDocument: Document? = nil,
+        allowsPicker: Bool = true,
+        onComplete: (([Document]) -> Void)? = nil
+    ) {
+        self.autoPresentPicker = autoPresentPicker && allowsPicker
+        self.allowsPicker = allowsPicker
+        self.onComplete = onComplete
+        _selectedDocument = State(initialValue: preselectedDocument)
+    }
+
+    private var pageCount: Int {
+        workingPDF?.pageCount ?? 0
+    }
+
+    private var currentCrop: PageCropValues {
+        get { cropValuesByPage[currentPageIndex] ?? .zero }
+        set { cropValuesByPage[currentPageIndex] = newValue }
+    }
+
+    private var currentPageSummary: String {
+        guard let pdf = workingPDF,
+              currentPageIndex >= 0,
+              currentPageIndex < pdf.pageCount,
+              let page = pdf.page(at: currentPageIndex) else { return "" }
+        let bounds = page.bounds(for: .mediaBox)
+        let insets = currentCrop.absoluteInsets(in: bounds)
+        let cropped = bounds.inset(by: insets)
+        let width = Int(max(1, cropped.width).rounded())
+        let height = Int(max(1, cropped.height).rounded())
+        return "\(width) × \(height) pt"
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                if let document = selectedDocument {
+                    HStack {
+                        Text(document.title)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Spacer()
+                        if allowsPicker {
+                            Button("Change") { showingPicker = true }
+                        }
+                    }
+
+                    if pageCount > 0 {
+                        pagePicker
+                        pagePreview
+                        Text("Drag the handles to keep the area you want.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Text("Current output size: \(currentPageSummary)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+
+                        Button("Apply This Crop To All Pages") {
+                            applyCurrentCropToAllPages()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    if allowsPicker {
+                        Button("Choose PDF") { showingPicker = true }
+                    } else {
+                        Text("No PDF selected.")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Button(isSaving ? "Cropping..." : "Save Cropped PDF") {
+                    saveCroppedPDF()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || workingPDF == nil || isSaving)
+            }
+            .padding()
+        }
+        .navigationTitle("Crop PDF")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingPicker) {
+            PDFSinglePickerSheet(
+                documents: documentManager.documents.filter { isPDFDocument($0) },
+                selectedDocument: $selectedDocument
+            )
+        }
+        .onAppear {
+            if autoPresentPicker, !didAutoPresent {
+                didAutoPresent = true
+                DispatchQueue.main.async {
+                    showingPicker = true
+                }
+            }
+            if selectedDocument != nil && workingPDF == nil {
+                loadDocument(for: selectedDocument)
+            }
+        }
+        .onChange(of: selectedDocument) { newDoc in
+            loadDocument(for: newDoc)
+        }
+        .alert("Crop PDF", isPresented: $showingAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage)
+        }
+        .bindGlobalOperationLoading(isSaving)
+    }
+
+    private var pagePicker: some View {
+        HStack(spacing: 12) {
+            Button {
+                currentPageIndex = max(0, currentPageIndex - 1)
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(currentPageIndex == 0)
+
+            Text("Page \(currentPageIndex + 1) / \(pageCount)")
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+
+            Button {
+                currentPageIndex = min(max(0, pageCount - 1), currentPageIndex + 1)
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(currentPageIndex >= pageCount - 1)
+        }
+    }
+
+    private var pagePreview: some View {
+        Group {
+            if currentPageIndex < pageThumbnails.count, currentPageSize.width > 0, currentPageSize.height > 0 {
+                InteractiveCropPageView(
+                    image: pageThumbnails[currentPageIndex],
+                    pageSize: currentPageSize,
+                    crop: currentCropBinding()
+                )
+                .frame(height: 360)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color(.separator), lineWidth: 1)
+                )
+            }
+        }
+    }
+
+    private var currentPageSize: CGSize {
+        guard let pdf = workingPDF,
+              currentPageIndex >= 0,
+              currentPageIndex < pdf.pageCount,
+              let page = pdf.page(at: currentPageIndex) else { return .zero }
+        return page.bounds(for: .mediaBox).size
+    }
+
+    private func currentCropBinding() -> Binding<PageCropValues> {
+        let pageIndex = currentPageIndex
+        return Binding(
+            get: { cropValuesByPage[pageIndex] ?? .zero },
+            set: { values in
+                var values = values
+                values.clamp()
+                cropValuesByPage[pageIndex] = values
+            }
+        )
+    }
+
+    private func loadDocument(for document: Document?) {
+        pageThumbnails.removeAll()
+        cropValuesByPage.removeAll()
+        currentPageIndex = 0
+        guard let document,
+              let data = pdfData(from: document),
+              let pdf = PDFDocument(data: data) else {
+            workingPDF = nil
+            return
+        }
+        workingPDF = pdf
+        var thumbs: [UIImage] = []
+        for index in 0..<pdf.pageCount {
+            if let page = pdf.page(at: index) {
+                thumbs.append(page.thumbnail(of: CGSize(width: 220, height: 300), for: .mediaBox))
+            }
+            cropValuesByPage[index] = .zero
+        }
+        pageThumbnails = thumbs
+    }
+
+    private func applyCurrentCropToAllPages() {
+        guard pageCount > 0 else { return }
+        for index in 0..<pageCount {
+            cropValuesByPage[index] = currentCrop
+        }
+    }
+
+    private func saveCroppedPDF() {
+        guard let document = selectedDocument,
+              let sourceData = pdfData(from: document),
+              let pdf = PDFDocument(data: sourceData) else {
+            alertMessage = "Please choose a valid PDF first."
+            showingAlert = true
+            return
+        }
+
+        isSaving = true
+        let initialTitles = existingDocumentTitles(in: documentManager)
+        let cropValues = cropValuesByPage
+
+        let workItem = DispatchWorkItem {
+            let croppedPDF = PDFDocument()
+            for index in 0..<pdf.pageCount {
+                guard let sourcePage = pdf.page(at: index),
+                      let copiedPage = sourcePage.copy() as? PDFPage else { continue }
+
+                let mediaBox = copiedPage.bounds(for: .mediaBox)
+                let cropValuesForPage = cropValues[index] ?? .zero
+                let insets = cropValuesForPage.absoluteInsets(in: mediaBox)
+                var cropRect = mediaBox.inset(by: insets)
+                if cropRect.width < 8 || cropRect.height < 8 {
+                    cropRect = mediaBox
+                }
+
+                copiedPage.setBounds(cropRect, for: .cropBox)
+                croppedPDF.insert(copiedPage, at: croppedPDF.pageCount)
+            }
+            guard let outData = croppedPDF.dataRepresentation() else {
+                DispatchQueue.main.async {
+                    isSaving = false
+                    alertMessage = "Failed to crop PDF."
+                    showingAlert = true
+                }
+                return
+            }
+
+            var existingTitles = initialTitles
+            let base = baseTitle(for: document.title)
+            let preferredBase = "\(base)_cropped"
+            let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
+            existingTitles.insert(title.lowercased())
+            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+
+            DispatchQueue.main.async {
+                documentManager.addDocument(newDoc)
+                isSaving = false
+                if let onComplete {
+                    onComplete([newDoc])
+                } else {
+                    alertMessage = "Cropped PDF saved to Documents."
+                    showingAlert = true
+                }
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
+    }
+}
+
+private struct PageCropValues {
+    var topFraction: Double = 0
+    var bottomFraction: Double = 0
+    var leftFraction: Double = 0
+    var rightFraction: Double = 0
+
+    static let zero = PageCropValues()
+
+    mutating func clamp() {
+        topFraction = min(max(0, topFraction), 0.45)
+        bottomFraction = min(max(0, bottomFraction), 0.45)
+        leftFraction = min(max(0, leftFraction), 0.45)
+        rightFraction = min(max(0, rightFraction), 0.45)
+
+        if topFraction + bottomFraction > 0.9 {
+            let scale = 0.9 / (topFraction + bottomFraction)
+            topFraction *= scale
+            bottomFraction *= scale
+        }
+        if leftFraction + rightFraction > 0.9 {
+            let scale = 0.9 / (leftFraction + rightFraction)
+            leftFraction *= scale
+            rightFraction *= scale
+        }
+    }
+
+    func absoluteInsets(in bounds: CGRect) -> UIEdgeInsets {
+        UIEdgeInsets(
+            top: bounds.height * topFraction,
+            left: bounds.width * leftFraction,
+            bottom: bounds.height * bottomFraction,
+            right: bounds.width * rightFraction
+        )
+    }
+}
+
+private struct InteractiveCropPageView: View {
+    let image: UIImage
+    let pageSize: CGSize
+    @Binding var crop: PageCropValues
+    private let minKeepFraction: Double = 0.1
+    private let handleSize: CGFloat = 26
+
+    var body: some View {
+        GeometryReader { proxy in
+            let contentRect = aspectFitRect(in: proxy.size, contentSize: pageSize)
+            let keepRect = keepRect(in: contentRect)
+
+            ZStack {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+
+                Path { path in
+                    path.addRect(CGRect(origin: .zero, size: proxy.size))
+                    path.addRect(keepRect)
+                }
+                .fill(Color.black.opacity(0.32), style: FillStyle(eoFill: true))
+
+                Path { path in
+                    path.addRect(keepRect)
+                }
+                .stroke(Color("Primary"), lineWidth: 2)
+
+                handle(at: CGPoint(x: keepRect.minX, y: keepRect.midY))
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                        let x = value.location.x.clamped(to: contentRect.minX...keepRect.maxX - contentRect.width * minKeepFraction)
+                        crop.leftFraction = ((x - contentRect.minX) / contentRect.width).clamped(to: 0...(1 - crop.rightFraction - minKeepFraction))
+                        crop.clamp()
+                    })
+
+                handle(at: CGPoint(x: keepRect.maxX, y: keepRect.midY))
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                        let x = value.location.x.clamped(to: keepRect.minX + contentRect.width * minKeepFraction...contentRect.maxX)
+                        crop.rightFraction = ((contentRect.maxX - x) / contentRect.width).clamped(to: 0...(1 - crop.leftFraction - minKeepFraction))
+                        crop.clamp()
+                    })
+
+                handle(at: CGPoint(x: keepRect.midX, y: keepRect.minY))
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                        let y = value.location.y.clamped(to: contentRect.minY...keepRect.maxY - contentRect.height * minKeepFraction)
+                        crop.topFraction = ((y - contentRect.minY) / contentRect.height).clamped(to: 0...(1 - crop.bottomFraction - minKeepFraction))
+                        crop.clamp()
+                    })
+
+                handle(at: CGPoint(x: keepRect.midX, y: keepRect.maxY))
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                        let y = value.location.y.clamped(to: keepRect.minY + contentRect.height * minKeepFraction...contentRect.maxY)
+                        crop.bottomFraction = ((contentRect.maxY - y) / contentRect.height).clamped(to: 0...(1 - crop.topFraction - minKeepFraction))
+                        crop.clamp()
+                    })
+            }
+        }
+    }
+
+    private func keepRect(in contentRect: CGRect) -> CGRect {
+        let left = contentRect.width * crop.leftFraction
+        let right = contentRect.width * crop.rightFraction
+        let top = contentRect.height * crop.topFraction
+        let bottom = contentRect.height * crop.bottomFraction
+        return CGRect(
+            x: contentRect.minX + left,
+            y: contentRect.minY + top,
+            width: max(1, contentRect.width - left - right),
+            height: max(1, contentRect.height - top - bottom)
+        )
+    }
+
+    private func handle(at point: CGPoint) -> some View {
+        Circle()
+            .fill(Color(.systemBackground))
+            .frame(width: handleSize, height: handleSize)
+            .overlay(
+                Circle()
+                    .stroke(Color("Primary"), lineWidth: 2)
+            )
+            .position(point)
+            .shadow(radius: 1)
+    }
+
+    private func aspectFitRect(in container: CGSize, contentSize: CGSize) -> CGRect {
+        guard container.width > 0, container.height > 0, contentSize.width > 0, contentSize.height > 0 else {
+            return CGRect(origin: .zero, size: container)
+        }
+        let scale = min(container.width / contentSize.width, container.height / contentSize.height)
+        let drawSize = CGSize(width: contentSize.width * scale, height: contentSize.height * scale)
+        let origin = CGPoint(
+            x: (container.width - drawSize.width) / 2,
+            y: (container.height - drawSize.height) / 2
+        )
+        return CGRect(origin: origin, size: drawSize)
+    }
+}
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
 }
 
 // MARK: - Rotate

@@ -961,6 +961,7 @@ struct DocumentPreviewContainerView: View {
     @State private var showingSummary = false
     @State private var showingSearchSheet = false
     @State private var previewController: CustomQLPreviewController?
+    @State private var pdfSearchCoordinator: SearchablePDFView.Coordinator?
 
     init(
         url: URL,
@@ -977,6 +978,13 @@ struct DocumentPreviewContainerView: View {
     private var usesSearchPopupForOfficeDocs: Bool {
         guard let type = document?.type else { return false }
         return type == .docx || type == .pptx
+    }
+
+    private var usesNativePDFPreview: Bool {
+        if let type = document?.type {
+            return type == .pdf || type == .scanned
+        }
+        return url.pathExtension.lowercased() == "pdf"
     }
 
     private var previewTitle: String {
@@ -1061,14 +1069,21 @@ struct DocumentPreviewContainerView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                DocumentPreviewNavControllerView(
-                    url: url,
-                    title: previewTitle,
-                    onControllerReady: { controller in
-                        previewController = controller
+                if usesNativePDFPreview {
+                    SearchablePDFPreviewView(url: url) { coordinator in
+                        pdfSearchCoordinator = coordinator
                     }
-                )
-                .ignoresSafeArea()
+                    .ignoresSafeArea()
+                } else {
+                    DocumentPreviewNavControllerView(
+                        url: url,
+                        title: previewTitle,
+                        onControllerReady: { controller in
+                            previewController = controller
+                        }
+                    )
+                    .ignoresSafeArea()
+                }
             }
             .navigationTitle(previewTitle)
             .navigationBarTitleDisplayMode(.inline)
@@ -1106,6 +1121,18 @@ struct DocumentPreviewContainerView: View {
     private func triggerSearch() {
         if usesSearchPopupForOfficeDocs, document != nil {
             showingSearchSheet = true
+            return
+        }
+
+        if usesNativePDFPreview {
+            if let pdfSearchCoordinator {
+                pdfSearchCoordinator.presentFindNavigator()
+            } else {
+                UIApplication.shared.sendAction(#selector(UIResponder.find(_:)), to: nil, from: nil, for: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    pdfSearchCoordinator?.presentFindNavigator()
+                }
+            }
             return
         }
 
