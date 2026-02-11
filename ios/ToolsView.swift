@@ -508,6 +508,10 @@ private struct ToolsEditorView: View {
     }
 
     private func handleCompletion(_ documents: [Document]) {
+        if tool == .merge {
+            finishFlow()
+            return
+        }
         let ids = documents.map { $0.id }
         renameQueue = ids
         showNextRename()
@@ -622,11 +626,6 @@ struct CompressPDFView: View {
                 Slider(value: $quality, in: 0.4...0.9, step: 0.05)
                     .padding(.horizontal)
 
-                Button(isSaving ? "Compressing..." : "Compress PDF") {
-                    compressSelected()
-                }
-                .disabled(isSaving)
-
                 if allowsPicker {
                     Button("Choose Different PDF") { showingPicker = true }
                         .foregroundColor(.secondary)
@@ -643,6 +642,16 @@ struct CompressPDFView: View {
         .padding()
         .navigationTitle("Compress PDF")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Compressing..." : "Compress") {
+                    compressSelected()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || isSaving)
+            }
+        }
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -702,7 +711,12 @@ struct CompressPDFView: View {
                 }
             }
 
-            let newDoc = makePDFDocument(title: outputName, data: outData, sourceDocumentId: document.id)
+            let newDoc = makePDFDocument(
+                title: outputName,
+                data: outData,
+                sourceDocumentId: document.id,
+                sourceDocument: document
+            )
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
                 isSaving = false
@@ -757,18 +771,31 @@ struct ProtectPDFView: View {
 
                 SecureField("Password", text: $password)
                     .textContentType(.newPassword)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 25, style: .continuous)
+                            .stroke(Color(.separator), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.06), radius: 3, x: 0, y: 1)
                     .padding(.horizontal)
 
                 SecureField("Confirm Password", text: $confirmPassword)
                     .textContentType(.newPassword)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 25, style: .continuous)
+                            .stroke(Color(.separator), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.06), radius: 3, x: 0, y: 1)
                     .padding(.horizontal)
-
-                Button(isSaving ? "Securing..." : "Protect PDF") {
-                    protectSelected()
-                }
-                .disabled(isSaving)
 
                 if allowsPicker {
                     Button("Choose Different PDF") { showingPicker = true }
@@ -786,6 +813,16 @@ struct ProtectPDFView: View {
         .padding()
         .navigationTitle("Protect PDF")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Securing..." : "Protect") {
+                    protectSelected()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || isSaving)
+            }
+        }
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -871,7 +908,12 @@ struct ProtectPDFView: View {
             let preferredBase = "\(base)_protected"
             let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
             existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+            let newDoc = makePDFDocument(
+                title: title,
+                data: outData,
+                sourceDocumentId: document.id,
+                sourceDocument: document
+            )
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -958,11 +1000,6 @@ struct SignPDFView: View {
                     Button("Draw Signature") {
                         showingSignatureSheet = true
                     }
-
-                    Button(isSaving ? "Saving..." : "Save Signed PDF") {
-                        saveSignedPDF()
-                    }
-                    .disabled(isSaving)
                 }
 
                 signaturePanel
@@ -983,6 +1020,16 @@ struct SignPDFView: View {
         .padding(.top, 8)
         .navigationTitle("Sign PDF")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Saving..." : "Save") {
+                    saveSignedPDF()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || isSaving)
+            }
+        }
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -1039,7 +1086,7 @@ struct SignPDFView: View {
                                     .renderingMode(.template)
                                     .resizable()
                                     .scaledToFit()
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.primary)
                                     .frame(maxWidth: .infinity, minHeight: 120, maxHeight: 120)
                                     .padding(.horizontal, 8)
                             }
@@ -1081,7 +1128,12 @@ struct SignPDFView: View {
             let preferredBase = "\(base)_signed"
             let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
             existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+            let newDoc = makePDFDocument(
+                title: title,
+                data: outData,
+                sourceDocumentId: document.id,
+                sourceDocument: document
+            )
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -1522,23 +1574,21 @@ struct SignatureCaptureSheet: View {
                     Button("Clear") {
                         padController.clear()
                     }
-
-                    Button("Save") {
-                        guard let image = padController.renderImage(), !padController.isEmpty else {
-                            showEmptyAlert = true
-                            return
-                        }
-                        onSave(image)
-                        dismiss()
-                    }
                 }
                 .padding(.bottom)
             }
             .navigationTitle("Draw Signature")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Save") {
+                        saveSignature()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color("Primary"))
                 }
             }
             .alert("Signature is empty", isPresented: $showEmptyAlert) {
@@ -1547,6 +1597,15 @@ struct SignatureCaptureSheet: View {
                 Text("Draw a signature before saving.")
             }
         }
+    }
+
+    private func saveSignature() {
+        guard let image = padController.renderImage(), !padController.isEmpty else {
+            showEmptyAlert = true
+            return
+        }
+        onSave(image)
+        dismiss()
     }
 }
 
@@ -1776,9 +1835,9 @@ struct MergePDFsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
     let autoPresentPicker: Bool
     let allowsPicker: Bool
-    let preferredOrder: [UUID]?
     let onComplete: (([Document]) -> Void)?
-    @State private var selectedIds: Set<UUID> = []
+    @State private var orderedSelectedIds: [UUID] = []
+    @State private var pickerSelectedIds: Set<UUID> = []
     @State private var showingPicker = false
     @State private var isSaving = false
     @State private var showingAlert = false
@@ -1794,9 +1853,23 @@ struct MergePDFsView: View {
     ) {
         self.autoPresentPicker = autoPresentPicker && allowsPicker
         self.allowsPicker = allowsPicker
-        self.preferredOrder = preferredOrder ?? preselectedIds
         self.onComplete = onComplete
-        _selectedIds = State(initialValue: Set(preselectedIds))
+
+        let initialSet = Set(preselectedIds)
+        let requestedOrder = preferredOrder ?? preselectedIds
+        var ordered: [UUID] = []
+        var seen = Set<UUID>()
+        for id in requestedOrder where initialSet.contains(id) && seen.insert(id).inserted {
+            ordered.append(id)
+        }
+        if ordered.count < initialSet.count {
+            for id in preselectedIds where initialSet.contains(id) && seen.insert(id).inserted {
+                ordered.append(id)
+            }
+        }
+        let capped = Array(ordered.prefix(3))
+        _orderedSelectedIds = State(initialValue: capped)
+        _pickerSelectedIds = State(initialValue: Set(capped))
     }
 
     private var pdfDocuments: [Document] {
@@ -1804,34 +1877,17 @@ struct MergePDFsView: View {
     }
 
     private var selectedDocuments: [Document] {
-        guard let preferredOrder else {
-            return pdfDocuments.filter { selectedIds.contains($0.id) }
-        }
-
         let docsById = Dictionary(uniqueKeysWithValues: pdfDocuments.map { ($0.id, $0) })
-        var orderedDocs: [Document] = []
-        var seen = Set<UUID>()
-
-        for id in preferredOrder where selectedIds.contains(id) {
-            if let doc = docsById[id], seen.insert(id).inserted {
-                orderedDocs.append(doc)
-            }
-        }
-
-        if orderedDocs.count < selectedIds.count {
-            for doc in pdfDocuments where selectedIds.contains(doc.id) && !seen.contains(doc.id) {
-                orderedDocs.append(doc)
-            }
-        }
-
-        return orderedDocs
+        return orderedSelectedIds.compactMap { docsById[$0] }
     }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 0) {
             if selectedDocuments.isEmpty {
                 Text("Select up to 3 PDFs to merge.")
                     .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding()
             } else {
                 List {
                     ForEach(selectedDocuments, id: \.id) { doc in
@@ -1840,7 +1896,7 @@ struct MergePDFsView: View {
                                 .lineLimit(1)
                             Spacer()
                             Button {
-                                selectedIds.remove(doc.id)
+                                removeSelection(doc.id)
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundColor(.secondary)
@@ -1848,31 +1904,41 @@ struct MergePDFsView: View {
                             .buttonStyle(BorderlessButtonStyle())
                         }
                     }
-                }
-            }
-
-            HStack(spacing: 12) {
-                if allowsPicker {
-                    Button("Choose PDFs") {
-                        showingPicker = true
+                    .onMove { indices, newOffset in
+                        orderedSelectedIds.move(fromOffsets: indices, toOffset: newOffset)
                     }
                 }
-
-                Button(isSaving ? "Merging..." : "Merge") {
-                    mergeSelected()
-                }
-                .disabled(selectedDocuments.count < 2 || isSaving)
+                .listStyle(.plain)
+                .hideScrollBackground()
+                .environment(\.editMode, .constant(.active))
             }
         }
-        .padding()
         .navigationTitle("Merge PDFs")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingPicker) {
             PDFMultiPickerSheet(
                 documents: pdfDocuments,
-                selectedIds: $selectedIds,
+                selectedIds: $pickerSelectedIds,
                 maxSelection: 3
             )
+        }
+        .toolbar {
+            if allowsPicker {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Choose PDFs") {
+                        showingPicker = true
+                    }
+                    .foregroundColor(.primary)
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Merging..." : "Merge") {
+                    mergeSelected()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocuments.count < 2 || isSaving)
+            }
         }
         .onAppear {
             guard autoPresentPicker, !didAutoPresent else { return }
@@ -1881,12 +1947,45 @@ struct MergePDFsView: View {
                 showingPicker = true
             }
         }
+        .onAppear {
+            syncOrderedSelectionFromPicker()
+        }
+        .onChange(of: pickerSelectedIds) { _ in
+            syncOrderedSelectionFromPicker()
+        }
         .alert("Merge PDFs", isPresented: $showingAlert) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(alertMessage)
         }
         .bindGlobalOperationLoading(isSaving)
+    }
+
+    private func removeSelection(_ id: UUID) {
+        orderedSelectedIds.removeAll { $0 == id }
+        pickerSelectedIds.remove(id)
+    }
+
+    private func syncOrderedSelectionFromPicker() {
+        var ordered = orderedSelectedIds.filter { pickerSelectedIds.contains($0) }
+        let existing = Set(ordered)
+        let missing = pickerSelectedIds.filter { !existing.contains($0) }
+
+        if !missing.isEmpty {
+            for doc in pdfDocuments where missing.contains(doc.id) {
+                ordered.append(doc.id)
+            }
+        }
+
+        if ordered.count > 3 {
+            ordered = Array(ordered.prefix(3))
+        }
+
+        orderedSelectedIds = ordered
+        let normalized = Set(ordered)
+        if pickerSelectedIds != normalized {
+            pickerSelectedIds = normalized
+        }
     }
 
     private func mergeSelected() {
@@ -1923,12 +2022,19 @@ struct MergePDFsView: View {
             let preferredBase = "\(base)_merged"
             let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
             existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: data, sourceDocumentId: nil)
+            let newDoc = makePDFDocument(
+                title: title,
+                data: data,
+                sourceDocumentId: nil,
+                sourceDocument: nil,
+                inheritMetadata: false
+            )
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
                 isSaving = false
-                selectedIds.removeAll()
+                orderedSelectedIds.removeAll()
+                pickerSelectedIds.removeAll()
                 if let onComplete {
                     onComplete([newDoc])
                 } else {
@@ -2028,16 +2134,21 @@ struct SplitPDFView: View {
                     }
                     .disabled(ranges.count >= 3)
                 }
-
-                Button(isSaving ? "Splitting..." : "Split") {
-                    splitSelected()
-                }
-                .disabled(selectedDocument == nil || isSaving)
             }
             .padding()
         }
         .navigationTitle("Split PDF")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Splitting..." : "Split") {
+                    splitSelected()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || isSaving)
+            }
+        }
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -2093,7 +2204,13 @@ struct SplitPDFView: View {
                 let preferredBase = "\(base)_split\(idx + 1)"
                 let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
                 existingTitles.insert(title.lowercased())
-                let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+                let newDoc = makePDFDocument(
+                    title: title,
+                    data: outData,
+                    sourceDocumentId: document.id,
+                    sourceDocument: document,
+                    inheritMetadata: false
+                )
                 newDocs.append(newDoc)
                 created += 1
                 if created >= 3 { break }
@@ -2190,22 +2307,29 @@ struct RearrangePDFView: View {
                                 .cornerRadius(6)
                             Text("Page \(item.index + 1)")
                         }
+                        .listRowBackground(Color.clear)
                     }
                     .onMove { indices, newOffset in
                         pageItems.move(fromOffsets: indices, toOffset: newOffset)
                     }
                 }
+                .listStyle(.plain)
+                .hideScrollBackground()
                 .environment(\.editMode, $editMode)
             }
-
-            Button(isSaving ? "Saving..." : "Save Rearranged") {
-                saveRearranged()
-            }
-            .disabled(selectedDocument == nil || pageItems.isEmpty || isSaving)
-            .padding(.bottom, 12)
         }
         .navigationTitle("Rearrange PDF")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Arranging..." : "Arrange") {
+                    saveRearranged()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || pageItems.isEmpty || isSaving)
+            }
+        }
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -2280,7 +2404,12 @@ struct RearrangePDFView: View {
             let preferredBase = "\(base)_rearranged"
             let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
             existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+            let newDoc = makePDFDocument(
+                title: title,
+                data: outData,
+                sourceDocumentId: document.id,
+                sourceDocument: document
+            )
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -2565,7 +2694,12 @@ struct CropPDFView: View {
             let preferredBase = "\(base)_cropped"
             let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
             existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+            let newDoc = makePDFDocument(
+                title: title,
+                data: outData,
+                sourceDocumentId: document.id,
+                sourceDocument: document
+            )
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -2803,18 +2937,25 @@ struct RotatePDFView: View {
                             }
                             .buttonStyle(BorderlessButtonStyle())
                         }
+                        .listRowBackground(Color.clear)
                     }
                 }
+                .listStyle(.plain)
+                .hideScrollBackground()
             }
-
-            Button(isSaving ? "Saving..." : "Save Rotations") {
-                saveRotations()
-            }
-            .disabled(selectedDocument == nil || pageItems.isEmpty || isSaving)
-            .padding(.bottom, 12)
         }
         .navigationTitle("Rotate PDF")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Rotating..." : "Rotate") {
+                    saveRotations()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
+                .disabled(selectedDocument == nil || pageItems.isEmpty || isSaving)
+            }
+        }
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -2909,7 +3050,12 @@ struct RotatePDFView: View {
             let preferredBase = "\(base)_rotated"
             let title = uniquePDFTitle(preferredBase: preferredBase, existingTitles: existingTitles)
             existingTitles.insert(title.lowercased())
-            let newDoc = makePDFDocument(title: title, data: outData, sourceDocumentId: document.id)
+            let newDoc = makePDFDocument(
+                title: title,
+                data: outData,
+                sourceDocumentId: document.id,
+                sourceDocument: document
+            )
 
             DispatchQueue.main.async {
                 documentManager.addDocument(newDoc)
@@ -3050,17 +3196,30 @@ private func pdfData(from document: Document) -> Data? {
     return nil
 }
 
-private func makePDFDocument(title: String, data: Data, sourceDocumentId: UUID?) -> Document {
+private func makePDFDocument(
+    title: String,
+    data: Data,
+    sourceDocumentId: UUID?,
+    sourceDocument: Document? = nil,
+    inheritMetadata: Bool = true
+) -> Document {
     let text = extractText(from: data)
-    let summaryText = sourceDocumentId == nil
-        ? "Processing summary..."
-        : DocumentManager.summaryUnavailableMessage
+    let summaryText: String
+    if inheritMetadata,
+       let inheritedSummary = sourceDocument?.summary.trimmingCharacters(in: .whitespacesAndNewlines),
+       !inheritedSummary.isEmpty {
+        summaryText = inheritedSummary
+    } else {
+        summaryText = "Processing summary..."
+    }
+    let inheritedOCRPages = inheritMetadata ? sourceDocument?.ocrPages : nil
+    let inheritedTags = inheritMetadata ? (sourceDocument?.tags ?? []) : []
     return Document(
         title: title,
         content: text,
         summary: summaryText,
-        ocrPages: nil,
-        tags: [],
+        ocrPages: inheritedOCRPages,
+        tags: inheritedTags,
         sourceDocumentId: sourceDocumentId,
         dateCreated: Date(),
         type: .pdf,

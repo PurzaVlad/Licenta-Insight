@@ -4,6 +4,7 @@ import LocalAuthentication
 
 extension NSNotification.Name {
     static let globalOperationLoading = NSNotification.Name("GlobalOperationLoading")
+    static let globalOperationLoadingSuccess = NSNotification.Name("GlobalOperationLoadingSuccess")
 }
 
 enum GlobalLoadingBridge {
@@ -12,6 +13,13 @@ enum GlobalLoadingBridge {
             name: .globalOperationLoading,
             object: nil,
             userInfo: ["isActive": isActive]
+        )
+    }
+
+    static func showOperationSuccess() {
+        NotificationCenter.default.post(
+            name: .globalOperationLoadingSuccess,
+            object: nil
         )
     }
 }
@@ -109,10 +117,13 @@ struct TabContainerView: View {
     @State private var operationLoadingCount = 0
     @State private var isOperationLoadingVisible = false
     @State private var operationLoadingVisibilityToken: Int = 0
+    @State private var isOperationLoadingShowingSuccess = false
+    @State private var operationLoadingSuccessToken: Int = 0
 
     private struct SummaryJob: Equatable {
         let documentId: UUID
         let prompt: String
+        let force: Bool
     }
     
     private struct PreviewItem: Identifiable {
@@ -163,7 +174,7 @@ struct TabContainerView: View {
             }
 
             if isOperationLoadingVisible && !isInitialStartupLoadingVisible {
-                LoadingScreenView2()
+                LoadingScreenView2(showsSuccess: isOperationLoadingShowingSuccess)
                     .transition(.opacity)
                     .ignoresSafeArea()
                     .zIndex(5)
@@ -251,6 +262,7 @@ struct TabContainerView: View {
                 return
             }
             let force = (userInfo["force"] as? Bool) ?? false
+            print("🤖 TabContainer: Received GenerateDocumentSummary for \(docId), force=\(force), promptLength=\(prompt.count)")
 
             // Skip if we already generated (or are generating) a summary.
             if !force && summaryRequestsInFlight.contains(docId) {
@@ -263,18 +275,41 @@ struct TabContainerView: View {
 
             // Ensure we re-queue for regenerate.
             summaryQueue.removeAll { $0.documentId == docId }
-            let job = SummaryJob(documentId: docId, prompt: prompt)
+            let job = SummaryJob(documentId: docId, prompt: prompt, force: force)
             summaryQueue.append(job)
             processNextSummaryIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: .globalOperationLoading)) { notification in
             guard let isActive = notification.userInfo?["isActive"] as? Bool else { return }
             if isActive {
+                isOperationLoadingShowingSuccess = false
                 operationLoadingCount += 1
             } else {
                 operationLoadingCount = max(0, operationLoadingCount - 1)
             }
             updateOperationLoadingVisibility()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .globalOperationLoadingSuccess)) { _ in
+            operationLoadingSuccessToken += 1
+            let token = operationLoadingSuccessToken
+
+            withAnimation(.easeIn(duration: 0.12)) {
+                isOperationLoadingVisible = true
+                isOperationLoadingShowingSuccess = true
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                await MainActor.run {
+                    guard operationLoadingSuccessToken == token else { return }
+                    isOperationLoadingShowingSuccess = false
+                    if operationLoadingCount <= 0 {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            isOperationLoadingVisible = false
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -427,11 +462,18 @@ struct TabContainerView: View {
 
     private func isSummaryPlaceholder(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
+        return trimmed.isEmpty ||
+            trimmed == "Processing..." ||
+            trimmed == "Processing summary..." ||
+            trimmed.contains("Processing summary")
     }
 
     private func shouldAutoSummarize(_ doc: Document) -> Bool {
         if doc.type == .zip { return false }
+        let summaryText = doc.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isSummaryPlaceholder(summaryText) {
+            return true
+        }
         if let sourceId = doc.sourceDocumentId,
            documentManager.getDocument(by: sourceId) != nil {
             return false
@@ -443,12 +485,12 @@ struct TabContainerView: View {
         guard !isSummarizing else { return }
         guard let next = summaryQueue.first else { return }
         guard let doc = documentManager.getDocument(by: next.documentId),
-              isSummaryPlaceholder(doc.summary),
-              shouldAutoSummarize(doc) else {
+              (next.force || (isSummaryPlaceholder(doc.summary) && shouldAutoSummarize(doc))) else {
             summaryQueue.removeFirst()
             processNextSummaryIfNeeded()
             return
         }
+        print("🤖 TabContainer: Starting summary generation for \(next.documentId), force=\(next.force)")
 
         isSummarizing = true
         currentSummaryDocId = next.documentId
@@ -459,7 +501,13 @@ struct TabContainerView: View {
         )
         summaryRequestsInFlight.insert(next.documentId)
 
-        EdgeAI.shared?.generate(next.prompt, resolver: { result in
+        guard let edgeAI = EdgeAI.shared else {
+            summaryRequestsInFlight.remove(next.documentId)
+            finishSummary(for: next.documentId)
+            return
+        }
+
+        edgeAI.generate(next.prompt, resolver: { result in
             DispatchQueue.main.async {
                 self.summaryRequestsInFlight.remove(next.documentId)
                 if !self.canceledSummaryIds.contains(next.documentId),
@@ -731,6 +779,9 @@ struct TabContainerView: View {
         let token = operationLoadingVisibilityToken
 
         if operationLoadingCount <= 0 {
+            if isOperationLoadingShowingSuccess {
+                return
+            }
             withAnimation(.easeOut(duration: 0.12)) {
                 isOperationLoadingVisible = false
             }
@@ -800,6 +851,7 @@ struct LoadingScreenView: View {
 }
 
 struct LoadingScreenView2: View {
+    let showsSuccess: Bool
     @State private var circleOffset: CGFloat = 16.3
 
     var body: some View {
@@ -809,31 +861,37 @@ struct LoadingScreenView2: View {
                 .overlay(Color.gray.opacity(0.06))
                 .ignoresSafeArea()
 
-            Image("LogoComplet")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 100, height: 100)
-                .mask {
-                    Circle()
-                        .frame(width: 64.4, height: 64.4)
-                        .offset(y: circleOffset)
-                }
-                .accessibilityLabel("LogoComplet")
+            if showsSuccess {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 72, weight: .semibold))
+                    .foregroundStyle(Color("Primary"))
+            } else {
+                Image("LogoComplet")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 100, height: 100)
+                    .mask {
+                        Circle()
+                            .frame(width: 64.4, height: 64.4)
+                            .offset(y: circleOffset)
+                    }
+                    .accessibilityLabel("LogoComplet")
 
-            Rectangle()
-                .fill(Color.gray.opacity(0.14))
-                .ignoresSafeArea()
-                .mask {
-                    Rectangle()
-                        .ignoresSafeArea()
-                        .overlay {
-                            Circle()
-                                .frame(width: 64.4, height: 64.4)
-                                .offset(y: circleOffset)
-                                .blendMode(.destinationOut)
-                        }
-                }
-                .compositingGroup()
+                Rectangle()
+                    .fill(Color.gray.opacity(0.14))
+                    .ignoresSafeArea()
+                    .mask {
+                        Rectangle()
+                            .ignoresSafeArea()
+                            .overlay {
+                                Circle()
+                                    .frame(width: 64.4, height: 64.4)
+                                    .offset(y: circleOffset)
+                                    .blendMode(.destinationOut)
+                            }
+                    }
+                    .compositingGroup()
+            }
         }
         .onAppear {
             Task {

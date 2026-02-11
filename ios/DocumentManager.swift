@@ -154,16 +154,51 @@ class DocumentManager: ObservableObject {
         }
         return inbox
     }
+
+    // 1 = source is deleted/unavailable (or no source); 0 = source still exists.
+    func sourceAvailabilityFlag(for document: Document) -> Int {
+        if let sourceId = document.sourceDocumentId, getDocument(by: sourceId) != nil {
+            return 0
+        }
+        return 1
+    }
+
+    func isConversationEligible(_ document: Document) -> Bool {
+        sourceAvailabilityFlag(for: document) == 1
+    }
+
+    func conversationEligibleDocuments() -> [Document] {
+        documents.filter { isConversationEligible($0) }
+    }
     
     // MARK: - Document Management
     
     func addDocument(_ document: Document) {
         print("💾 DocumentManager: Adding document '\\(document.title)' (\\(document.type.rawValue))")
         var updated = Self.withInferredMetadataIfNeeded(document)
-        let hasLiveSource = updated.sourceDocumentId != nil &&
-            (updated.sourceDocumentId.flatMap { getDocument(by: $0) } != nil)
 
-        if shouldAutoOCR(for: updated.type) && !hasLiveSource {
+        if updated.summary == Self.summaryUnavailableMessage {
+            updated = Document(
+                id: updated.id,
+                title: updated.title,
+                content: updated.content,
+                summary: "Processing summary...",
+                ocrPages: updated.ocrPages,
+                category: updated.category,
+                keywordsResume: updated.keywordsResume,
+                tags: updated.tags,
+                sourceDocumentId: updated.sourceDocumentId,
+                dateCreated: updated.dateCreated,
+                folderId: updated.folderId,
+                sortOrder: updated.sortOrder,
+                type: updated.type,
+                imageData: updated.imageData,
+                pdfData: updated.pdfData,
+                originalFileData: updated.originalFileData
+            )
+        }
+
+        if shouldAutoOCR(for: updated.type) {
             if updated.content.count > maxOCRChars {
                 let truncated = Self.truncateText(updated.content, maxChars: maxOCRChars)
                 updated = Document(
@@ -187,7 +222,7 @@ class DocumentManager: ObservableObject {
             }
         }
 
-        if updated.ocrPages == nil && shouldAutoOCR(for: updated.type) && !hasLiveSource {
+        if updated.ocrPages == nil && shouldAutoOCR(for: updated.type) {
             let pages = buildPseudoOCRPages(from: updated.content)
             if let pages = pages, !pages.isEmpty {
                 updated = Document(
@@ -209,27 +244,6 @@ class DocumentManager: ObservableObject {
                     originalFileData: updated.originalFileData
                 )
             }
-        }
-
-        if hasLiveSource {
-            updated = Document(
-                id: updated.id,
-                title: updated.title,
-                content: updated.content,
-                summary: Self.summaryUnavailableMessage,
-                ocrPages: nil,
-                category: updated.category,
-                keywordsResume: updated.keywordsResume,
-                tags: [],
-                sourceDocumentId: updated.sourceDocumentId,
-                dateCreated: updated.dateCreated,
-                folderId: updated.folderId,
-                sortOrder: updated.sortOrder,
-                type: updated.type,
-                imageData: updated.imageData,
-                pdfData: updated.pdfData,
-                originalFileData: updated.originalFileData
-            )
         }
 
         // Assign ordering at the end of the target container (root by default).
@@ -264,11 +278,8 @@ class DocumentManager: ObservableObject {
         saveState()
         print("💾 DocumentManager: Document saved successfully")
         
-        // Generate AI summary
-        if !hasLiveSource {
-            generateSummary(for: updated)
-            generateTags(for: updated)
-        }
+        generateSummary(for: updated)
+        generateTags(for: updated)
     }
     
     func deleteDocument(_ document: Document) {
@@ -300,7 +311,7 @@ class DocumentManager: ObservableObject {
             )
             documents[idx] = updated
             saveState()
-            if updated.tags.isEmpty && updated.sourceDocumentId == nil {
+            if updated.tags.isEmpty {
                 generateTags(for: updated)
             }
         }
@@ -412,9 +423,6 @@ class DocumentManager: ObservableObject {
 
     func generateTags(for document: Document, force: Bool = false) {
         if !force && !document.tags.isEmpty { return }
-        if !force, let sourceId = document.sourceDocumentId, getDocument(by: sourceId) != nil {
-            return
-        }
         guard let edgeAI = EdgeAI.shared else { return }
 
         var seed = ""
@@ -426,16 +434,15 @@ class DocumentManager: ObservableObject {
             }
         }
         if seed.isEmpty {
-            let wantsVisionOCR = document.type == .pdf || document.type == .image || document.type == .scanned
+            let wantsVisionOCR = document.type == .pdf || document.type == .scanned
             if wantsVisionOCR {
                 var dataForOCR: Data?
                 var ocrType: Document.DocumentType = .pdf
-                if document.type == .image {
-                    dataForOCR = document.imageData?.first ?? document.originalFileData
-                    ocrType = .image
-                } else {
+                if document.type == .scanned {
                     dataForOCR = document.pdfData ?? document.originalFileData
                     ocrType = .pdf
+                } else {
+                    dataForOCR = document.pdfData ?? document.originalFileData
                 }
 
                 if let dataForOCR,
@@ -772,9 +779,6 @@ class DocumentManager: ObservableObject {
     
     func generateSummary(for document: Document, force: Bool = false) {
         if document.type == .zip { return }
-        if !force, let sourceId = document.sourceDocumentId, getDocument(by: sourceId) != nil {
-            return
-        }
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         var promptBody = ""
         if let pages = document.ocrPages, !pages.isEmpty {
@@ -845,10 +849,12 @@ class DocumentManager: ObservableObject {
         print("🤖 DocumentManager: Getting smart document context, document count: \(documents.count)")
         return documents.map { document in
             // Use summary if available and meaningful, otherwise use first 500 characters
-            let hasUsableSummary = !document.summary.isEmpty &&
-                                  document.summary != "Processing..." &&
-                                  document.summary != "Processing summary..." &&
-                                  document.summary != Self.summaryUnavailableMessage
+            let summaryTrimmed = document.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasUsableSummary = !summaryTrimmed.isEmpty &&
+                                  summaryTrimmed != "Processing..." &&
+                                  summaryTrimmed != "Processing summary..." &&
+                                  !summaryTrimmed.contains("Processing summary") &&
+                                  summaryTrimmed != Self.summaryUnavailableMessage
             
             let contentToUse = hasUsableSummary ? document.summary : String(document.content.prefix(500))
             let contentType = hasUsableSummary ? "Summary:" : "Content (first 500 chars):"
@@ -896,9 +902,8 @@ class DocumentManager: ObservableObject {
             content = extractTextFromTXT(url: url)
             documentType = .text
         case "jpg", "jpeg", "png", "heic":
-            let result = extractTextFromImageDetailed(url: url)
-            content = result.text
-            ocrPages = result.pages
+            content = "Imported image file. OCR extraction is skipped for image documents."
+            ocrPages = nil
             documentType = .image
         case "docx", "doc":
             content = extractTextFromWordDocument(url: url)
@@ -932,7 +937,7 @@ class DocumentManager: ObservableObject {
             content = extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xls
         case "xlsx":
-            content = extractTextFromSpreadsheetViaOCR(url: url)
+            content = "Imported XLSX spreadsheet. OCR extraction is skipped for XLSX documents."
             documentType = .xlsx
         default:
             content = "Unsupported file type: .\(fileExtension)"
@@ -1947,8 +1952,10 @@ class DocumentManager: ObservableObject {
 
     private func shouldAutoOCR(for type: Document.DocumentType) -> Bool {
         switch type {
-        case .pdf, .docx, .ppt, .pptx, .xls, .xlsx, .text, .scanned, .image:
+        case .pdf, .docx, .ppt, .pptx, .xls, .text, .scanned:
             return true
+        case .xlsx, .image:
+            return false
         case .zip:
             return false
         }
@@ -1965,7 +1972,7 @@ class DocumentManager: ObservableObject {
     private func handleSourceDeletion(sourceId: UUID) {
         let derived = documents.filter { $0.sourceDocumentId == sourceId }
         for doc in derived {
-            if doc.ocrPages == nil || doc.ocrPages?.isEmpty == true {
+            if shouldAutoOCR(for: doc.type) && (doc.ocrPages == nil || doc.ocrPages?.isEmpty == true) {
                 let trimmed = Self.truncateText(doc.content, maxChars: maxOCRChars)
                 let pages = buildPseudoOCRPages(from: trimmed)
                 if let pages = pages, !pages.isEmpty {

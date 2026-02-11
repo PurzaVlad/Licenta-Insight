@@ -1645,19 +1645,7 @@ struct DocumentSummaryView: View {
     }
 
     private var supportsAISummary: Bool {
-        document.type != .image
-    }
-
-    private var hasLiveSource: Bool {
-        if let sourceId = currentDoc.sourceDocumentId,
-           documentManager.getDocument(by: sourceId) != nil {
-            return true
-        }
-        return false
-    }
-
-    private var isSummaryUnavailable: Bool {
-        hasLiveSource && (summary.isEmpty || summary == DocumentManager.summaryUnavailableMessage || isSummaryPlaceholder(summary))
+        document.type != .zip
     }
     
     var body: some View {
@@ -1672,7 +1660,7 @@ struct DocumentSummaryView: View {
                             Text("Summary")
                                 .font(.headline)
                             Spacer()
-                            if supportsAISummary && !hasLiveSource {
+                            if supportsAISummary {
                                 if isGeneratingSummary {
                                     Button("Cancel") { cancelSummary() }
                                 } else if hasUsableSummary {
@@ -1684,7 +1672,7 @@ struct DocumentSummaryView: View {
                         }
                         
                         if !supportsAISummary {
-                            Text("Summaries are unavailable for image files.")
+                            Text("Summaries are unavailable for ZIP files.")
                                 .foregroundColor(.secondary)
                                 .padding(.vertical)
                         } else if isGeneratingSummary {
@@ -1695,10 +1683,6 @@ struct DocumentSummaryView: View {
                                     .foregroundColor(.secondary)
                             }
                             .padding(.vertical)
-                        } else if isSummaryUnavailable {
-                            Text(DocumentManager.summaryUnavailableMessage)
-                                .foregroundColor(.secondary)
-                                .padding(.vertical)
                         } else if summary.isEmpty {
                             Text("No summary.")
                                 .foregroundColor(.secondary)
@@ -1767,7 +1751,7 @@ struct DocumentSummaryView: View {
     }
 
     private var hasUsableSummary: Bool {
-        !isSummaryPlaceholder(summary) && !isSummaryUnavailable
+        !isSummaryPlaceholder(summary)
     }
 
     private func isSummaryPlaceholder(_ text: String) -> Bool {

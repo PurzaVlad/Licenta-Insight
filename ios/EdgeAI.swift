@@ -6,6 +6,7 @@ class EdgeAI: RCTEventEmitter {
 
     static var shared: EdgeAI?
     static let sharedRequests = EdgeAIRequests()
+    private var hasJSListeners = false
     
     override init() {
         super.init()
@@ -18,6 +19,16 @@ class EdgeAI: RCTEventEmitter {
         return ["EdgeAIRequest", "EdgeAICancel"]
     }
 
+    override func startObserving() {
+        hasJSListeners = true
+        print("[EdgeAI] JS listener attached")
+    }
+
+    override func stopObserving() {
+        hasJSListeners = false
+        print("[EdgeAI] JS listener detached")
+    }
+
     // SwiftUI calls this:
     @objc func generate(_ prompt: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
         print("[EdgeAI] Generate called with prompt length: \(prompt.count)")
@@ -25,6 +36,19 @@ class EdgeAI: RCTEventEmitter {
         if prompt.isEmpty {
             print("[EdgeAI] Error: Empty prompt")
             reject("EMPTY_PROMPT", "Prompt cannot be empty", nil)
+            return
+        }
+
+        let modelReady = UserDefaults.standard.bool(forKey: "modelReady")
+        if !modelReady {
+            print("[EdgeAI] Error: Model is not ready")
+            reject("MODEL_NOT_READY", "AI model is not ready yet.", nil)
+            return
+        }
+
+        if !hasJSListeners {
+            print("[EdgeAI] Error: No JS listeners for EdgeAIRequest")
+            reject("NO_JS_LISTENER", "AI request handler is not attached.", nil)
             return
         }
         

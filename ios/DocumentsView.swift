@@ -220,6 +220,9 @@ struct DocumentsView: View {
     @State private var showingSettings = false
     @State private var isFolderSelectionModeActive = false
     @State private var dropTargetedFolderId: UUID? = nil
+    @State private var protectedUnlockTarget: Document?
+    @State private var protectedUnlockPassword = ""
+    @State private var protectedUnlockError = ""
     @AppStorage("documentsSortMode") private var documentsSortModeRaw = DocumentsSortMode.dateNewest.rawValue
 
     private var documentsSortMode: DocumentsSortMode {
@@ -1131,6 +1134,22 @@ struct DocumentsView: View {
                 }
             )
         }
+        .sheet(item: $protectedUnlockTarget) { document in
+            ProtectedPDFUnlockSheet(
+                documentTitle: document.title,
+                password: $protectedUnlockPassword,
+                errorMessage: protectedUnlockError,
+                isUnlocking: isOpeningPreview,
+                onCancel: {
+                    protectedUnlockTarget = nil
+                    protectedUnlockPassword = ""
+                    protectedUnlockError = ""
+                },
+                onUnlock: {
+                    openProtectedDocumentPreview(document: document)
+                }
+            )
+        }
     }
 
     
@@ -1969,6 +1988,26 @@ struct DocumentsView: View {
     
     private func openDocumentPreview(document: Document) {
         documentManager.updateLastAccessed(id: document.id)
+        if isProtectedPDFPreview(document) {
+            protectedUnlockError = ""
+            protectedUnlockPassword = ""
+            protectedUnlockTarget = document
+            return
+        }
+        openDocumentPreview(document: document, password: nil)
+    }
+
+    private func openProtectedDocumentPreview(document: Document) {
+        let password = protectedUnlockPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !password.isEmpty else {
+            protectedUnlockError = "Password is required."
+            return
+        }
+        protectedUnlockError = ""
+        openDocumentPreview(document: document, password: password)
+    }
+
+    private func openDocumentPreview(document: Document, password: String?) {
         isOpeningPreview = true
         let tempDirectory = FileManager.default.temporaryDirectory
         let fileExt = getFileExtension(for: document.type)
@@ -1977,6 +2016,9 @@ struct DocumentsView: View {
         func present(url: URL) {
             DispatchQueue.main.async {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    self.protectedUnlockTarget = nil
+                    self.protectedUnlockPassword = ""
+                    self.protectedUnlockError = ""
                     self.onOpenPreview(document, url)
                     self.isOpeningPreview = false
                 }
@@ -1986,10 +2028,26 @@ struct DocumentsView: View {
         // Prefer original file, then PDF, then first image fallback
         if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
             do {
-                try data.write(to: tempURL)
+                if isProtectedPDFPreview(document) {
+                    guard let pdf = PDFDocument(data: data), pdf.isEncrypted else {
+                        throw NSError(domain: "ProtectedPreview", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to read encrypted PDF."])
+                    }
+                    guard let password, pdf.unlock(withPassword: password) else {
+                        throw NSError(domain: "ProtectedPreview", code: 2, userInfo: [NSLocalizedDescriptionKey: "Incorrect password."])
+                    }
+                    guard let decryptedData = pdf.dataRepresentation() else {
+                        throw NSError(domain: "ProtectedPreview", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to decrypt PDF."])
+                    }
+                    try decryptedData.write(to: tempURL)
+                } else {
+                    try data.write(to: tempURL)
+                }
                 present(url: tempURL)
             } catch {
                 print("Error creating temp file: \(error)")
+                if isProtectedPDFPreview(document) {
+                    protectedUnlockError = "Wrong password. Try again."
+                }
                 isOpeningPreview = false
             }
         } else {
@@ -4602,6 +4660,71 @@ private func isProtectedPDFPreview(_ document: Document) -> Bool {
     guard let data = document.pdfData ?? document.originalFileData,
           let pdf = PDFDocument(data: data) else { return false }
     return pdf.isEncrypted
+}
+
+private struct ProtectedPDFUnlockSheet: View {
+    let documentTitle: String
+    @Binding var password: String
+    let errorMessage: String
+    let isUnlocking: Bool
+    let onCancel: () -> Void
+    let onUnlock: () -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 14) {
+                Text(splitDisplayTitle(documentTitle).base)
+                    .font(.headline)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 8)
+
+                Text("This PDF is protected. Enter the password to open it.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+
+                SecureField("Password", text: $password)
+                    .textContentType(.password)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color(.separator), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.06), radius: 3, x: 0, y: 1)
+                    .padding(.horizontal)
+
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 12)
+            .navigationTitle("Unlock PDF")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(isUnlocking ? "Unlocking..." : "Unlock") { onUnlock() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color("Primary"))
+                        .disabled(password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isUnlocking)
+                }
+            }
+        }
+    }
 }
 
 private func makeZipDocument(title: String, data: Data, folderId: UUID?) -> Document {

@@ -231,7 +231,7 @@ private struct ConvertFlowView: View {
     @State private var selectionSet: Set<UUID> = []
     @State private var isAdjustingSelection = false
     @State private var isConverting = false
-    @State private var conversionResult: ConversionView.ConversionResult? = nil
+    @State private var isGlobalLoadingActive = false
     @State private var searchText = ""
 
     private var documents: [Document] {
@@ -310,35 +310,10 @@ private struct ConvertFlowView: View {
                 selectedId = nil
             }
         }
-        .overlay(conversionOverlay)
-        .bindGlobalOperationLoading(isConverting)
-    }
-
-    @ViewBuilder
-    private var conversionOverlay: some View {
-        if isConverting || conversionResult != nil {
-            ZStack {
-                Color.black.opacity(0.25).ignoresSafeArea()
-                VStack(spacing: 12) {
-                    if let result = conversionResult {
-                        Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .font(.system(size: 52))
-                            .foregroundColor(result.success ? .green : .red)
-                        Text(result.success ? "Conversion Complete" : "Conversion Failed")
-                            .font(.headline)
-                    } else {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle())
-                        Text("Converting…")
-                            .font(.headline)
-                    }
-                }
-                .padding(24)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(.systemBackground))
-                )
-                .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 6)
+        .onDisappear {
+            if isGlobalLoadingActive {
+                GlobalLoadingBridge.setOperationLoading(false)
+                isGlobalLoadingActive = false
             }
         }
     }
@@ -346,7 +321,10 @@ private struct ConvertFlowView: View {
     private func startConversion() {
         guard let document = selectedDocument else { return }
         isConverting = true
-        conversionResult = nil
+        if !isGlobalLoadingActive {
+            GlobalLoadingBridge.setOperationLoading(true)
+            isGlobalLoadingActive = true
+        }
 
         let sourceFormat = conversionFormatFromDocumentType(document.type)
         DispatchQueue.global(qos: .userInitiated).async {
@@ -358,7 +336,6 @@ private struct ConvertFlowView: View {
             )
             DispatchQueue.main.async {
                 isConverting = false
-                conversionResult = result
                 if result.success {
                     saveConversionResult(
                         result: result,
@@ -366,12 +343,21 @@ private struct ConvertFlowView: View {
                         sourceFormat: sourceFormat,
                         sourceDocument: document
                     ) {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        GlobalLoadingBridge.showOperationSuccess()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+                            if isGlobalLoadingActive {
+                                GlobalLoadingBridge.setOperationLoading(false)
+                                isGlobalLoadingActive = false
+                            }
                             dismiss()
                         }
                     }
                 } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    if isGlobalLoadingActive {
+                        GlobalLoadingBridge.setOperationLoading(false)
+                        isGlobalLoadingActive = false
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         dismiss()
                     }
                 }
@@ -728,9 +714,10 @@ func saveConversionResult(
 
     DispatchQueue.global(qos: .userInitiated).async {
         let documentType = conversionDocumentType(from: result.filename)
+        let latestSourceDocument = sourceDocument.flatMap { documentManager.getDocument(by: $0.id) } ?? sourceDocument
         var content = conversionExtractContent(from: outputData, type: documentType)
         if sourceFormat == .pdf, documentType == .docx {
-            if let source = sourceDocument {
+            if let source = latestSourceDocument {
                 let sourceText = source.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !sourceText.isEmpty {
                     content = sourceText
@@ -738,14 +725,27 @@ func saveConversionResult(
             }
         }
 
-        let ocrPages = (documentType == .pdf || documentType == .image)
-            ? (documentManager.buildVisionOCRPages(from: outputData, type: documentType)
-                ?? buildPseudoOCRPagesFromText(content))
-            : buildPseudoOCRPagesFromText(content)
+        let inheritedOCRPages = latestSourceDocument?.ocrPages
+        let ocrPages: [OCRPage]?
+        if let inheritedOCRPages, !inheritedOCRPages.isEmpty {
+            ocrPages = inheritedOCRPages
+        } else if documentType == .image || documentType == .xlsx {
+            ocrPages = nil
+        } else if documentType == .pdf {
+            ocrPages = documentManager.buildVisionOCRPages(from: outputData, type: documentType)
+                ?? buildPseudoOCRPagesFromText(content)
+        } else {
+            ocrPages = buildPseudoOCRPagesFromText(content)
+        }
 
-        let summaryText = sourceDocument == nil
-            ? "Converted document - Processing summary..."
-            : DocumentManager.summaryUnavailableMessage
+        let inheritedSummary = latestSourceDocument?.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summaryText: String
+        if let inheritedSummary, !inheritedSummary.isEmpty {
+            summaryText = inheritedSummary
+        } else {
+            summaryText = "Processing summary..."
+        }
+        let inheritedTags = latestSourceDocument?.tags ?? []
 
         let cleanedTitle = normalizedConversionTitle(from: result.filename)
         let document = Document(
@@ -755,8 +755,8 @@ func saveConversionResult(
             ocrPages: ocrPages,
             category: .general,
             keywordsResume: "",
-            tags: [],
-            sourceDocumentId: sourceDocument?.id,
+            tags: inheritedTags,
+            sourceDocumentId: nil,
             dateCreated: Date(),
             type: documentType,
             imageData: documentType == .image ? [outputData] : nil,

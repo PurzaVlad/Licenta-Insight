@@ -375,11 +375,12 @@ struct NativeChatView: View {
     }
 
     private func buildDocumentIndex() -> String {
-        if documentManager.documents.isEmpty { return "No documents." }
+        let docs = documentManager.conversationEligibleDocuments()
+        if docs.isEmpty { return "No documents." }
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         let pathMap = folderPathMap()
-        return documentManager.documents.map { doc in
+        return docs.map { doc in
             let folderPath = doc.folderId.flatMap { pathMap[$0] } ?? "Root"
             return """
             DocId: \(doc.id.uuidString)
@@ -586,12 +587,13 @@ struct NativeChatView: View {
             return try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
         }
 
+        let selectableDocs = documentManager.conversationEligibleDocuments()
         let selectionPrompt = buildSelectionPrompt(question: question)
         let selectionRaw = try await callLLM(edgeAI: edgeAI, prompt: wrapSelectionPrompt(selectionPrompt))
-        let selectedIds = parseSelectionIds(selectionRaw, question: question, allDocs: documentManager.documents)
-        var selectedDocs = documentManager.documents.filter { selectedIds.contains($0.id) }
+        let selectedIds = parseSelectionIds(selectionRaw, question: question, allDocs: selectableDocs)
+        var selectedDocs = selectableDocs.filter { selectedIds.contains($0.id) }
         if selectedDocs.isEmpty {
-            selectedDocs = fallbackSelection(question: question, allDocs: documentManager.documents)
+            selectedDocs = fallbackSelection(question: question, allDocs: selectableDocs)
         }
         if selectedDocs.count > selectionMaxDocs {
             selectedDocs = Array(selectedDocs.prefix(selectionMaxDocs))
@@ -643,7 +645,9 @@ struct NativeChatView: View {
 
         var seen = Set<UUID>()
         let uniqueDocs = docs.filter { seen.insert($0.id).inserted }
-        return uniqueDocs.sorted { $0.dateCreated > $1.dateCreated }
+        return uniqueDocs
+            .filter { documentManager.isConversationEligible($0) }
+            .sorted { $0.dateCreated > $1.dateCreated }
     }
 
     private func wrapChatPrompt(_ prompt: String) -> String {
