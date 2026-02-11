@@ -2,6 +2,8 @@ import SwiftUI
 import Foundation
 import UIKit
 import AVFoundation
+import PDFKit
+import SSZipArchive
 
 struct ConvertView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -21,28 +23,28 @@ struct ConvertView: View {
                             ConvertRow(title: "PDF to DOCX", icon: .pdfToDocx) {
                                 ConvertFlowView(
                                     targetFormat: .docx,
-                                    allowedSourceTypes: [.pdf]
+                                    allowedSourceTypes: [.pdf, .scanned]
                                 )
                                 .environmentObject(documentManager)
                             }
                             ConvertRow(title: "PDF to PPTX", icon: .pdfToPptx) {
                                 ConvertFlowView(
                                     targetFormat: .pptx,
-                                    allowedSourceTypes: [.pdf]
+                                    allowedSourceTypes: [.pdf, .scanned]
                                 )
                                 .environmentObject(documentManager)
                             }
                             ConvertRow(title: "PDF to XLSX", icon: .pdfToXlsx) {
                                 ConvertFlowView(
                                     targetFormat: .xlsx,
-                                    allowedSourceTypes: [.pdf]
+                                    allowedSourceTypes: [.pdf, .scanned]
                                 )
                                 .environmentObject(documentManager)
                             }
                             ConvertRow(title: "PDF to JPG", icon: .pdfToJpg) {
                                 ConvertFlowView(
                                     targetFormat: .image,
-                                    allowedSourceTypes: [.pdf]
+                                    allowedSourceTypes: [.pdf, .scanned]
                                 )
                                 .environmentObject(documentManager)
                             }
@@ -165,13 +167,13 @@ struct ConvertView: View {
     private func convertDeepLinkConfig(for id: String) -> ConvertDeepLinkConfig? {
         switch id {
         case "convert-pdf-docx":
-            return ConvertDeepLinkConfig(targetFormat: .docx, allowedSourceTypes: [.pdf])
+            return ConvertDeepLinkConfig(targetFormat: .docx, allowedSourceTypes: [.pdf, .scanned])
         case "convert-pdf-pptx":
-            return ConvertDeepLinkConfig(targetFormat: .pptx, allowedSourceTypes: [.pdf])
+            return ConvertDeepLinkConfig(targetFormat: .pptx, allowedSourceTypes: [.pdf, .scanned])
         case "convert-pdf-xlsx":
-            return ConvertDeepLinkConfig(targetFormat: .xlsx, allowedSourceTypes: [.pdf])
+            return ConvertDeepLinkConfig(targetFormat: .xlsx, allowedSourceTypes: [.pdf, .scanned])
         case "convert-pdf-jpg":
-            return ConvertDeepLinkConfig(targetFormat: .image, allowedSourceTypes: [.pdf])
+            return ConvertDeepLinkConfig(targetFormat: .image, allowedSourceTypes: [.pdf, .scanned])
         case "convert-docx-pdf":
             return ConvertDeepLinkConfig(targetFormat: .pdf, allowedSourceTypes: [.docx])
         case "convert-pptx-pdf":
@@ -233,6 +235,8 @@ private struct ConvertFlowView: View {
     @State private var isConverting = false
     @State private var isGlobalLoadingActive = false
     @State private var searchText = ""
+    @State private var showScannedPDFChoice = false
+    @State private var pendingScannedChoiceDocument: Document? = nil
 
     private var documents: [Document] {
         documentManager.documents.filter { allowedSourceTypes.contains($0.type) }
@@ -316,10 +320,43 @@ private struct ConvertFlowView: View {
                 isGlobalLoadingActive = false
             }
         }
+        .alert("Scanned PDF Detected", isPresented: $showScannedPDFChoice, presenting: pendingScannedChoiceDocument) { _ in
+            Button("Extracted OCR (editable)") {
+                if let doc = pendingScannedChoiceDocument {
+                    pendingScannedChoiceDocument = nil
+                    beginConversion(for: doc, mode: .ocrEditable)
+                }
+            }
+            Button("Visual quality (non-editable)") {
+                if let doc = pendingScannedChoiceDocument {
+                    pendingScannedChoiceDocument = nil
+                    beginConversion(for: doc, mode: .visualImage)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingScannedChoiceDocument = nil
+            }
+        } message: { _ in
+            Text("This PDF comes from a scanned document. Choose conversion mode:\n\n• Extracted OCR (lower visual quality, editable text)\n• Visual quality (higher fidelity, image-based, non-editable text)")
+        }
     }
 
     private func startConversion() {
         guard let document = selectedDocument else { return }
+        let sourceFormat = conversionFormatFromDocumentType(document.type)
+
+        if sourceFormat == .pdf,
+           isOfficeTarget(targetFormat),
+           isScannedPDFSource(document) {
+            pendingScannedChoiceDocument = document
+            showScannedPDFChoice = true
+            return
+        }
+
+        beginConversion(for: document, mode: .ocrEditable)
+    }
+
+    private func beginConversion(for document: Document, mode: PDFToOfficeMode) {
         isConverting = true
         if !isGlobalLoadingActive {
             GlobalLoadingBridge.setOperationLoading(true)
@@ -332,7 +369,8 @@ private struct ConvertFlowView: View {
                 documentManager: documentManager,
                 document: document,
                 from: sourceFormat,
-                to: targetFormat
+                to: targetFormat,
+                pdfToOfficeMode: mode
             )
             DispatchQueue.main.async {
                 isConverting = false
@@ -363,6 +401,27 @@ private struct ConvertFlowView: View {
                 }
             }
         }
+    }
+
+    private func isScannedPDFSource(_ document: Document) -> Bool {
+        var current: Document? = document
+        var visited = Set<UUID>()
+        while let doc = current, !visited.contains(doc.id) {
+            visited.insert(doc.id)
+            if doc.type == .scanned {
+                return true
+            }
+            guard let sourceId = doc.sourceDocumentId,
+                  let next = documentManager.getDocument(by: sourceId) else {
+                break
+            }
+            current = next
+        }
+        return false
+    }
+
+    private func isOfficeTarget(_ format: ConversionView.DocumentFormat) -> Bool {
+        format == .docx || format == .pptx || format == .xlsx
     }
 }
 
@@ -548,6 +607,11 @@ struct ConvertSectionHeader: View {
 
 // MARK: - Conversion Core
 
+enum PDFToOfficeMode {
+    case ocrEditable
+    case visualImage
+}
+
 enum ConversionView {
     enum DocumentFormat: String, CaseIterable {
         case pdf = "PDF"
@@ -610,7 +674,8 @@ func convertDocument(
     documentManager: DocumentManager,
     document: Document,
     from sourceFormat: ConversionView.DocumentFormat,
-    to targetFormat: ConversionView.DocumentFormat
+    to targetFormat: ConversionView.DocumentFormat,
+    pdfToOfficeMode: PDFToOfficeMode = .ocrEditable
 ) -> ConversionView.ConversionResult {
     let latestDocument = documentManager.getDocument(by: document.id) ?? document
     let baseName = normalizedConversionBaseName(latestDocument.title)
@@ -644,12 +709,19 @@ func convertDocument(
             }
 
         case (.pdf, .docx):
-            let result = convertViaServer(document: latestDocument, to: targetFormat)
-            outputData = result.data
-            serverError = result.error
+            switch pdfToOfficeMode {
+            case .ocrEditable:
+                let result = convertViaServer(document: latestDocument, to: targetFormat, mode: .ocrEditable)
+                outputData = result.data
+                serverError = result.error
+            case .visualImage:
+                outputData = conversionConvertPDFToImageDOCX(document: latestDocument, baseName: baseName)
+                serverError = outputData == nil ? "Failed to build image DOCX." : nil
+            }
 
         case (.pdf, .xlsx), (.pdf, .pptx):
-            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            let serverMode: ServerConversionMode = (pdfToOfficeMode == .visualImage) ? .visualImage : .ocrEditable
+            let result = convertViaServer(document: latestDocument, to: targetFormat, mode: serverMode)
             outputData = result.data
             serverError = result.error
 
@@ -916,9 +988,15 @@ private func normalizedConversionBaseName(_ title: String) -> String {
     return base.isEmpty ? "Converted_Document" : base
 }
 
+private enum ServerConversionMode: String {
+    case ocrEditable = "ocr"
+    case visualImage = "image"
+}
+
 private func convertViaServer(
     document: Document,
-    to targetFormat: ConversionView.DocumentFormat
+    to targetFormat: ConversionView.DocumentFormat,
+    mode: ServerConversionMode? = nil
 ) -> (data: Data?, error: String?, filename: String?) {
     guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else {
         return (nil, "Missing input data.", nil)
@@ -932,7 +1010,11 @@ private func convertViaServer(
     }
 
     var components = URLComponents(url: config.baseURL.appendingPathComponent("convert"), resolvingAgainstBaseURL: false)
-    components?.queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
+    var queryItems = [URLQueryItem(name: "target", value: targetFormat.fileExtension)]
+    if let mode {
+        queryItems.append(URLQueryItem(name: "mode", value: mode.rawValue))
+    }
+    components?.queryItems = queryItems
 
     guard let url = components?.url else { return (nil, "Invalid conversion URL.", nil) }
     var request = URLRequest(url: url)
@@ -941,6 +1023,9 @@ private func convertViaServer(
     request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
     request.setValue(document.title, forHTTPHeaderField: "X-Filename")
     request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
+    if let mode {
+        request.setValue(mode.rawValue, forHTTPHeaderField: "X-Conversion-Mode")
+    }
     request.timeoutInterval = 180
     let semaphore = DispatchSemaphore(value: 0)
     var resultData: Data?
@@ -981,4 +1066,196 @@ private func convertViaServer(
         errorMessage = "No response from server (timeout or network issue)."
     }
     return (resultData, errorMessage, responseFilename)
+}
+
+private func conversionConvertPDFToImageDOCX(document: Document, baseName: String) -> Data? {
+    guard let inputData = document.originalFileData ?? document.pdfData,
+          let pdf = PDFDocument(data: inputData),
+          pdf.pageCount > 0 else {
+        return nil
+    }
+
+    let tempRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("docx-image-\(UUID().uuidString)", isDirectory: true)
+    let wordDir = tempRoot.appendingPathComponent("word", isDirectory: true)
+    let relsDir = tempRoot.appendingPathComponent("_rels", isDirectory: true)
+    let wordRelsDir = wordDir.appendingPathComponent("_rels", isDirectory: true)
+    let mediaDir = wordDir.appendingPathComponent("media", isDirectory: true)
+
+    do {
+        try FileManager.default.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: relsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: wordRelsDir, withIntermediateDirectories: true)
+    } catch {
+        return nil
+    }
+
+    struct DocxImageRef {
+        let filename: String
+        let widthEMU: Int
+        let heightEMU: Int
+    }
+
+    var imageRefs: [DocxImageRef] = []
+    for idx in 0..<pdf.pageCount {
+        guard let page = pdf.page(at: idx) else { continue }
+        let pageRect = page.bounds(for: .mediaBox)
+        let renderScale: CGFloat = 2.0
+        let imageSize = CGSize(
+            width: max(1, pageRect.width * renderScale),
+            height: max(1, pageRect.height * renderScale)
+        )
+        let renderer = UIGraphicsImageRenderer(size: imageSize)
+        let image = renderer.image { ctx in
+            UIColor.white.set()
+            ctx.fill(CGRect(origin: .zero, size: imageSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: imageSize.height)
+            ctx.cgContext.scaleBy(x: 1.0, y: -1.0)
+            ctx.cgContext.scaleBy(x: renderScale, y: renderScale)
+            page.draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        guard let imageData = image.jpegData(compressionQuality: 0.92) else { continue }
+        let filename = "image\(idx + 1).jpg"
+        let imageURL = mediaDir.appendingPathComponent(filename)
+        do {
+            try imageData.write(to: imageURL)
+        } catch {
+            continue
+        }
+
+        let emuPerPoint = 12700.0
+        let widthEMU = Int(pageRect.width * emuPerPoint)
+        let heightEMU = Int(pageRect.height * emuPerPoint)
+        imageRefs.append(DocxImageRef(filename: filename, widthEMU: widthEMU, heightEMU: heightEMU))
+    }
+
+    guard !imageRefs.isEmpty else {
+        try? FileManager.default.removeItem(at: tempRoot)
+        return nil
+    }
+
+    let contentTypes = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+      <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+      <Default Extension="xml" ContentType="application/xml"/>
+      <Default Extension="jpg" ContentType="image/jpeg"/>
+      <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+    </Types>
+    """
+
+    let packageRels = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+    </Relationships>
+    """
+
+    var docRels = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    """
+    for (idx, ref) in imageRefs.enumerated() {
+        docRels += """
+        
+          <Relationship Id="rId\(idx + 1)" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/\(ref.filename)"/>
+        """
+    }
+    docRels += "\n</Relationships>"
+
+    var body = ""
+    for (idx, ref) in imageRefs.enumerated() {
+        body += """
+        
+            <w:p>
+              <w:r>
+                <w:drawing>
+                  <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+                    <wp:extent cx="\(ref.widthEMU)" cy="\(ref.heightEMU)"/>
+                    <wp:docPr id="\(idx + 1)" name="Picture \(idx + 1)"/>
+                    <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                        <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                          <pic:nvPicPr>
+                            <pic:cNvPr id="\(idx + 1)" name="\(ref.filename)"/>
+                            <pic:cNvPicPr/>
+                          </pic:nvPicPr>
+                          <pic:blipFill>
+                            <a:blip r:embed="rId\(idx + 1)"/>
+                            <a:stretch><a:fillRect/></a:stretch>
+                          </pic:blipFill>
+                          <pic:spPr>
+                            <a:xfrm>
+                              <a:off x="0" y="0"/>
+                              <a:ext cx="\(ref.widthEMU)" cy="\(ref.heightEMU)"/>
+                            </a:xfrm>
+                            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                          </pic:spPr>
+                        </pic:pic>
+                      </a:graphicData>
+                    </a:graphic>
+                  </wp:inline>
+                </w:drawing>
+              </w:r>
+            </w:p>
+        """
+    }
+
+    let documentXML = """
+    <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    <w:document
+      xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+      xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+      xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
+      xmlns:v="urn:schemas-microsoft-com:vml"
+      xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing"
+      xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+      xmlns:w10="urn:schemas-microsoft-com:office:word"
+      xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+      xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+      xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk"
+      xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
+      xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+      xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+      mc:Ignorable="w14 wp14">
+      <w:body>\(body)
+        <w:sectPr>
+          <w:pgSz w:w="12240" w:h="15840"/>
+          <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="708" w:footer="708" w:gutter="0"/>
+        </w:sectPr>
+      </w:body>
+    </w:document>
+    """
+
+    let contentTypesURL = tempRoot.appendingPathComponent("[Content_Types].xml")
+    let packageRelsURL = relsDir.appendingPathComponent(".rels")
+    let docRelsURL = wordRelsDir.appendingPathComponent("document.xml.rels")
+    let docXMLURL = wordDir.appendingPathComponent("document.xml")
+
+    do {
+        try contentTypes.write(to: contentTypesURL, atomically: true, encoding: .utf8)
+        try packageRels.write(to: packageRelsURL, atomically: true, encoding: .utf8)
+        try docRels.write(to: docRelsURL, atomically: true, encoding: .utf8)
+        try documentXML.write(to: docXMLURL, atomically: true, encoding: .utf8)
+    } catch {
+        try? FileManager.default.removeItem(at: tempRoot)
+        return nil
+    }
+
+    let zipURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(baseName)_image.docx")
+    try? FileManager.default.removeItem(at: zipURL)
+    let success = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: tempRoot.path)
+    defer {
+        try? FileManager.default.removeItem(at: tempRoot)
+        try? FileManager.default.removeItem(at: zipURL)
+    }
+    guard success else { return nil }
+    return try? Data(contentsOf: zipURL)
 }

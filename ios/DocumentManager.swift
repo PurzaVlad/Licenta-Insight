@@ -6,6 +6,20 @@ import SSZipArchive
 import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
+    enum SummaryLength: String, CaseIterable {
+        case short
+        case medium
+        case long
+    }
+
+    enum SummaryContent: String, CaseIterable {
+        case general
+        case finance
+        case legal
+        case academic
+        case medical
+    }
+
     static let summaryUnavailableMessage = "Not available as source file is still available."
     static let ocrUnavailableWhileSourceExistsMessage = "No OCR because source file is still available."
     private static let appGroupIdentifier = "group.com.purzavlad.identity"
@@ -777,7 +791,12 @@ class DocumentManager: ObservableObject {
         return ltCount > 20 && s.count > 200
     }
     
-    func generateSummary(for document: Document, force: Bool = false) {
+    func generateSummary(
+        for document: Document,
+        force: Bool = false,
+        length: SummaryLength = .medium,
+        content: SummaryContent = .general
+    ) {
         if document.type == .zip { return }
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
         var promptBody = ""
@@ -790,8 +809,10 @@ class DocumentManager: ObservableObject {
         if promptBody.isEmpty {
             promptBody = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        let styleMarker = "<<<SUMMARY_STYLE:length=\(length.rawValue);content=\(content.rawValue)>>>"
         let prompt = """
         <<<SUMMARY_REQUEST>>>
+        \(styleMarker)
         \(promptBody)
         """
 

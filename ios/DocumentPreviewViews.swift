@@ -1637,6 +1637,8 @@ struct DocumentSummaryView: View {
     @State private var summary: String = ""
     @State private var isGeneratingSummary = false
     @State private var hasCanceledCurrent = false
+    @State private var selectedSummaryLength: DocumentManager.SummaryLength = .medium
+    @State private var selectedSummaryContent: DocumentManager.SummaryContent = .general
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var documentManager: DocumentManager
 
@@ -1655,10 +1657,29 @@ struct DocumentSummaryView: View {
                     // Summary section
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 8) {
-                            Image(systemName: "brain.head.profile")
-                                .foregroundColor(.orange)
-                            Text("Summary")
-                                .font(.headline)
+                            if supportsAISummary {
+                                Menu {
+                                    Section("Length") {
+                                        Picker("Length", selection: $selectedSummaryLength) {
+                                            Text("Short").tag(DocumentManager.SummaryLength.short)
+                                            Text("Medium").tag(DocumentManager.SummaryLength.medium)
+                                            Text("Long").tag(DocumentManager.SummaryLength.long)
+                                        }
+                                    }
+                                    Section("Content") {
+                                        Picker("Content", selection: $selectedSummaryContent) {
+                                            Text("General").tag(DocumentManager.SummaryContent.general)
+                                            Text("Finance").tag(DocumentManager.SummaryContent.finance)
+                                            Text("Legal").tag(DocumentManager.SummaryContent.legal)
+                                            Text("Academic").tag(DocumentManager.SummaryContent.academic)
+                                            Text("Medical").tag(DocumentManager.SummaryContent.medical)
+                                        }
+                                    }
+                                } label: {
+                                    Label(summaryStyleLabel, systemImage: "slider.horizontal.3")
+                                        .labelStyle(.titleAndIcon)
+                                }
+                            }
                             Spacer()
                             if supportsAISummary {
                                 if isGeneratingSummary {
@@ -1696,7 +1717,6 @@ struct DocumentSummaryView: View {
                         }
                     }
                     .padding()
-                    .background(Color(.secondarySystemBackground))
                     .cornerRadius(10)
                     
                     Spacer()
@@ -1754,6 +1774,28 @@ struct DocumentSummaryView: View {
         !isSummaryPlaceholder(summary)
     }
 
+    private var summaryStyleLabel: String {
+        "\(label(for: selectedSummaryLength)) • \(label(for: selectedSummaryContent))"
+    }
+
+    private func label(for length: DocumentManager.SummaryLength) -> String {
+        switch length {
+        case .short: return "Short"
+        case .medium: return "Medium"
+        case .long: return "Long"
+        }
+    }
+
+    private func label(for content: DocumentManager.SummaryContent) -> String {
+        switch content {
+        case .general: return "General"
+        case .finance: return "Finance"
+        case .legal: return "Legal"
+        case .academic: return "Academic"
+        case .medical: return "Medical"
+        }
+    }
+
     private func isSummaryPlaceholder(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
@@ -1762,7 +1804,12 @@ struct DocumentSummaryView: View {
     private func generateAISummary(force: Bool) {
         print("🧠 DocumentSummaryView: Requesting AI summary for '\(document.title)'")
         isGeneratingSummary = true
-        documentManager.generateSummary(for: currentDoc, force: force)
+        documentManager.generateSummary(
+            for: currentDoc,
+            force: force,
+            length: selectedSummaryLength,
+            content: selectedSummaryContent
+        )
     }
 
     private func cancelSummary() {

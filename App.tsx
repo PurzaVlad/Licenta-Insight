@@ -14,13 +14,16 @@ type Message = {
   timestamp: number;
 };
 
+type SummaryLengthOption = 'short' | 'medium' | 'long';
+type SummaryContentOption = 'general' | 'finance' | 'legal' | 'academic' | 'medical';
+
 const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
 const MODEL_URL =
   'https://huggingface.co/MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
 const MODEL_DOWNLOAD_STATE_KEY = 'edgeai:model_download_state';
 const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
 
-const SUMMARY_SYSTEM_PROMPT = `
+const SUMMARY_PROMPT_COMMON = `
   You will receive extracted text from a document.
   Write a concise summary of the key points in plain sentences.
 
@@ -34,15 +37,58 @@ const SUMMARY_SYSTEM_PROMPT = `
   Do not rephrase earlier sentences.
   Do not add information not explicitly stated.
   Omit unclear details.
+  `;
+
+const SUMMARY_LENGTH_RULES: Record<SummaryLengthOption, string> = {
+  short: `
+  2-4 sentences max.
+  ~60-100 words.
+  Prefer only the highest-signal points.
+  `,
+  medium: `
   4–7 sentences max.
   ~120–180 words.
   If more info exists, prefer omission.
   Keep it short.
+  `,
+  long: `
+  8-12 sentences max.
+  ~220-320 words.
+  Include more key details while avoiding repetition.
+  `,
+};
+
+const SUMMARY_CONTENT_RULES: Record<SummaryContentOption, string> = {
+  general: `
+  Provide a neutral general summary of the document's main points.
+  Do not adopt a domain-specific style or persona.
+  `,
+  finance: `
+  Focus on financial information first.
+  Prioritize concrete numbers and financial facts: amounts, currencies, rates, KPIs, trends, costs, revenues, margins, forecasts, and financial risks.
+  If exact numbers are present, include them.
+  `,
+  legal: `
+  Focus on legal meaning and constraints in the document.
+  Prioritize parties, obligations, rights, prohibitions, conditions, deadlines, liabilities, remedies, and compliance requirements.
+  Mention legal constraints only if they are explicitly present.
+  `,
+  academic: `
+  Explain the document in technically specific terms.
+  Prioritize objective, methods/approach, data/evidence, key concepts, findings/results, assumptions, and limitations.
+  Use precise technical wording based only on the source text.
+  `,
+  medical: `
+  Focus on clinical and medical facts in the document.
+  Prioritize patient/context details, findings, diagnosis or differential, treatment/medications, dosages, timelines, outcomes, contraindications, precautions, and follow-up instructions.
+  If values or measurements are present, include the exact numbers and units.
+  Mention medical constraints or cautions only if explicitly stated.
+  `,
+};
+
+const SUMMARY_PROMPT_FOOTER = `
   Stop after the last sentence.
   `;
-
-const SUMMARY_CHUNK_PROMPT = `${SUMMARY_SYSTEM_PROMPT}\n  Extract only the most important points; ignore minor details.`;
-const SUMMARY_COMBINE_PROMPT = `${SUMMARY_SYSTEM_PROMPT}\n  Merge and deduplicate; prefer omission over repetition.`;
 
 const TAG_SYSTEM_PROMPT = `
   You will receive a short excerpt from a document.
@@ -65,8 +111,55 @@ const CHAT_DETAIL_MARKER = '<<<CHAT_DETAIL>>>';
 const CHAT_BRIEF_MARKER = '<<<CHAT_BRIEF>>>';
 const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
 const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
+const SUMMARY_STYLE_PREFIX = '<<<SUMMARY_STYLE:';
 const NAME_MARKER = '<<<NAME_REQUEST>>>';
 const TAG_MARKER = '<<<TAG_REQUEST>>>';
+
+const parseSummaryStylePayload = (
+  raw: string,
+): { text: string; length: SummaryLengthOption; content: SummaryContentOption } => {
+  const fallback = {text: raw.trim(), length: 'medium' as SummaryLengthOption, content: 'general' as SummaryContentOption};
+  const trimmed = raw.trimStart();
+  if (!trimmed.startsWith(SUMMARY_STYLE_PREFIX)) {
+    return fallback;
+  }
+
+  const endIndex = trimmed.indexOf('>>>');
+  if (endIndex <= SUMMARY_STYLE_PREFIX.length) {
+    return fallback;
+  }
+
+  const header = trimmed.slice(SUMMARY_STYLE_PREFIX.length, endIndex);
+  const rest = trimmed.slice(endIndex + 3).trimStart();
+  let length: SummaryLengthOption = 'medium';
+  let content: SummaryContentOption = 'general';
+
+  for (const chunk of header.split(';')) {
+    const [rawKey, rawValue] = chunk.split('=');
+    const key = (rawKey ?? '').trim().toLowerCase();
+    const value = (rawValue ?? '').trim().toLowerCase();
+
+    if (key === 'length' && (value === 'short' || value === 'medium' || value === 'long')) {
+      length = value;
+    } else if (
+      key === 'content' &&
+      (value === 'general' || value === 'finance' || value === 'legal' || value === 'academic' || value === 'medical')
+    ) {
+      content = value;
+    }
+  }
+
+  return {text: rest, length, content};
+};
+
+const buildSummarySystemPrompt = (
+  length: SummaryLengthOption,
+  content: SummaryContentOption,
+): string => {
+  const contentRules = SUMMARY_CONTENT_RULES[content];
+  const lengthRules = SUMMARY_LENGTH_RULES[length];
+  return `${SUMMARY_PROMPT_COMMON}${contentRules}${lengthRules}${SUMMARY_PROMPT_FOOTER}`;
+};
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -292,8 +385,15 @@ useEffect(() => {
         const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
         const isName = rawPrompt.startsWith(NAME_MARKER);
         const isTag = rawPrompt.startsWith(TAG_MARKER);
+        let summaryLength: SummaryLengthOption = 'medium';
+        let summaryContent: SummaryContentOption = 'general';
         const userContent = isSummary
-          ? rawPrompt.slice(SUMMARY_MARKER.length).trim()
+          ? (() => {
+              const parsed = parseSummaryStylePayload(rawPrompt.slice(SUMMARY_MARKER.length).trim());
+              summaryLength = parsed.length;
+              summaryContent = parsed.content;
+              return parsed.text;
+            })()
           : isName
           ? rawPrompt.slice(NAME_MARKER.length).trim()
           : isTag
@@ -302,14 +402,17 @@ useEffect(() => {
         const summaryContentMaxChars = 50000;
         const modeLabel: 'summary' | 'name' | 'tag' | 'chat' = isSummary ? 'summary' : isName ? 'name' : isTag ? 'tag' : 'chat';
         const jobType = modeLabel;
-        console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
+        console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length, 'summary style:', `${summaryLength}/${summaryContent}`);
         currentJobRef.current = { requestId, prompt, type: modeLabel };
         abortCurrentRef.current = false;
         
         const userMessage: Message = { role: 'user', content: userContent, timestamp: Date.now() };
+        const summarySystemPrompt = buildSummarySystemPrompt(summaryLength, summaryContent);
+        const summaryChunkPrompt = `${summarySystemPrompt}\n  Extract only the most important points; ignore minor details.`;
+        const summaryCombinePrompt = `${summarySystemPrompt}\n  Merge and deduplicate; prefer omission over repetition.`;
 
         const messagesForAI: Message[] = isSummary
-          ? [{ role: 'system', content: SUMMARY_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
+          ? [{ role: 'system', content: summarySystemPrompt, timestamp: Date.now() }, userMessage]
           : isName
           ? [userMessage]
           : isTag
@@ -331,7 +434,7 @@ useEffect(() => {
 
           const runSummary = async (summaryText: string, nPredict: number): Promise<string> => {
             const summaryMessages: Message[] = [
-              { role: 'system', content: SUMMARY_CHUNK_PROMPT, timestamp: Date.now() },
+              { role: 'system', content: summaryChunkPrompt, timestamp: Date.now() },
               { role: 'user', content: summaryText, timestamp: Date.now() }
             ];
             const summaryPrompt = formatPrompt(summaryMessages);
@@ -356,7 +459,7 @@ useEffect(() => {
 
           const runSummaryFinalCombine = async (summaryText: string, nPredict: number): Promise<string> => {
             const summaryMessages: Message[] = [
-              { role: 'system', content: SUMMARY_COMBINE_PROMPT, timestamp: Date.now() },
+              { role: 'system', content: summaryCombinePrompt, timestamp: Date.now() },
               { role: 'user', content: summaryText, timestamp: Date.now() }
             ];
             const summaryPrompt = formatPrompt(summaryMessages);
