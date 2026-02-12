@@ -962,6 +962,8 @@ struct DocumentPreviewContainerView: View {
     @State private var showingSearchSheet = false
     @State private var previewController: CustomQLPreviewController?
     @State private var pdfSearchCoordinator: SearchablePDFView.Coordinator?
+    @State private var documentInteractionController: UIDocumentInteractionController?
+    @State private var officeOpenErrorMessage: String?
 
     init(
         url: URL,
@@ -989,6 +991,54 @@ struct DocumentPreviewContainerView: View {
 
     private var previewTitle: String {
         document.map { splitDisplayTitle($0.title).base } ?? "Preview"
+    }
+
+    private enum OfficeAppTarget {
+        case word
+        case powerPoint
+        case excel
+
+        var displayName: String {
+            switch self {
+            case .word: return "Word"
+            case .powerPoint: return "PowerPoint"
+            case .excel: return "Excel"
+            }
+        }
+
+        var urlSchemePrefix: String {
+            switch self {
+            case .word: return "ms-word:ofe|u|"
+            case .powerPoint: return "ms-powerpoint:ofe|u|"
+            case .excel: return "ms-excel:ofe|u|"
+            }
+        }
+
+        var uniformTypeIdentifier: String {
+            switch self {
+            case .word: return "org.openxmlformats.wordprocessingml.document"
+            case .powerPoint: return "org.openxmlformats.presentationml.presentation"
+            case .excel: return "org.openxmlformats.spreadsheetml.sheet"
+            }
+        }
+    }
+
+    private var officeAppTarget: OfficeAppTarget? {
+        if let type = document?.type {
+            switch type {
+            case .docx: return .word
+            case .pptx: return .powerPoint
+            case .xlsx: return .excel
+            default: break
+            }
+        }
+
+        switch url.pathExtension.lowercased() {
+        case "docx": return .word
+        case "pptx": return .powerPoint
+        case "xlsx": return .excel
+        default: return nil
+        }
     }
 
     // Match navigation-style dismissal: edge swipe from left to right only.
@@ -1064,6 +1114,14 @@ struct DocumentPreviewContainerView: View {
                 .lineLimit(1)
                 .foregroundStyle(.primary)
         }
+        if let target = officeAppTarget {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Open in \(target.displayName)") {
+                    openInOfficeApp(target)
+                }
+                .font(.subheadline.weight(.semibold))
+            }
+        }
     }
 
     var body: some View {
@@ -1115,6 +1173,16 @@ struct DocumentPreviewContainerView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
+        }
+        .alert("Unable to Open", isPresented: Binding(
+            get: { officeOpenErrorMessage != nil },
+            set: { if !$0 { officeOpenErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                officeOpenErrorMessage = nil
+            }
+        } message: {
+            Text(officeOpenErrorMessage ?? "Please try again.")
         }
     }
     
@@ -1181,6 +1249,50 @@ struct DocumentPreviewContainerView: View {
         }
 
         return nil
+    }
+
+    private func openInOfficeApp(_ target: OfficeAppTarget) {
+        let sourceURL = shareURLForCurrent() ?? url
+
+        if sourceURL.isFileURL {
+            presentOpenInMenu(for: sourceURL, target: target)
+            return
+        }
+
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~:/"))
+        let encodedURL = sourceURL.absoluteString.addingPercentEncoding(withAllowedCharacters: allowed)
+            ?? sourceURL.absoluteString
+
+        guard let officeURL = URL(string: target.urlSchemePrefix + encodedURL) else {
+            officeOpenErrorMessage = "Could not prepare the file URL for \(target.displayName)."
+            return
+        }
+
+        UIApplication.shared.open(officeURL, options: [:]) { success in
+            if !success {
+                DispatchQueue.main.async {
+                    officeOpenErrorMessage = "\(target.displayName) is not installed or could not open this file."
+                }
+            }
+        }
+    }
+
+    private func presentOpenInMenu(for fileURL: URL, target: OfficeAppTarget) {
+        guard let root = topMostViewController() else {
+            officeOpenErrorMessage = "Could not present app chooser."
+            return
+        }
+
+        let controller = UIDocumentInteractionController(url: fileURL)
+        controller.uti = target.uniformTypeIdentifier
+        controller.name = fileURL.lastPathComponent
+        documentInteractionController = controller
+
+        let sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1)
+        let presented = controller.presentOpenInMenu(from: sourceRect, in: root.view, animated: true)
+        if !presented {
+            officeOpenErrorMessage = "\(target.displayName) is not available to open this file."
+        }
     }
 
     private func fallbackExtension(for document: Document) -> String {
