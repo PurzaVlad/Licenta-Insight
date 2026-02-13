@@ -53,8 +53,6 @@ struct NativeChatView: View {
     - Answer in maximum 3 sentences.
     - Write normal sentences (no comma-separated keyword lists).
     - Do not output headings (e.g., "WORK EXPERIENCE") unless the user asked for a heading.
-    - Before answering, include one short quote copied from ACTIVE_CONTEXT that directly supports the answer. Format: "Quote: ...".
-    - If you cannot provide that quote from ACTIVE_CONTEXT, say only: "Not specified in the documents."
     - Do not repeat phrases.
     - Be concise.
     - No explanations unless asked.
@@ -1051,12 +1049,6 @@ struct NativeChatView: View {
         let score: Double
     }
 
-    private struct HighSignalSnippet {
-        let document: Document
-        let text: String
-        let score: Double
-    }
-
     private func shouldIncludeOCR(question: String, document: Document, rank: Int) -> Bool {
         let q = cleanLine(question).lowercased()
         let triggers = [
@@ -1113,100 +1105,6 @@ struct NativeChatView: View {
         return chunks
     }
 
-    private func needleTokens(from question: String) -> [String] {
-        let raw = question
-            .split { !$0.isLetter && !$0.isNumber && $0 != "-" }
-            .map(String.init)
-
-        var collected: [(token: String, score: Int, order: Int)] = []
-        var seen = Set<String>()
-
-        for (idx, rawToken) in raw.enumerated() {
-            let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            let low = token.lowercased()
-            if token.isEmpty { continue }
-            if Self.retrievalStopwords.contains(low) || Self.anchorStopwords.contains(low) { continue }
-
-            let hasDigit = token.rangeOfCharacter(from: .decimalDigits) != nil
-            let isLong = token.count >= 6
-            let hasHyphen = token.contains("-")
-            if !(hasDigit || isLong || hasHyphen) { continue }
-            if !seen.insert(low).inserted { continue }
-
-            let score = (hasDigit ? 100 : 0) + (hasHyphen ? 40 : 0) + min(30, token.count)
-            collected.append((token, score, idx))
-        }
-
-        let sorted = collected.sorted { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.order < rhs.order
-        }
-        return sorted.map(\.token)
-    }
-
-    private func needleSnippets(question: String, docText: String, maxWindows: Int = 6) -> [String] {
-        let text = docText
-        if text.isEmpty { return [] }
-        let tokens = needleTokens(from: question)
-        if tokens.isEmpty { return [] }
-
-        struct TextWindow {
-            var start: Int
-            var end: Int
-        }
-
-        var windows: [TextWindow] = []
-        for token in tokens {
-            var searchStart = text.startIndex
-            var hitsForToken = 0
-
-            while hitsForToken < 2,
-                  searchStart < text.endIndex,
-                  let hit = text.range(of: token, options: [.caseInsensitive], range: searchStart..<text.endIndex) {
-                let windowStart = text.index(hit.lowerBound, offsetBy: -250, limitedBy: text.startIndex) ?? text.startIndex
-                let windowEnd = text.index(hit.upperBound, offsetBy: 250, limitedBy: text.endIndex) ?? text.endIndex
-                let startOffset = text.distance(from: text.startIndex, to: windowStart)
-                let endOffset = text.distance(from: text.startIndex, to: windowEnd)
-                windows.append(TextWindow(start: startOffset, end: endOffset))
-                hitsForToken += 1
-                searchStart = hit.upperBound
-            }
-        }
-
-        if windows.isEmpty { return [] }
-        windows.sort { lhs, rhs in
-            if lhs.start != rhs.start { return lhs.start < rhs.start }
-            return lhs.end < rhs.end
-        }
-
-        var merged: [TextWindow] = []
-        for window in windows {
-            if var last = merged.last, window.start <= last.end + 60 {
-                last.end = max(last.end, window.end)
-                merged[merged.count - 1] = last
-            } else {
-                merged.append(window)
-            }
-        }
-
-        var seen = Set<String>()
-        var output: [String] = []
-        let picked = merged.prefix(maxWindows)
-        for window in picked {
-            let safeStart = max(0, min(window.start, text.count))
-            let safeEnd = max(safeStart, min(window.end, text.count))
-            let startIdx = text.index(text.startIndex, offsetBy: safeStart)
-            let endIdx = text.index(text.startIndex, offsetBy: safeEnd)
-            let snippet = cleanLine(String(text[startIdx..<endIdx]))
-            if snippet.isEmpty { continue }
-            if seen.insert(snippet.lowercased()).inserted {
-                output.append(trimToCharBudget(snippet, maxChars: 520))
-            }
-        }
-
-        return output
-    }
-
     private func snippetRelevanceScore(
         questionTokens: Set<String>,
         exactTokens: [String],
@@ -1256,87 +1154,6 @@ struct NativeChatView: View {
             }
         }
         return out
-    }
-
-    private func buildHighSignalSnippets(
-        question: String,
-        documents: [Document],
-        limit: Int = 6
-    ) -> [HighSignalSnippet] {
-        if documents.isEmpty { return [] }
-
-        let questionTokens = retrievalTokens(expandQuery(question))
-        let exactTokens = exactQueryTokens(from: question)
-        let phrases = exactQueryPhrases(from: question)
-        var collected: [HighSignalSnippet] = []
-
-        for doc in documents {
-            let ocrSample = doc.ocrChunks.prefix(20).map { chunk -> String in
-                let pagePrefix = chunk.pageNumber.map { "Page \($0): " } ?? ""
-                return pagePrefix + compact(chunk.text, maxChars: 1200)
-            }.joined(separator: "\n")
-            let corpus = """
-            \(doc.title)
-            \(doc.summary)
-            \(compact(doc.content, maxChars: 20000))
-            \(ocrSample)
-            """
-            let windows = needleSnippets(question: question, docText: corpus, maxWindows: 3)
-            for snippet in windows {
-                let score = snippetRelevanceScore(
-                    questionTokens: questionTokens,
-                    exactTokens: exactTokens,
-                    phrases: phrases,
-                    text: snippet
-                )
-                collected.append(HighSignalSnippet(document: doc, text: snippet, score: score))
-            }
-        }
-
-        let sorted = collected.sorted { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.text.count > rhs.text.count
-        }
-
-        var seen = Set<String>()
-        var out: [HighSignalSnippet] = []
-        for snippet in sorted {
-            if out.count >= limit { break }
-            let key = "\(snippet.document.id.uuidString.lowercased())::\(snippet.text.lowercased())"
-            if seen.insert(key).inserted {
-                out.append(snippet)
-            }
-        }
-        return out
-    }
-
-    private func activeContextBlob(from prompt: String) -> String {
-        guard let contextStart = prompt.range(of: "ACTIVE_CONTEXT:") else { return prompt }
-        let tail = prompt[contextStart.upperBound...]
-        if let questionStart = tail.range(of: "\n\nQUESTION:") {
-            return String(tail[..<questionStart.lowerBound])
-        }
-        return String(tail)
-    }
-
-    private func logPromptEvidence(selectedDocs: [Document], prompt: String) {
-        let context = activeContextBlob(from: prompt)
-        let excerptCount = context
-            .split(separator: "\n")
-            .map(String.init)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.hasPrefix("- ") }
-            .count
-        let tokenCount = context
-            .split { $0.isWhitespace || $0.isNewline }
-            .count
-        let preview = cleanLine(String(context.prefix(300)))
-        let docs = selectedDocs
-            .map { "\($0.id.uuidString)|\($0.title)" }
-            .joined(separator: " || ")
-        print("[ChatEvidence] docs=\(docs)")
-        print("[ChatEvidence] excerpts=\(excerptCount) activeContextChars=\(context.count) activeContextTokens=\(tokenCount)")
-        print("[ChatEvidence] activeContextPreview=\(preview)")
     }
 
     private func buildDocumentContextBlock(
@@ -1438,26 +1255,9 @@ struct NativeChatView: View {
         let exactTokens = exactQueryTokens(from: question)
         let phrases = exactQueryPhrases(from: question)
         let shares = contextBudgetShares(selected: selected, topScoreByDocumentId: topScoreByDocumentId)
-        let highSignalSnippets = buildHighSignalSnippets(question: question, documents: selected, limit: 6)
 
         var remainingBudget = activeContextCharBudget
-        var sections: [String] = []
-
-        let highSignalBlock: String = {
-            if highSignalSnippets.isEmpty {
-                return "HIGH_SIGNAL_SNIPPETS:\n- None"
-            }
-            let lines = highSignalSnippets.map { snippet in
-                "- [\(snippet.document.title)] \(trimToCharBudget(snippet.text, maxChars: 360))"
-            }.joined(separator: "\n")
-            return "HIGH_SIGNAL_SNIPPETS:\n" + lines
-        }()
-        let highSignalBudget = min(1600, max(700, activeContextCharBudget / 3))
-        let trimmedHighSignal = trimToCharBudget(highSignalBlock, maxChars: min(remainingBudget, highSignalBudget))
-        if !trimmedHighSignal.isEmpty {
-            sections.append(trimmedHighSignal)
-            remainingBudget -= (trimmedHighSignal.count + 8)
-        }
+        var blocks: [String] = []
 
         for (index, doc) in selected.enumerated() {
             if remainingBudget <= minContextReserveChars { break }
@@ -1476,15 +1276,12 @@ struct NativeChatView: View {
             let blockBudget = min(remainingBudget, targetBudget)
             let trimmedBlock = trimToCharBudget(block, maxChars: blockBudget)
             if trimmedBlock.isEmpty { continue }
-            sections.append(trimmedBlock)
+            blocks.append(trimmedBlock)
             remainingBudget -= (trimmedBlock.count + 8)
         }
 
-        if sections.isEmpty, let first = selected.first {
+        if blocks.isEmpty, let first = selected.first {
             let fallback = """
-            HIGH_SIGNAL_SNIPPETS:
-            - None
-            ---
             DocId: \(first.id.uuidString)
             Title: \(first.title)
             Summary: \(trimToCharBudget(first.summary, maxChars: maxSummaryCharsPerDoc))
@@ -1492,7 +1289,7 @@ struct NativeChatView: View {
             return trimToCharBudget(fallback, maxChars: activeContextCharBudget)
         }
 
-        return sections.joined(separator: "\n---\n")
+        return blocks.joined(separator: "\n---\n")
     }
 
     private func fallbackScoredSelection(
@@ -1624,28 +1421,6 @@ struct NativeChatView: View {
         )
 
         if selection.documents.isEmpty {
-            let fallbackDocs = fallbackScoredSelection(
-                question: effectiveQuestion,
-                allDocs: allDocs,
-                limit: selectionMaxDocs
-            ).map(\.document)
-            let evidenceDocs = fallbackDocs.isEmpty ? Array(allDocs.prefix(selectionMaxDocs)) : fallbackDocs
-            let hasNeedleEvidence = !buildHighSignalSnippets(
-                question: effectiveQuestion,
-                documents: evidenceDocs,
-                limit: 3
-            ).isEmpty
-            if hasNeedleEvidence && !evidenceDocs.isEmpty {
-                let fallbackScores = Dictionary(uniqueKeysWithValues: evidenceDocs.map { ($0.id, 0.0001) })
-                let prompt = buildAnswerPrompt(
-                    question: effectiveQuestion,
-                    selectedDocs: evidenceDocs,
-                    topScoreByDocumentId: fallbackScores
-                )
-                logPromptEvidence(selectedDocs: evidenceDocs, prompt: prompt)
-                let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
-                return ChatLLMResult(reply: reply, primaryDocument: evidenceDocs.first)
-            }
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil)
         }
 
@@ -1654,7 +1429,6 @@ struct NativeChatView: View {
             selectedDocs: selection.documents,
             topScoreByDocumentId: selection.topScoreByDocumentId
         )
-        logPromptEvidence(selectedDocs: selection.documents, prompt: prompt)
         let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
         return ChatLLMResult(reply: reply, primaryDocument: selection.primaryDocument)
     }
