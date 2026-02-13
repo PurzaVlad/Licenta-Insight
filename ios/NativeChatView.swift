@@ -10,11 +10,27 @@ struct ChatMessage: Identifiable, Equatable {
 }
 
 struct NativeChatView: View {
+    private struct SessionState {
+        var lastReferencedDocumentId: UUID?
+    }
+
+    private struct ChatLLMResult {
+        let reply: String
+        let primaryDocument: Document?
+    }
+
+    private struct DocumentSelectionResult {
+        let documents: [Document]
+        let primaryDocument: Document?
+        let topScoreByDocumentId: [UUID: Double]
+    }
+
     @State private var input: String = ""
     @State private var messages: [ChatMessage] = []
     @State private var isGenerating: Bool = false
     @State private var isThinkingPulseOn: Bool = false
     @State private var activeChatGenerationId: UUID? = nil
+    @State private var sessionState = SessionState()
     @EnvironmentObject private var documentManager: DocumentManager
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingSettings = false
@@ -31,20 +47,44 @@ struct NativeChatView: View {
 
     // Preprompt (edit this text to change assistant behavior)
     private let chatPreprompt = """
-    You are Identity, a deeply helpful, proactive, and concise assistant.
-    You can use the ACTIVE_CONTEXT below, which includes folder structure, document titles, summaries, categories, keywords, and full extracted/OCR text for selected files.
-    Do not reveal internal reasoning, analysis, or chain-of-thought. Provide the final answer only.
-    Use the provided context and recent chat. If the context is insufficient, ask a brief clarifying question.
-    Be helpful and to the point; answer concisely unless the user explicitly asks for deep detail.
-    When you use document content, cite the document title inline.
-    Never say you "can't access" information; instead ask for the missing document or clarification.
-    Prefer precise facts from the context over speculation. If unsure, ask a question.
-    Focus heavily on document-based answers. If relevant info exists in documents, use it as the primary source.
-    If multiple documents match, either compare/summarize both briefly and ask which to focus on, or ask the user to choose.
-    Keep balance: avoid excessive questions; keep answers grounded and concise.
+    You are a document assistant.
+
+    Rules:
+    - Answer in maximum 3 sentences.
+    - Write normal sentences (no comma-separated keyword lists).
+    - Do not output headings (e.g., "WORK EXPERIENCE") unless the user asked for a heading.
+    - Before answering, include one short quote copied from ACTIVE_CONTEXT that directly supports the answer. Format: "Quote: ...".
+    - If you cannot provide that quote from ACTIVE_CONTEXT, say only: "Not specified in the documents."
+    - Do not repeat phrases.
+    - Be concise.
+    - No explanations unless asked.
+    - Never include system tokens or internal markers.
+    - Use only the provided context.
+    - If information is not found, say only: "Not specified in the documents."
     """
     private let historyLimit = 4
-    private let selectionMaxDocs = 18
+    private let selectionMaxDocs = 6
+    private let activeContextCharBudget = 4200
+    private let folderContextCharBudget = 500
+    private let minContextReserveChars = 450
+    private let maxSummaryCharsPerDoc = 420
+    private let maxSnippetChars = 420
+    private let maxSnippetsPerDoc = 2
+    private let maxOCRSnippetsPerDoc = 1
+    private let useNoHistoryForChat = false
+    private let defaultOCRDocCount = 3
+    private let lowExtractedTextThreshold = 700
+    private let semanticWeight: Double = 0.9
+    private let docTypeBoostWeight: Double = 0.05
+    private let tagBoostWeight: Double = 0.1
+    private let titleBoostWeight: Double = 0.12
+    private let exactTokenBoostWeight: Double = 0.9
+    private let phraseBoostWeight: Double = 0.8
+    private let numericTokenBoostWeight: Double = 1.6
+    private let anchorChunkBoostWeight: Double = 0.35
+    private let anchorChunkPenaltyWeight: Double = 0.15
+    private let lastDocumentBiasWeight: Double = 0.08
+    private let minRetrievalEvidenceScore: Double = 0.35
 
     var body: some View {
         NavigationView {
@@ -246,12 +286,13 @@ struct NativeChatView: View {
                 }
 
                 if self.activeChatGenerationId != generationId { return }
-                let reply = try await callChatLLM(edgeAI: edgeAI, question: question)
+                let result = try await callChatLLM(edgeAI: edgeAI, question: question)
                 DispatchQueue.main.async {
                     if self.activeChatGenerationId != generationId { return }
                     self.isGenerating = false
-                    let text = reply.isEmpty ? "(No response)" : reply
+                    let text = result.reply.isEmpty ? "(No response)" : result.reply
                     self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
+                    self.updateSessionState(from: result.primaryDocument)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -403,162 +444,1125 @@ struct NativeChatView: View {
         return output.joined(separator: "\n\n")
     }
 
-    private func shouldIncludeOCR(question: String) -> Bool {
-        let q = cleanLine(question).lowercased()
-        let triggers = ["ocr", "text", "verbatim", "quote", "exact", "page", "line", "paragraph"]
-        return triggers.contains { q.contains($0) }
+    private struct ChunkHit {
+        let document: Document
+        let chunk: OCRChunk
+        let semanticScore: Double
+        let docTypeMatch: Double
+        let tagMatch: Double
+        let titleMatch: Double
+        let exactTokenMatch: Double
+        let phraseMatch: Double
+        let numericMatch: Double
+        let finalScore: Double
     }
 
-    private func buildSelectedDocumentContext(selected: [Document], question: String) -> String {
+    private static let retrievalStopwords: Set<String> = [
+        "a","an","and","or","the","of","to","in","on","for","with","without","from","at","by","as",
+        "is","are","was","were","be","been","being","this","that","these","those","it","its","you",
+        "your","we","our","they","their","them","i","me","my","do","does","did","can","could","should",
+        "would","will","about","into","over","under","between","among","what","which","who","whom","when",
+        "where","why","how","please"
+    ]
+
+    private static let anchorStopwords: Set<String> = [
+        "the","a","an","and","or","to","of","for","with","in","on","at","by","from",
+        "is","are","was","were","be","been","it","this","that","these","those","they","them",
+        "how","what","which","who","when","where","why","anything","about"
+    ]
+
+    private func retrievalTokens(_ text: String) -> Set<String> {
+        let lowered = cleanLine(text).lowercased()
+        let tokens = lowered
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count >= 3 && !Self.retrievalStopwords.contains($0) }
+        return Set(tokens)
+    }
+
+    private func anchorTokens(from question: String) -> [String] {
+        let rawTokens = question.split { !$0.isLetter && !$0.isNumber && $0 != "-" }.map(String.init)
+        let anchors = rawTokens.filter { token in
+            let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.count < 5 { return false }
+            if Self.anchorStopwords.contains(t.lowercased()) { return false }
+            let hasUpper = t.rangeOfCharacter(from: .uppercaseLetters) != nil
+            let hasDigit = t.rangeOfCharacter(from: .decimalDigits) != nil
+            let hasHyphen = t.contains("-")
+            let isLongDistinctive = t.count >= 6
+            return hasUpper || hasDigit || hasHyphen || isLongDistinctive
+        }
+        var seen = Set<String>()
+        return anchors.filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    private func textContainsAnyAnchor(_ text: String, anchors: [String]) -> Bool {
+        let lower = text.lowercased()
+        return anchors.contains { anchor in
+            lower.contains(anchor.lowercased())
+        }
+    }
+
+    private func anchorFilteredDocuments(question: String, docs: [Document]) -> [Document] {
+        let anchors = anchorTokens(from: question)
+        if anchors.isEmpty { return docs }
+        let filtered = docs.filter { doc in
+            let contentSample = compact(doc.content, maxChars: 900)
+            let blob = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary) \(contentSample)"
+            return textContainsAnyAnchor(blob, anchors: anchors)
+        }
+        return filtered.isEmpty ? docs : filtered
+    }
+
+    private func expandQuery(_ question: String) -> String {
+        let q = cleanLine(question).lowercased()
+        if q.isEmpty { return question }
+        let tokens = Set(q.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+
+        func hasAnyToken(_ terms: [String]) -> Bool {
+            !tokens.intersection(Set(terms)).isEmpty
+        }
+
+        func hasAnyPhrase(_ phrases: [String]) -> Bool {
+            phrases.contains { q.contains($0) }
+        }
+
+        var extras: [String] = []
+
+        // DATE/TIME
+        if hasAnyToken(["date", "start", "end", "from", "to", "period", "year", "month"]) ||
+            hasAnyPhrase(["when", "effective date"]) {
+            extras.append("date start end from to period year month effective")
+        }
+
+        // LOCATION
+        if hasAnyToken(["city", "country", "location", "based", "region", "address"]) ||
+            hasAnyPhrase(["where", "based in"]) {
+            extras.append("location city country region address")
+        }
+
+        // ENTITY
+        if hasAnyToken(["who", "party", "person", "company", "organization", "client", "vendor", "employee", "employer"]) {
+            extras.append("party person company organization client vendor employee employer")
+        }
+
+        // AMOUNT
+        if hasAnyToken(["amount", "total", "price", "cost", "fee", "value", "eur", "usd", "currency"]) {
+            extras.append("amount total price cost fee value eur usd currency")
+        }
+
+        // IDENTIFIER
+        if hasAnyToken(["id", "identifier", "number", "reference", "ref", "code", "account", "email", "phone", "passport", "tax", "iban"]) {
+            extras.append("id identifier number reference ref code account email phone passport tax")
+        }
+
+        if extras.isEmpty { return question }
+        return question + "\n\nQuery hints: " + extras.joined(separator: " ")
+    }
+
+    private func predictField(for question: String) -> Document.DocumentCategory {
+        DocumentManager.inferCategory(title: "", content: question, summary: question)
+    }
+
+    private func semanticOverlapScore(questionTokens: Set<String>, chunkText: String) -> Double {
+        if questionTokens.isEmpty { return 0 }
+        let chunkTokens = retrievalTokens(chunkText)
+        if chunkTokens.isEmpty { return 0 }
+        let overlap = questionTokens.intersection(chunkTokens).count
+        return Double(overlap) / Double(max(1, questionTokens.count))
+    }
+
+    private func normalizedMatchScore(questionTokens: Set<String>, text: String) -> Double {
+        if questionTokens.isEmpty { return 0 }
+        let targetTokens = retrievalTokens(text)
+        if targetTokens.isEmpty { return 0 }
+        let overlap = questionTokens.intersection(targetTokens).count
+        return Double(overlap) / Double(max(1, questionTokens.count))
+    }
+
+    private func normalizedAlphaNumericText(_ text: String) -> String {
+        let lowered = cleanLine(text).lowercased()
+        let mapped = lowered.map { char -> Character in
+            if char.isLetter || char.isNumber || char.isWhitespace {
+                return char
+            }
+            return " "
+        }
+        return " " + String(mapped)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines) + " "
+    }
+
+    private func exactQueryTokens(from question: String) -> [String] {
+        let source = normalizedAlphaNumericText(question)
+        let tokens = source.split(separator: " ").map(String.init)
+        var seen = Set<String>()
+        var out: [String] = []
+        for tok in tokens {
+            if tok.count < 4 { continue }
+            if Self.retrievalStopwords.contains(tok) { continue }
+            if seen.insert(tok).inserted {
+                out.append(tok)
+            }
+        }
+        return out
+    }
+
+    private func exactQueryPhrases(from question: String) -> [String] {
+        let source = normalizedAlphaNumericText(question)
+        let words = source
+            .split(separator: " ")
+            .map(String.init)
+            .filter { token in
+                if token.count < 2 { return false }
+                if Self.retrievalStopwords.contains(token) { return false }
+                return true
+            }
+
+        if words.count < 2 { return [] }
+        var seen = Set<String>()
+        var phrases: [String] = []
+
+        for n in 2...3 {
+            if words.count < n { continue }
+            for i in 0...(words.count - n) {
+                let phrase = words[i..<(i + n)].joined(separator: " ")
+                if phrase.count < 6 { continue }
+                if seen.insert(phrase).inserted {
+                    phrases.append(phrase)
+                }
+            }
+        }
+
+        return phrases
+    }
+
+    private func isNumberHeavyToken(_ token: String) -> Bool {
+        if token.isEmpty { return false }
+        let digits = token.filter { $0.isNumber }.count
+        if digits == 0 { return false }
+        if digits >= 3 { return true }
+        return Double(digits) / Double(max(1, token.count)) >= 0.4
+    }
+
+    private func containsExactToken(_ token: String, in normalizedText: String) -> Bool {
+        normalizedText.contains(" \(token) ")
+    }
+
+    private func exactMatchScores(
+        exactTokens: [String],
+        phrases: [String],
+        text: String
+    ) -> (exactToken: Double, phrase: Double, numeric: Double) {
+        if exactTokens.isEmpty && phrases.isEmpty {
+            return (0, 0, 0)
+        }
+
+        let normalizedText = normalizedAlphaNumericText(text)
+        var exactMatched = 0
+        var numericTotal = 0
+        var numericMatched = 0
+
+        for token in exactTokens {
+            let matched = containsExactToken(token, in: normalizedText)
+            if matched { exactMatched += 1 }
+            if isNumberHeavyToken(token) {
+                numericTotal += 1
+                if matched { numericMatched += 1 }
+            }
+        }
+
+        var phraseMatched = 0
+        for phrase in phrases {
+            if normalizedText.contains(" \(phrase) ") {
+                phraseMatched += 1
+            }
+        }
+
+        let exactScore = exactTokens.isEmpty ? 0 : Double(exactMatched) / Double(exactTokens.count)
+        let phraseScore = phrases.isEmpty ? 0 : Double(phraseMatched) / Double(phrases.count)
+        let numericScore = numericTotal == 0 ? 0 : Double(numericMatched) / Double(numericTotal)
+        return (exactScore, phraseScore, numericScore)
+    }
+
+    private func isAnaphoraFollowUp(_ q: String) -> Bool {
+        let s = q.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let tok = s.split { !$0.isLetter && !$0.isNumber }.count
+        if tok > 10 { return false }
+
+        let cues = [
+            "which", "what", "when", "where", "who", "why", "how",
+            "those", "that", "these", "this", "they", "them", "it", "there"
+        ]
+        return cues.contains(where: { s.contains($0) })
+    }
+
+    private func compact(_ text: String, maxChars: Int) -> String {
+        let t = cleanLine(text)
+        if t.count <= maxChars { return t }
+        return String(t.prefix(maxChars))
+    }
+
+    private func makeThreadAnchor(history: [ChatMessage]) -> String? {
+        // Get last user+assistant pair
+        guard let lastAssistantIdx = history.lastIndex(where: { $0.role == "assistant" }) else { return nil }
+        let lastAssistant = history[lastAssistantIdx].text
+        let lastUser = history[..<lastAssistantIdx].last(where: { $0.role == "user" })?.text ?? ""
+
+        let u = compact(lastUser, maxChars: 140)
+        let a = compact(lastAssistant, maxChars: 180)
+
+        if u.isEmpty && a.isEmpty { return nil }
+        return "Thread context:\nUser: \(u)\nAssistant: \(a)\n\n"
+    }
+
+    private func isLowSignalChitChat(_ question: String) -> Bool {
+        let q = cleanLine(question).lowercased()
+        if q.isEmpty { return true }
+
+        let normalized = q
+            .replacingOccurrences(of: "[^a-z0-9\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let chit = ["hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "are you ok", "you ok", "sup", "yo"]
+        if chit.contains(normalized) { return true }
+
+        if normalized.split(separator: " ").count <= 4,
+           chit.contains(where: { normalized.hasPrefix($0 + " ") || normalized.hasSuffix(" " + $0) }) {
+            return true
+        }
+
+        let tokens = retrievalTokens(question)
+        let exactTokens = exactQueryTokens(from: question)
+        let phrases = exactQueryPhrases(from: question)
+        return tokens.isEmpty && exactTokens.isEmpty && phrases.isEmpty
+    }
+
+    private func isExplicitSmallTalkPrompt(_ question: String) -> Bool {
+        let normalized = cleanLine(question).lowercased()
+        if normalized.isEmpty { return false }
+
+        let direct = [
+            "hi", "hello", "hey", "thanks", "thank you", "ok", "okay",
+            "how are you", "how are you doing", "are you ok", "you ok", "sup", "yo"
+        ]
+        if direct.contains(normalized) { return true }
+
+        // Emoji-only / symbol-only prompt with no letters or numbers.
+        let hasAlphaNum = normalized.contains { $0.isLetter || $0.isNumber }
+        if !hasAlphaNum { return true }
+        return false
+    }
+
+    private func isMetaDispute(_ question: String) -> Bool {
+        let q = cleanLine(question).lowercased()
+        if q.isEmpty { return false }
+
+        let tokenCount = q.split { !$0.isLetter && !$0.isNumber }.count
+        guard tokenCount <= 6 else { return false }
+
+        if q.contains("check again") { return true }
+        let tokens = Set(q.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        let cues: Set<String> = ["sure", "really", "yes", "no", "wrong"]
+        return !tokens.intersection(cues).isEmpty
+    }
+
+    private func isChallenge(_ question: String) -> Bool {
+        let q = cleanLine(question).lowercased()
+        if q.isEmpty { return false }
+        let cues = [
+            "are you sure",
+            "how can you",
+            "that's wrong",
+            "you said",
+            "but you",
+            "clearly",
+            "check again",
+            "look again"
+        ]
+        return cues.contains(where: { q.contains($0) })
+    }
+
+    private func lastContentfulUserQuestion(_ history: [ChatMessage]) -> String? {
+        for msg in history.reversed() where msg.role == "user" {
+            let text = cleanLine(msg.text)
+            let tokenCount = text.split { !$0.isLetter && !$0.isNumber }.count
+            if tokenCount < 4 { continue }
+            if isChallenge(text) { continue }
+            return text
+        }
+        return nil
+    }
+
+    private func smallTalkReply(_ question: String) -> String {
+        let s = cleanLine(question).lowercased()
+        if s.contains("how are") { return "I'm good - what can I help you find in your documents?" }
+        if s.contains("are you") {
+            return "Yep. What do you want to do - search, summarize, or extract something?"
+        }
+        if s.contains("hello") || s.contains("hi") { return "Hey! What do you need help with?" }
+        return "I'm here. What do you need?"
+    }
+
+    private func updateSessionState(from primaryDocument: Document?) {
+        sessionState.lastReferencedDocumentId = primaryDocument?.id
+    }
+
+    private func rankedChunkHits(
+        question: String,
+        retrievalQuery: String? = nil,
+        allDocs: [Document],
+        preferredDocumentId: UUID?,
+        applyLastDocumentBias: Bool
+    ) -> [ChunkHit] {
+        let queryForRetrieval = retrievalQuery ?? expandQuery(question)
+        let questionTokens = retrievalTokens(queryForRetrieval)
+        let anchors = anchorTokens(from: question)
+        let exactTokens = exactQueryTokens(from: question)
+        let phrases = exactQueryPhrases(from: question)
+        let predictedField = predictField(for: question)
+        var hits: [ChunkHit] = []
+
+        for doc in allDocs {
+            let docTypeMatch = doc.category == predictedField ? 1.0 : 0.0
+            let tagMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.tags.joined(separator: " "))
+            let titleMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.title)
+            let chunks = doc.ocrChunks.isEmpty
+                ? [OCRChunk(documentId: doc.id, pageNumber: nil, text: doc.content)]
+                : doc.ocrChunks
+
+            for chunk in chunks {
+                let semanticScore = semanticOverlapScore(questionTokens: questionTokens, chunkText: chunk.text)
+                let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: chunk.text)
+                let hasAnchorMatch = !anchors.isEmpty && textContainsAnyAnchor(chunk.text, anchors: anchors)
+                let anchorAdjustment = anchors.isEmpty
+                    ? 0.0
+                    : (hasAnchorMatch ? anchorChunkBoostWeight : -anchorChunkPenaltyWeight)
+                let lastDocBias =
+                    (applyLastDocumentBias && preferredDocumentId == doc.id) ? lastDocumentBiasWeight : 0.0
+                let finalScore =
+                    (semanticWeight * semanticScore) +
+                    (docTypeBoostWeight * docTypeMatch) +
+                    (tagBoostWeight * tagMatch) +
+                    (titleBoostWeight * titleMatch) +
+                    (exactTokenBoostWeight * exact.exactToken) +
+                    (phraseBoostWeight * exact.phrase) +
+                    (numericTokenBoostWeight * exact.numeric) +
+                    anchorAdjustment +
+                    lastDocBias
+
+                if semanticScore <= 0 &&
+                    tagMatch <= 0 &&
+                    titleMatch <= 0 &&
+                    exact.exactToken <= 0 &&
+                    exact.phrase <= 0 &&
+                    exact.numeric <= 0 &&
+                    anchorAdjustment <= 0 {
+                    continue
+                }
+
+                hits.append(
+                    ChunkHit(
+                        document: doc,
+                        chunk: chunk,
+                        semanticScore: semanticScore,
+                        docTypeMatch: docTypeMatch,
+                        tagMatch: tagMatch,
+                        titleMatch: titleMatch,
+                        exactTokenMatch: exact.exactToken,
+                        phraseMatch: exact.phrase,
+                        numericMatch: exact.numeric,
+                        finalScore: finalScore
+                    )
+                )
+            }
+        }
+
+        return hits.sorted { lhs, rhs in
+            if lhs.finalScore != rhs.finalScore { return lhs.finalScore > rhs.finalScore }
+            if lhs.semanticScore != rhs.semanticScore { return lhs.semanticScore > rhs.semanticScore }
+            return lhs.document.dateCreated > rhs.document.dateCreated
+        }
+    }
+
+    private struct PassBHitScore {
+        let hit: ChunkHit
+        let score: Double
+    }
+
+    private func passAChunkCandidates(from hits: [ChunkHit]) -> [ChunkHit] {
+        if hits.isEmpty { return [] }
+        var topDocIds: [UUID] = []
+        var seen = Set<UUID>()
+        for hit in hits {
+            if seen.insert(hit.document.id).inserted {
+                topDocIds.append(hit.document.id)
+                if topDocIds.count >= 3 { break }
+            }
+        }
+        if topDocIds.isEmpty { return [] }
+        let topDocSet = Set(topDocIds)
+        let acrossTopDocs = hits.filter { topDocSet.contains($0.document.id) }
+        return Array(acrossTopDocs.prefix(20))
+    }
+
+    private func passBRerankScore(for hit: ChunkHit) -> Double {
+        let overlap = hit.semanticScore
+        let numbers = hit.numericMatch
+        let exactKeywordHits =
+            (0.75 * hit.exactTokenMatch) +
+            (0.55 * hit.phraseMatch) +
+            (0.25 * hit.titleMatch) +
+            (0.2 * hit.tagMatch)
+        return
+            (1.25 * overlap) +
+            (1.2 * numbers) +
+            (1.1 * exactKeywordHits)
+    }
+
+    private func twoPassContextHits(from hits: [ChunkHit]) -> [ChunkHit] {
+        let passA = passAChunkCandidates(from: hits)
+        if passA.isEmpty { return [] }
+        let reranked = passA.map { hit in
+            PassBHitScore(hit: hit, score: passBRerankScore(for: hit))
+        }.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.hit.finalScore != rhs.hit.finalScore { return lhs.hit.finalScore > rhs.hit.finalScore }
+            return lhs.hit.document.dateCreated > rhs.hit.document.dateCreated
+        }
+        return Array(reranked.prefix(6).map(\.hit))
+    }
+
+    private func selectDocumentsByChunkRanking(
+        question: String,
+        allDocs: [Document],
+        preferredDocumentId: UUID?,
+        applyLastDocumentBias: Bool,
+        retrievalQuery: String? = nil
+    ) -> DocumentSelectionResult {
+        if allDocs.isEmpty {
+            return DocumentSelectionResult(documents: [], primaryDocument: nil, topScoreByDocumentId: [:])
+        }
+        let candidateDocs = anchorFilteredDocuments(question: question, docs: allDocs)
+
+        let hits = rankedChunkHits(
+            question: question,
+            retrievalQuery: retrievalQuery,
+            allDocs: candidateDocs,
+            preferredDocumentId: preferredDocumentId,
+            applyLastDocumentBias: applyLastDocumentBias
+        )
+        if hits.isEmpty {
+            let fallbackScored = fallbackScoredSelection(
+                question: question,
+                allDocs: candidateDocs,
+                retrievalQuery: retrievalQuery
+            )
+            let fallbackDocs = fallbackScored.map { $0.document }
+            let fallbackScores = Dictionary(
+                uniqueKeysWithValues: fallbackScored.map { ($0.document.id, max($0.score, 0.0001)) }
+            )
+            return DocumentSelectionResult(
+                documents: fallbackDocs,
+                primaryDocument: fallbackDocs.first,
+                topScoreByDocumentId: fallbackScores
+            )
+        }
+
+        let best = hits.first?.finalScore ?? 0
+        if best < minRetrievalEvidenceScore {
+            return DocumentSelectionResult(documents: [], primaryDocument: nil, topScoreByDocumentId: [:])
+        }
+
+        let contextHits = twoPassContextHits(from: hits)
+        if contextHits.isEmpty {
+            let fallbackScored = fallbackScoredSelection(
+                question: question,
+                allDocs: candidateDocs,
+                retrievalQuery: retrievalQuery
+            )
+            let fallbackDocs = fallbackScored.map { $0.document }
+            let fallbackScores = Dictionary(
+                uniqueKeysWithValues: fallbackScored.map { ($0.document.id, max($0.score, 0.0001)) }
+            )
+            return DocumentSelectionResult(
+                documents: fallbackDocs,
+                primaryDocument: fallbackDocs.first,
+                topScoreByDocumentId: fallbackScores
+            )
+        }
+
+        var selected: [Document] = []
+        var seenDocIds = Set<UUID>()
+        var topScoreByDocumentId: [UUID: Double] = [:]
+
+        for hit in contextHits {
+            let docId = hit.document.id
+            topScoreByDocumentId[docId] = max(topScoreByDocumentId[docId] ?? 0, hit.finalScore)
+            if seenDocIds.contains(docId) { continue }
+            seenDocIds.insert(docId)
+            selected.append(hit.document)
+            if selected.count >= selectionMaxDocs { break }
+        }
+
+        if selected.isEmpty {
+            return DocumentSelectionResult(documents: [], primaryDocument: nil, topScoreByDocumentId: [:])
+        }
+
+        let primaryDocId = contextHits.first?.document.id
+        let primaryDocument = primaryDocId.flatMap { id in selected.first { $0.id == id } } ?? selected.first
+        let selectedScores = Dictionary(
+            uniqueKeysWithValues: selected.map { doc in
+                (doc.id, max(topScoreByDocumentId[doc.id] ?? 0.0001, 0.0001))
+            }
+        )
+        return DocumentSelectionResult(
+            documents: selected,
+            primaryDocument: primaryDocument,
+            topScoreByDocumentId: selectedScores
+        )
+    }
+
+    private func retrySelectionWithExpandedQueryIfNeeded(
+        question: String,
+        allDocs: [Document],
+        preferredDocumentId: UUID?,
+        currentSelection: DocumentSelectionResult
+    ) -> DocumentSelectionResult {
+        if !currentSelection.documents.isEmpty { return currentSelection }
+
+        let expanded = expandQuery(question)
+        if cleanLine(expanded).lowercased() == cleanLine(question).lowercased() {
+            return currentSelection
+        }
+
+        return selectDocumentsByChunkRanking(
+            question: question,
+            allDocs: allDocs,
+            preferredDocumentId: preferredDocumentId,
+            applyLastDocumentBias: true,
+            retrievalQuery: expanded
+        )
+    }
+
+    private struct RankedSnippet {
+        let text: String
+        let score: Double
+    }
+
+    private struct HighSignalSnippet {
+        let document: Document
+        let text: String
+        let score: Double
+    }
+
+    private func shouldIncludeOCR(question: String, document: Document, rank: Int) -> Bool {
+        let q = cleanLine(question).lowercased()
+        let triggers = [
+            "ocr", "text", "verbatim", "quote", "exact", "page", "line", "paragraph"
+        ]
+        let explicitTrigger = triggers.contains { q.contains($0) }
+        let hasOCRData = !(document.ocrPages?.isEmpty ?? true) || !document.ocrChunks.isEmpty
+        if !hasOCRData { return false }
+        if explicitTrigger { return true }
+        if rank < defaultOCRDocCount { return true }
+        if document.type == .scanned || document.type == .image { return true }
+        let compactContent = cleanLine(document.content)
+        if compactContent.count < lowExtractedTextThreshold { return true }
+        return false
+    }
+
+    private func trimToCharBudget(_ text: String, maxChars: Int) -> String {
+        if maxChars <= 0 { return "" }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= maxChars { return trimmed }
+        let cutoff = trimmed.index(trimmed.startIndex, offsetBy: maxChars)
+        let prefix = String(trimmed[..<cutoff])
+        if let lastBoundary = prefix.lastIndex(where: { $0 == " " || $0 == "\n" || $0 == "\t" }) {
+            return String(prefix[..<lastBoundary]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func contentSnippetCandidates(_ text: String) -> [String] {
+        let compact = cleanLine(text)
+        if compact.isEmpty { return [] }
+
+        let paragraphs = text
+            .components(separatedBy: .newlines)
+            .map(cleanLine)
+            .filter { $0.count >= 24 }
+        if !paragraphs.isEmpty {
+            return Array(paragraphs.prefix(60))
+        }
+
+        if compact.count <= maxSnippetChars {
+            return [compact]
+        }
+
+        var chunks: [String] = []
+        var start = compact.startIndex
+        while start < compact.endIndex {
+            let end = compact.index(start, offsetBy: maxSnippetChars, limitedBy: compact.endIndex) ?? compact.endIndex
+            let chunk = String(compact[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunk.isEmpty { chunks.append(chunk) }
+            if end == compact.endIndex { break }
+            start = end
+        }
+        return chunks
+    }
+
+    private func needleTokens(from question: String) -> [String] {
+        let raw = question
+            .split { !$0.isLetter && !$0.isNumber && $0 != "-" }
+            .map(String.init)
+
+        var collected: [(token: String, score: Int, order: Int)] = []
+        var seen = Set<String>()
+
+        for (idx, rawToken) in raw.enumerated() {
+            let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let low = token.lowercased()
+            if token.isEmpty { continue }
+            if Self.retrievalStopwords.contains(low) || Self.anchorStopwords.contains(low) { continue }
+
+            let hasDigit = token.rangeOfCharacter(from: .decimalDigits) != nil
+            let isLong = token.count >= 6
+            let hasHyphen = token.contains("-")
+            if !(hasDigit || isLong || hasHyphen) { continue }
+            if !seen.insert(low).inserted { continue }
+
+            let score = (hasDigit ? 100 : 0) + (hasHyphen ? 40 : 0) + min(30, token.count)
+            collected.append((token, score, idx))
+        }
+
+        let sorted = collected.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.order < rhs.order
+        }
+        return sorted.map(\.token)
+    }
+
+    private func needleSnippets(question: String, docText: String, maxWindows: Int = 6) -> [String] {
+        let text = docText
+        if text.isEmpty { return [] }
+        let tokens = needleTokens(from: question)
+        if tokens.isEmpty { return [] }
+
+        struct TextWindow {
+            var start: Int
+            var end: Int
+        }
+
+        var windows: [TextWindow] = []
+        for token in tokens {
+            var searchStart = text.startIndex
+            var hitsForToken = 0
+
+            while hitsForToken < 2,
+                  searchStart < text.endIndex,
+                  let hit = text.range(of: token, options: [.caseInsensitive], range: searchStart..<text.endIndex) {
+                let windowStart = text.index(hit.lowerBound, offsetBy: -250, limitedBy: text.startIndex) ?? text.startIndex
+                let windowEnd = text.index(hit.upperBound, offsetBy: 250, limitedBy: text.endIndex) ?? text.endIndex
+                let startOffset = text.distance(from: text.startIndex, to: windowStart)
+                let endOffset = text.distance(from: text.startIndex, to: windowEnd)
+                windows.append(TextWindow(start: startOffset, end: endOffset))
+                hitsForToken += 1
+                searchStart = hit.upperBound
+            }
+        }
+
+        if windows.isEmpty { return [] }
+        windows.sort { lhs, rhs in
+            if lhs.start != rhs.start { return lhs.start < rhs.start }
+            return lhs.end < rhs.end
+        }
+
+        var merged: [TextWindow] = []
+        for window in windows {
+            if var last = merged.last, window.start <= last.end + 60 {
+                last.end = max(last.end, window.end)
+                merged[merged.count - 1] = last
+            } else {
+                merged.append(window)
+            }
+        }
+
+        var seen = Set<String>()
+        var output: [String] = []
+        let picked = merged.prefix(maxWindows)
+        for window in picked {
+            let safeStart = max(0, min(window.start, text.count))
+            let safeEnd = max(safeStart, min(window.end, text.count))
+            let startIdx = text.index(text.startIndex, offsetBy: safeStart)
+            let endIdx = text.index(text.startIndex, offsetBy: safeEnd)
+            let snippet = cleanLine(String(text[startIdx..<endIdx]))
+            if snippet.isEmpty { continue }
+            if seen.insert(snippet.lowercased()).inserted {
+                output.append(trimToCharBudget(snippet, maxChars: 520))
+            }
+        }
+
+        return output
+    }
+
+    private func snippetRelevanceScore(
+        questionTokens: Set<String>,
+        exactTokens: [String],
+        phrases: [String],
+        text: String
+    ) -> Double {
+        let semantic = semanticOverlapScore(questionTokens: questionTokens, chunkText: text)
+        let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: text)
+        return
+            (semanticWeight * semantic) +
+            (exactTokenBoostWeight * exact.exactToken) +
+            (phraseBoostWeight * exact.phrase) +
+            (numericTokenBoostWeight * exact.numeric)
+    }
+
+    private func topRankedSnippets(
+        candidates: [String],
+        questionTokens: Set<String>,
+        exactTokens: [String],
+        phrases: [String],
+        limit: Int
+    ) -> [String] {
+        if candidates.isEmpty { return [] }
+        let ranked = candidates.prefix(90).map { snippet in
+            RankedSnippet(
+                text: trimToCharBudget(snippet, maxChars: maxSnippetChars),
+                score: snippetRelevanceScore(
+                    questionTokens: questionTokens,
+                    exactTokens: exactTokens,
+                    phrases: phrases,
+                    text: snippet
+                )
+            )
+        }
+        let sorted = ranked.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.text.count > rhs.text.count
+        }
+        var seen = Set<String>()
+        var out: [String] = []
+        for snippet in sorted {
+            if out.count >= limit { break }
+            let key = snippet.text.lowercased()
+            if key.isEmpty { continue }
+            if seen.insert(key).inserted {
+                out.append(snippet.text)
+            }
+        }
+        return out
+    }
+
+    private func buildHighSignalSnippets(
+        question: String,
+        documents: [Document],
+        limit: Int = 6
+    ) -> [HighSignalSnippet] {
+        if documents.isEmpty { return [] }
+
+        let questionTokens = retrievalTokens(expandQuery(question))
+        let exactTokens = exactQueryTokens(from: question)
+        let phrases = exactQueryPhrases(from: question)
+        var collected: [HighSignalSnippet] = []
+
+        for doc in documents {
+            let ocrSample = doc.ocrChunks.prefix(20).map { chunk -> String in
+                let pagePrefix = chunk.pageNumber.map { "Page \($0): " } ?? ""
+                return pagePrefix + compact(chunk.text, maxChars: 1200)
+            }.joined(separator: "\n")
+            let corpus = """
+            \(doc.title)
+            \(doc.summary)
+            \(compact(doc.content, maxChars: 20000))
+            \(ocrSample)
+            """
+            let windows = needleSnippets(question: question, docText: corpus, maxWindows: 3)
+            for snippet in windows {
+                let score = snippetRelevanceScore(
+                    questionTokens: questionTokens,
+                    exactTokens: exactTokens,
+                    phrases: phrases,
+                    text: snippet
+                )
+                collected.append(HighSignalSnippet(document: doc, text: snippet, score: score))
+            }
+        }
+
+        let sorted = collected.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.text.count > rhs.text.count
+        }
+
+        var seen = Set<String>()
+        var out: [HighSignalSnippet] = []
+        for snippet in sorted {
+            if out.count >= limit { break }
+            let key = "\(snippet.document.id.uuidString.lowercased())::\(snippet.text.lowercased())"
+            if seen.insert(key).inserted {
+                out.append(snippet)
+            }
+        }
+        return out
+    }
+
+    private func activeContextBlob(from prompt: String) -> String {
+        guard let contextStart = prompt.range(of: "ACTIVE_CONTEXT:") else { return prompt }
+        let tail = prompt[contextStart.upperBound...]
+        if let questionStart = tail.range(of: "\n\nQUESTION:") {
+            return String(tail[..<questionStart.lowerBound])
+        }
+        return String(tail)
+    }
+
+    private func logPromptEvidence(selectedDocs: [Document], prompt: String) {
+        let context = activeContextBlob(from: prompt)
+        let excerptCount = context
+            .split(separator: "\n")
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.hasPrefix("- ") }
+            .count
+        let tokenCount = context
+            .split { $0.isWhitespace || $0.isNewline }
+            .count
+        let preview = cleanLine(String(context.prefix(300)))
+        let docs = selectedDocs
+            .map { "\($0.id.uuidString)|\($0.title)" }
+            .joined(separator: " || ")
+        print("[ChatEvidence] docs=\(docs)")
+        print("[ChatEvidence] excerpts=\(excerptCount) activeContextChars=\(context.count) activeContextTokens=\(tokenCount)")
+        print("[ChatEvidence] activeContextPreview=\(preview)")
+    }
+
+    private func buildDocumentContextBlock(
+        document: Document,
+        rank: Int,
+        question: String,
+        questionTokens: Set<String>,
+        exactTokens: [String],
+        phrases: [String],
+        pathMap: [UUID: String],
+        formatter: DateFormatter
+    ) -> String {
+        let folderPath = document.folderId.flatMap { pathMap[$0] } ?? "Root"
+        let summary = trimToCharBudget(document.summary, maxChars: maxSummaryCharsPerDoc)
+        let includeOCR = shouldIncludeOCR(question: question, document: document, rank: rank)
+
+        let contentCandidates = contentSnippetCandidates(document.content)
+        let contentSnippets = topRankedSnippets(
+            candidates: contentCandidates,
+            questionTokens: questionTokens,
+            exactTokens: exactTokens,
+            phrases: phrases,
+            limit: maxSnippetsPerDoc
+        )
+
+        let ocrCandidates: [String] = includeOCR
+            ? document.ocrChunks.map { chunk in
+                let pagePrefix = chunk.pageNumber.map { "Page \($0): " } ?? ""
+                return "\(pagePrefix)\(chunk.text)"
+            }
+            : []
+        let ocrSnippets = topRankedSnippets(
+            candidates: ocrCandidates,
+            questionTokens: questionTokens,
+            exactTokens: exactTokens,
+            phrases: phrases,
+            limit: maxOCRSnippetsPerDoc
+        )
+
+        let contentSection = contentSnippets.isEmpty
+            ? "ContentSnippets: None"
+            : "ContentSnippets:\n" + contentSnippets.map { "- \($0)" }.joined(separator: "\n")
+        let ocrSection = ocrSnippets.isEmpty
+            ? "OCRSnippets: None"
+            : "OCRSnippets:\n" + ocrSnippets.map { "- \($0)" }.joined(separator: "\n")
+
+        return """
+        DocId: \(document.id.uuidString)
+        Title: \(document.title)
+        Folder: \(folderPath)
+        Type: \(document.type.rawValue)
+        Tags: \(document.tags.joined(separator: ", "))
+        Date: \(formatter.string(from: document.dateCreated))
+        Summary: \(summary)
+        \(contentSection)
+        \(ocrSection)
+        """
+    }
+
+    private func contextBudgetShares(
+        selected: [Document],
+        topScoreByDocumentId: [UUID: Double]
+    ) -> [Double] {
+        if selected.isEmpty { return [] }
+        if selected.count == 1 { return [1.0] }
+
+        let rankShares: [Double]
+        if selected.count == 2 {
+            rankShares = [0.65, 0.35]
+        } else {
+            let tailShare = 0.30 / Double(selected.count - 2)
+            rankShares = [0.45, 0.25] + Array(repeating: tailShare, count: selected.count - 2)
+        }
+
+        let rawScores = selected.map { max(topScoreByDocumentId[$0.id] ?? 0, 0) }
+        let scoreSum = rawScores.reduce(0, +)
+        let scoreShares = scoreSum > 0
+            ? rawScores.map { $0 / scoreSum }
+            : rankShares
+
+        let blended = zip(rankShares, scoreShares).map { rankShare, scoreShare in
+            (0.7 * rankShare) + (0.3 * scoreShare)
+        }
+        let blendedSum = blended.reduce(0, +)
+        guard blendedSum > 0 else { return rankShares }
+        return blended.map { $0 / blendedSum }
+    }
+
+    private func buildSelectedDocumentContext(
+        selected: [Document],
+        question: String,
+        topScoreByDocumentId: [UUID: Double]
+    ) -> String {
         if selected.isEmpty { return "No relevant documents selected." }
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         let pathMap = folderPathMap()
-        let includeOCR = shouldIncludeOCR(question: question)
-        return selected.map { doc in
-            let folderPath = doc.folderId.flatMap { pathMap[$0] } ?? "Root"
-            let maxChars = 50000
-            let contentText = String(doc.content.prefix(maxChars))
-            let ocrText = includeOCR ? (doc.ocrPages.map { buildStructuredOCRText(from: $0) } ?? "") : ""
-            let trimmedOCR = includeOCR ? String(ocrText.prefix(maxChars)) : ""
-            return """
-            DocId: \(doc.id.uuidString)
-            Title: \(doc.title)
-            Folder: \(folderPath)
-            Type: \(doc.type.rawValue)
-            Tags: \(doc.tags.joined(separator: ", "))
-            Date: \(formatter.string(from: doc.dateCreated))
-            Summary: \(doc.summary)
+        let questionTokens = retrievalTokens(expandQuery(question))
+        let exactTokens = exactQueryTokens(from: question)
+        let phrases = exactQueryPhrases(from: question)
+        let shares = contextBudgetShares(selected: selected, topScoreByDocumentId: topScoreByDocumentId)
+        let highSignalSnippets = buildHighSignalSnippets(question: question, documents: selected, limit: 6)
 
-            Content:
-            \(contentText)
+        var remainingBudget = activeContextCharBudget
+        var sections: [String] = []
 
-            OCR:
-            \(trimmedOCR)
-            """
-        }.joined(separator: "\n---\n")
-    }
-
-    private func buildSelectionPrompt(question: String) -> String {
-        let recent = recentChatContext(excludingLastUser: true, question: question)
-        let folders = buildFolderIndex()
-        let docs = buildDocumentIndex()
-        return """
-        SYSTEM:
-        You are selecting possibly relevant documents for a user question.
-        Use only the doc index below (tags, titles, folder info).
-        Think about the subject and include borderline matches to avoid missing relevant files.
-        Detect topic shifts: if the current question is about a different topic than recent chat, prefer fresh matches and avoid sticking to prior documents.
-        If the question is broad, include a wider set of possibly relevant docs.
-        If the question is about app stats (counts, totals, number of documents/folders), return an empty array.
-        Output ONLY valid JSON in this exact shape:
-        {"include_ids":["UUID", "..."]}
-        If none match, return an empty array.
-
-        RECENT_CHAT:
-        \(recent)
-
-        FOLDERS:
-        \(folders)
-
-        DOC_INDEX:
-        \(docs)
-
-        QUESTION:
-        \(question)
-        """
-    }
-
-    private func extractFirstJSONObject(from text: String) -> String? {
-        guard let start = text.firstIndex(of: "{"),
-              let end = text.lastIndex(of: "}") else { return nil }
-        return String(text[start...end])
-    }
-
-    private func parseSelectionIds(_ text: String, question: String, allDocs: [Document]) -> [UUID] {
-        struct Selection: Decodable { let include_ids: [String] }
-        if let json = extractFirstJSONObject(from: text),
-           let data = json.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode(Selection.self, from: data) {
-            let ids = decoded.include_ids.compactMap { UUID(uuidString: $0) }
-            return ids
-        }
-
-        let uuidPattern = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-        if let regex = try? NSRegularExpression(pattern: uuidPattern) {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            let matches = regex.matches(in: text, range: range)
-            let ids = matches.compactMap { match -> UUID? in
-                guard let r = Range(match.range, in: text) else { return nil }
-                return UUID(uuidString: String(text[r]))
+        let highSignalBlock: String = {
+            if highSignalSnippets.isEmpty {
+                return "HIGH_SIGNAL_SNIPPETS:\n- None"
             }
-            if !ids.isEmpty { return ids }
+            let lines = highSignalSnippets.map { snippet in
+                "- [\(snippet.document.title)] \(trimToCharBudget(snippet.text, maxChars: 360))"
+            }.joined(separator: "\n")
+            return "HIGH_SIGNAL_SNIPPETS:\n" + lines
+        }()
+        let highSignalBudget = min(1600, max(700, activeContextCharBudget / 3))
+        let trimmedHighSignal = trimToCharBudget(highSignalBlock, maxChars: min(remainingBudget, highSignalBudget))
+        if !trimmedHighSignal.isEmpty {
+            sections.append(trimmedHighSignal)
+            remainingBudget -= (trimmedHighSignal.count + 8)
         }
 
-        let questionTokens = Set(
-            cleanLine(question)
-                .lowercased()
-                .split(separator: " ")
-                .map(String.init)
-                .filter { $0.count > 3 }
-        )
-        if questionTokens.isEmpty { return allDocs.map(\.id) }
-        return allDocs.filter { doc in
-            let tagText = doc.tags.joined(separator: " ")
-            let haystack = "\(doc.title) \(tagText)".lowercased()
-            return questionTokens.contains { haystack.contains($0) }
-        }.map(\.id)
+        for (index, doc) in selected.enumerated() {
+            if remainingBudget <= minContextReserveChars { break }
+            let block = buildDocumentContextBlock(
+                document: doc,
+                rank: index,
+                question: question,
+                questionTokens: questionTokens,
+                exactTokens: exactTokens,
+                phrases: phrases,
+                pathMap: pathMap,
+                formatter: formatter
+            )
+            let share = index < shares.count ? shares[index] : (1.0 / Double(max(1, selected.count)))
+            let targetBudget = max(900, Int(Double(activeContextCharBudget) * share))
+            let blockBudget = min(remainingBudget, targetBudget)
+            let trimmedBlock = trimToCharBudget(block, maxChars: blockBudget)
+            if trimmedBlock.isEmpty { continue }
+            sections.append(trimmedBlock)
+            remainingBudget -= (trimmedBlock.count + 8)
+        }
+
+        if sections.isEmpty, let first = selected.first {
+            let fallback = """
+            HIGH_SIGNAL_SNIPPETS:
+            - None
+            ---
+            DocId: \(first.id.uuidString)
+            Title: \(first.title)
+            Summary: \(trimToCharBudget(first.summary, maxChars: maxSummaryCharsPerDoc))
+            """
+            return trimToCharBudget(fallback, maxChars: activeContextCharBudget)
+        }
+
+        return sections.joined(separator: "\n---\n")
     }
 
-    private func fallbackSelection(question: String, allDocs: [Document]) -> [Document] {
+    private func fallbackScoredSelection(
+        question: String,
+        allDocs: [Document],
+        limit: Int = 6,
+        retrievalQuery: String? = nil
+    ) -> [(document: Document, score: Double)] {
         if allDocs.isEmpty { return [] }
-        let q = cleanLine(question).lowercased()
-        let tokens = q.split(separator: " ").map(String.init).filter { $0.count > 3 }
-        let scored = allDocs.map { doc -> (Document, Int) in
-            let tagText = doc.tags.joined(separator: " ")
-            let haystack = "\(doc.title) \(tagText)".lowercased()
-            var score = 0
-            for t in tokens where haystack.contains(t) { score += 1 }
-            if !tokens.isEmpty && score == 0 { score = 0 }
+        let candidateDocs = anchorFilteredDocuments(question: question, docs: allDocs)
+        let expanded = retrievalQuery ?? expandQuery(question)
+        let questionTokens = retrievalTokens(expanded)
+        let exactTokens = exactQueryTokens(from: question)
+        let phrases = exactQueryPhrases(from: question)
+        let scored = candidateDocs.map { doc -> (Document, Double) in
+            let metadata = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary)"
+            let lexical = normalizedMatchScore(questionTokens: questionTokens, text: metadata)
+            let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: metadata)
+            let score =
+                lexical +
+                (exactTokenBoostWeight * exact.exactToken) +
+                (phraseBoostWeight * exact.phrase) +
+                (numericTokenBoostWeight * exact.numeric)
             return (doc, score)
         }
         let sorted = scored.sorted { a, b in
             if a.1 != b.1 { return a.1 > b.1 }
             return a.0.dateCreated > b.0.dateCreated
         }
-        let top = sorted.prefix(6).map { $0.0 }
-        return top.isEmpty ? Array(allDocs.prefix(6)) : top
+        let top = sorted.prefix(limit).map { (document: $0.0, score: $0.1) }
+        let maxScore = top.map(\.score).max() ?? 0
+        if maxScore <= 0 {
+            return []
+        }
+        return top
     }
 
-    private func buildAnswerPrompt(question: String, selectedDocs: [Document]) -> String {
-        let recent = recentChatContext(excludingLastUser: true, question: question)
-        let recentExchange = recentExchangeContext(question: question)
-        let folders = buildFolderIndex()
-        let selectedContext = buildSelectedDocumentContext(selected: selectedDocs, question: question)
-        return """
-        SYSTEM:
-        \(chatPreprompt)
-        Always prioritize the user's latest message as the primary instruction and topic.
-        Give a concise, document-first response. Prefer facts from the selected documents.
-        If multiple documents clearly match, mention both briefly and ask which one to focus on, or ask a single clarifying question.
-        If the question is broad, surface the most relevant facts from the selected documents and folders.
-        If there is not enough info, ask for the missing document or a clarifying detail.
-        Assume relevant information is likely in the documents; prioritize using them over generic responses.
-
-        RECENT_CHAT:
-        \(recent)
-
-        RECENT_EXCHANGE:
-        \(recentExchange)
-
-        ACTIVE_CONTEXT:
+    private func buildAnswerPrompt(
+        question: String,
+        selectedDocs: [Document],
+        topScoreByDocumentId: [UUID: Double]
+    ) -> String {
+        let folders = trimToCharBudget(buildFolderIndex(), maxChars: folderContextCharBudget)
+        let selectedContext = buildSelectedDocumentContext(
+            selected: selectedDocs,
+            question: question,
+            topScoreByDocumentId: topScoreByDocumentId
+        )
+        let activeContextBlock = """
         FOLDERS:
         \(folders)
 
         DOCUMENTS:
         \(selectedContext)
+        """
+        let lastDocId = sessionState.lastReferencedDocumentId?.uuidString ?? "None"
+        return """
+        SYSTEM:
+        \(chatPreprompt)
+        Use SESSION_POINTER only for follow-up retrieval continuity.
+        Never treat SESSION_POINTER fields as factual evidence.
+        Do not use prior chat/answer text as a factual source.
 
-        USER_QUESTION:
+        SESSION_POINTER:
+        LastReferencedDocumentId: \(lastDocId)
+
+        ACTIVE_CONTEXT:
+        \(activeContextBlock)
+
+        QUESTION:
         \(question)
         """
     }
@@ -573,34 +1577,86 @@ struct NativeChatView: View {
         """
     }
 
-    private func callChatLLM(edgeAI: EdgeAI, question: String) async throws -> String {
+    private func callChatLLM(edgeAI: EdgeAI, question: String) async throws -> ChatLLMResult {
         if let statsAnswer = buildStatsAnswerIfNeeded(for: question) {
-            return statsAnswer
+            return ChatLLMResult(reply: statsAnswer, primaryDocument: nil)
+        }
+        let scopedDocsRaw = !scopedDocumentIds.isEmpty ? scopedDocumentsForSelection() : []
+        let docsInScopeCount = !scopedDocumentIds.isEmpty
+            ? scopedDocsRaw.count
+            : documentManager.conversationEligibleDocuments().count
+
+        var effectiveQuestion = question
+        let challengeQuestion = isChallenge(question) || isMetaDispute(question)
+        if challengeQuestion, let lastQ = lastContentfulUserQuestion(messages) {
+            effectiveQuestion = lastQ
+        }
+        let hasAssistantHistory = messages.contains { $0.role == "assistant" }
+        let hasThreadHistory = hasAssistantHistory && messages.contains { $0.role == "user" }
+        let shortFollowUp = hasAssistantHistory &&
+            cleanLine(question).split { !$0.isLetter && !$0.isNumber }.count <= 6
+        let anchorFollowUp = isAnaphoraFollowUp(question) || shortFollowUp
+        if !challengeQuestion, anchorFollowUp, let anchor = makeThreadAnchor(history: self.messages) {
+            effectiveQuestion = anchor + question
         }
 
-        if !scopedDocumentIds.isEmpty {
-            var scopedDocs = scopedDocumentsForSelection()
-            if scopedDocs.count > selectionMaxDocs {
-                scopedDocs = Array(scopedDocs.prefix(selectionMaxDocs))
+        if docsInScopeCount == 0 && isLowSignalChitChat(question) {
+            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
+        }
+        if docsInScopeCount > 0 && !hasThreadHistory && isExplicitSmallTalkPrompt(question) {
+            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
+        }
+
+        let allDocs = !scopedDocumentIds.isEmpty
+            ? scopedDocsRaw
+            : documentManager.conversationEligibleDocuments()
+        let initialSelection = selectDocumentsByChunkRanking(
+            question: effectiveQuestion,
+            allDocs: allDocs,
+            preferredDocumentId: sessionState.lastReferencedDocumentId,
+            applyLastDocumentBias: true
+        )
+        let selection = retrySelectionWithExpandedQueryIfNeeded(
+            question: effectiveQuestion,
+            allDocs: allDocs,
+            preferredDocumentId: sessionState.lastReferencedDocumentId,
+            currentSelection: initialSelection
+        )
+
+        if selection.documents.isEmpty {
+            let fallbackDocs = fallbackScoredSelection(
+                question: effectiveQuestion,
+                allDocs: allDocs,
+                limit: selectionMaxDocs
+            ).map(\.document)
+            let evidenceDocs = fallbackDocs.isEmpty ? Array(allDocs.prefix(selectionMaxDocs)) : fallbackDocs
+            let hasNeedleEvidence = !buildHighSignalSnippets(
+                question: effectiveQuestion,
+                documents: evidenceDocs,
+                limit: 3
+            ).isEmpty
+            if hasNeedleEvidence && !evidenceDocs.isEmpty {
+                let fallbackScores = Dictionary(uniqueKeysWithValues: evidenceDocs.map { ($0.id, 0.0001) })
+                let prompt = buildAnswerPrompt(
+                    question: effectiveQuestion,
+                    selectedDocs: evidenceDocs,
+                    topScoreByDocumentId: fallbackScores
+                )
+                logPromptEvidence(selectedDocs: evidenceDocs, prompt: prompt)
+                let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+                return ChatLLMResult(reply: reply, primaryDocument: evidenceDocs.first)
             }
-            let prompt = buildAnswerPrompt(question: question, selectedDocs: scopedDocs)
-            return try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+            return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil)
         }
 
-        let selectableDocs = documentManager.conversationEligibleDocuments()
-        let selectionPrompt = buildSelectionPrompt(question: question)
-        let selectionRaw = try await callLLM(edgeAI: edgeAI, prompt: wrapSelectionPrompt(selectionPrompt))
-        let selectedIds = parseSelectionIds(selectionRaw, question: question, allDocs: selectableDocs)
-        var selectedDocs = selectableDocs.filter { selectedIds.contains($0.id) }
-        if selectedDocs.isEmpty {
-            selectedDocs = fallbackSelection(question: question, allDocs: selectableDocs)
-        }
-        if selectedDocs.count > selectionMaxDocs {
-            selectedDocs = Array(selectedDocs.prefix(selectionMaxDocs))
-        }
-
-        let prompt = buildAnswerPrompt(question: question, selectedDocs: selectedDocs)
-        return try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+        let prompt = buildAnswerPrompt(
+            question: effectiveQuestion,
+            selectedDocs: selection.documents,
+            topScoreByDocumentId: selection.topScoreByDocumentId
+        )
+        logPromptEvidence(selectedDocs: selection.documents, prompt: prompt)
+        let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+        return ChatLLMResult(reply: reply, primaryDocument: selection.primaryDocument)
     }
 
     private func buildStatsAnswerIfNeeded(for question: String) -> String? {
@@ -654,13 +1710,10 @@ struct NativeChatView: View {
         "<<<CHAT_DETAIL>>>" + prompt
     }
 
-    private func wrapSelectionPrompt(_ prompt: String) -> String {
-        "<<<CHAT_BRIEF>>>" + prompt
-    }
-
     private func callLLM(edgeAI: EdgeAI, prompt: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
-            edgeAI.generate("<<<NO_HISTORY>>>" + prompt, resolver: { result in
+            let finalPrompt = useNoHistoryForChat ? "<<<NO_HISTORY>>>" + prompt : prompt
+            edgeAI.generate(finalPrompt, resolver: { result in
                 continuation.resume(returning: result as? String ?? "")
             }, rejecter: { _, message, _ in
                 continuation.resume(throwing: NSError(domain: "EdgeAI", code: 0, userInfo: [NSLocalizedDescriptionKey: message ?? "Unknown error"]))

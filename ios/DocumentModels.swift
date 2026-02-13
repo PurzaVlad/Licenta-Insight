@@ -6,6 +6,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
     let content: String
     let summary: String
     let ocrPages: [OCRPage]?
+    let ocrChunks: [OCRChunk]
     let category: DocumentCategory
     let keywordsResume: String
     let tags: [String]
@@ -48,6 +49,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         content: String,
         summary: String,
         ocrPages: [OCRPage]? = nil,
+        ocrChunks: [OCRChunk]? = nil,
         category: DocumentCategory = .general,
         keywordsResume: String = "",
         tags: [String] = [],
@@ -65,6 +67,12 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         self.content = content
         self.summary = summary
         self.ocrPages = ocrPages
+        self.ocrChunks = Self.buildOCRChunks(
+            documentId: id,
+            content: content,
+            ocrPages: ocrPages,
+            provided: ocrChunks
+        )
         self.category = category
         self.keywordsResume = keywordsResume
         self.tags = tags
@@ -84,6 +92,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         case content
         case summary
         case ocrPages
+        case ocrChunks
         case category
         case keywordsResume
         case tags
@@ -104,6 +113,13 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         content = try container.decode(String.self, forKey: .content)
         summary = try container.decode(String.self, forKey: .summary)
         ocrPages = try container.decodeIfPresent([OCRPage].self, forKey: .ocrPages)
+        let decodedChunks = try container.decodeIfPresent([OCRChunk].self, forKey: .ocrChunks)
+        ocrChunks = Self.buildOCRChunks(
+            documentId: id,
+            content: content,
+            ocrPages: ocrPages,
+            provided: decodedChunks
+        )
         category = try container.decode(DocumentCategory.self, forKey: .category)
         keywordsResume = try container.decodeIfPresent(String.self, forKey: .keywordsResume) ?? ""
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
@@ -124,6 +140,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         try container.encode(content, forKey: .content)
         try container.encode(summary, forKey: .summary)
         try container.encodeIfPresent(ocrPages, forKey: .ocrPages)
+        try container.encode(ocrChunks, forKey: .ocrChunks)
         try container.encode(category, forKey: .category)
         try container.encode(keywordsResume, forKey: .keywordsResume)
         try container.encode(tags, forKey: .tags)
@@ -135,6 +152,67 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         try container.encodeIfPresent(imageData, forKey: .imageData)
         try container.encodeIfPresent(pdfData, forKey: .pdfData)
         try container.encodeIfPresent(originalFileData, forKey: .originalFileData)
+    }
+
+    private static func buildOCRChunks(
+        documentId: UUID,
+        content: String,
+        ocrPages: [OCRPage]?,
+        provided: [OCRChunk]?
+    ) -> [OCRChunk] {
+        if let provided, !provided.isEmpty { return provided }
+
+        var out: [OCRChunk] = []
+        if let pages = ocrPages, !pages.isEmpty {
+            for page in pages {
+                let blocks = page.blocks.sorted { $0.order < $1.order }
+                let text = blocks.map { $0.text }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty { continue }
+                out.append(
+                    OCRChunk(
+                        documentId: documentId,
+                        pageNumber: page.pageIndex + 1,
+                        text: text
+                    )
+                )
+            }
+            if !out.isEmpty { return out }
+        }
+
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return [] }
+        let chunkSize = 1200
+        let overlap = 180
+        var start = trimmed.startIndex
+
+        while start < trimmed.endIndex {
+            let end = trimmed.index(start, offsetBy: chunkSize, limitedBy: trimmed.endIndex) ?? trimmed.endIndex
+            let chunk = String(trimmed[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunk.isEmpty {
+                out.append(OCRChunk(documentId: documentId, pageNumber: nil, text: chunk))
+            }
+            if end == trimmed.endIndex { break }
+            let rewind = min(overlap, trimmed.distance(from: start, to: end))
+            start = trimmed.index(end, offsetBy: -rewind)
+        }
+
+        return out
+    }
+}
+
+struct OCRChunk: Identifiable, Codable, Hashable, Equatable {
+    let chunkId: UUID
+    let documentId: UUID
+    let pageNumber: Int?
+    let text: String
+
+    var id: UUID { chunkId }
+
+    init(chunkId: UUID = UUID(), documentId: UUID, pageNumber: Int?, text: String) {
+        self.chunkId = chunkId
+        self.documentId = documentId
+        self.pageNumber = pageNumber
+        self.text = text
     }
 }
 

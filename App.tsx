@@ -17,11 +17,21 @@ type Message = {
 type SummaryLengthOption = 'short' | 'medium' | 'long';
 type SummaryContentOption = 'general' | 'finance' | 'legal' | 'academic' | 'medical';
 
-const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
+const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
 const MODEL_URL =
-  'https://huggingface.co/MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q3_K_M.gguf';
+  'https://huggingface.co/MaziyarPanahi/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
 const MODEL_DOWNLOAD_STATE_KEY = 'edgeai:model_download_state';
 const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
+const LLAMA_N_CTX = 2048;
+const DEFAULT_MAX_NEW_TOKENS = 160;
+const SUMMARY_MAX_NEW_TOKENS = 220;
+const DEFAULT_TEMPERATURE = 0.2;
+const CHAT_TEMPERATURE = 0.15;
+const DEFAULT_TOP_P = 0.9;
+const DEFAULT_REPEAT_PENALTY = 1.1;
+const CHAT_REPEAT_PENALTY = 1.15;
+const MAX_CHAT_HISTORY_MESSAGES = 6;
+const MIN_MODEL_FILE_SIZE_BYTES = 200 * 1024 * 1024;
 
 const SUMMARY_PROMPT_COMMON = `
   You will receive extracted text from a document.
@@ -92,20 +102,28 @@ const SUMMARY_PROMPT_FOOTER = `
 
 const TAG_SYSTEM_PROMPT = `
   You will receive a short excerpt from a document.
-  Extract 4 single-word tags that capture the topic.
+  Extract exactly 4 single-word tags that capture the topic.
 
   Rules:
   Output tags as a comma-separated list.
-  Use plain words only; no punctuation, no numbering, no labels.
+  Output exactly 4 items, no more and no fewer.
+  Use plain words only; no punctuation, no numbering, no labels, no phrases.
   Prefer specific topics or names over generic words.
+  Never output stopwords such as: and, or, the, a, an, including, with, without, for, from.
   Do not repeat words.
   `;
 
-const CHAT_SYSTEM_PROMPT =
-  'You are Identity, a proactive, concise assistant. Answer from the provided ACTIVE_CONTEXT and recent chat. Do not reveal internal reasoning; provide the final answer only. If the context is insufficient, ask a brief clarifying question or suggest a document. Never say you cannot access information; ask for the missing document or clarification instead. Cite document titles when using their content. Respond in English. Always finish your last sentence; do not trail off.';
+const CHAT_SYSTEM_PROMPT = `You are a document assistant.
+
+Rules:
+- Answer in maximum 3 sentences.
+- Be concise.
+- No explanations unless asked.
+- Never include system tokens or internal markers.
+- If information is not found, say only: "Not specified in the documents."`;
 
 const CONTINUATION_SYSTEM_PROMPT =
-  'You will receive a draft assistant response. Continue and complete only the final sentence. Output only the missing continuation. Do not add new sentences. Do not repeat any text from the draft. If the final sentence is already complete, output nothing.';
+  'Continue the previous answer in 1 short sentence. Do not repeat.';
 
 const CHAT_DETAIL_MARKER = '<<<CHAT_DETAIL>>>';
 const CHAT_BRIEF_MARKER = '<<<CHAT_BRIEF>>>';
@@ -196,6 +214,22 @@ function App(): React.JSX.Element {
       setDownloadProgress(0);
       try {
         const filePath = `${RNFS.DocumentDirectoryPath}/${MODEL_FILENAME}`;
+        const validateModelFile = async (): Promise<{valid: boolean; sizeBytes: number}> => {
+          const exists = await RNFS.exists(filePath);
+          if (!exists) {
+            return {valid: false, sizeBytes: 0};
+          }
+          try {
+            const stat = await RNFS.stat(filePath);
+            const sizeBytes = Number(stat.size ?? 0);
+            const valid = Number.isFinite(sizeBytes) && sizeBytes >= MIN_MODEL_FILE_SIZE_BYTES;
+            return {valid, sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0};
+          } catch (err) {
+            console.warn('[Model] Failed to read model file metadata:', err);
+            return {valid: false, sizeBytes: 0};
+          }
+        };
+
         console.log('[Model] Checking for model at:', filePath);
         let interruptedDownloadState: string | null = null;
         try {
@@ -218,8 +252,17 @@ function App(): React.JSX.Element {
           }
         }
 
-        const fileExists = await RNFS.exists(filePath);
-        console.log('[Model] File exists after recovery check:', fileExists);
+        let validation = await validateModelFile();
+        console.log('[Model] Existing model validation:', validation.valid, 'size:', validation.sizeBytes);
+        if (!validation.valid && validation.sizeBytes > 0) {
+          console.warn('[Model] Existing model file looks invalid; deleting before redownload');
+          try {
+            await RNFS.unlink(filePath);
+          } catch (err) {
+            console.warn('[Model] Failed to remove invalid model file:', err);
+          }
+          validation = await validateModelFile();
+        }
 
         // Remove any other installed GGUF models to save space when switching models.
         try {
@@ -239,20 +282,54 @@ function App(): React.JSX.Element {
           console.warn('[Model] Failed to scan for old models:', err);
         }
 
-        if (!fileExists) {
+        if (!validation.valid) {
           console.log('[Model] Downloading model...');
           try {
             await AsyncStorage.setItem(MODEL_DOWNLOAD_STATE_KEY, MODEL_DOWNLOAD_IN_PROGRESS);
           } catch (err) {
             console.warn('[Model] Failed to set download state marker:', err);
           }
-          await downloadModel(MODEL_FILENAME, MODEL_URL, setDownloadProgress);
+
+          let downloadedAndValidated = false;
+          let lastDownloadError: unknown = null;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              setDownloadProgress(0);
+              await downloadModel(MODEL_FILENAME, MODEL_URL, setDownloadProgress);
+              validation = await validateModelFile();
+              if (!validation.valid) {
+                throw new Error(
+                  `Downloaded model file failed integrity check (size=${validation.sizeBytes} bytes, expected>=${MIN_MODEL_FILE_SIZE_BYTES}).`,
+                );
+              }
+              downloadedAndValidated = true;
+              console.log('[Model] Download completed and validated. Size bytes:', validation.sizeBytes);
+              break;
+            } catch (err) {
+              lastDownloadError = err;
+              console.warn(`[Model] Download attempt ${attempt} failed:`, err);
+              try {
+                const partialExists = await RNFS.exists(filePath);
+                if (partialExists) {
+                  await RNFS.unlink(filePath);
+                }
+              } catch (unlinkErr) {
+                console.warn('[Model] Failed to remove invalid downloaded model file:', unlinkErr);
+              }
+            }
+          }
+
           try {
             await AsyncStorage.removeItem(MODEL_DOWNLOAD_STATE_KEY);
           } catch (err) {
             console.warn('[Model] Failed to clear download state marker:', err);
           }
-          console.log('[Model] Download completed');
+
+          if (!downloadedAndValidated) {
+            throw lastDownloadError instanceof Error
+              ? lastDownloadError
+              : new Error('Failed to download and validate model file.');
+          }
         }
 
         if (cancelled) {
@@ -264,7 +341,7 @@ function App(): React.JSX.Element {
         const llamaContext = await initLlama({
           model: filePath,
           use_mlock: false,
-          n_ctx: 2048,
+          n_ctx: LLAMA_N_CTX,
           n_gpu_layers: -1, // Use all available GPU layers when supported
         });
         
@@ -316,34 +393,80 @@ useEffect(() => {
 
   const emitter = new NativeEventEmitter(EdgeAI);
 
-  const formatQwenPrompt = (messages: Message[]): string => {
-    let prompt = '';
-    for (const m of messages) {
-      const role = m.role === 'assistant' ? 'assistant' : m.role;
-      prompt += `<|im_start|>${role}\n${m.content.trim()}\n<|im_end|>\n`;
-    }
-    prompt += `<|im_start|>assistant\n`;
-    return prompt;
-  };
-
   const formatPrompt = (messages: Message[]): string => {
-    return formatQwenPrompt(messages);
+    const sections = messages
+      .map((m) => {
+        const roleLabel = m.role === 'system' ? 'system' : m.role === 'assistant' ? 'assistant' : 'user';
+        return `<|im_start|>${roleLabel}\n${m.content.trim()}\n<|im_end|>`;
+      })
+      .join('\n');
+    return `${sections}\n<|im_start|>assistant\n`;
   };
 
   const stopTokensForModel = (): string[] => {
-    return ['<|im_end|>', '</s>'];
+    return ['<|im_end|>', '<|im_start|>', '<|system|>', '<|assistant|>', '<|user|>', '</s>', '<|endoftext|>'];
   };
 
-  const isUserPromptText = (raw: string): boolean => {
-    let text = raw;
-    if (text.startsWith(NO_HISTORY_MARKER)) {
-      text = text.slice(NO_HISTORY_MARKER.length).trimStart();
+  const truncateChatHistory = (messages: Message[]): Message[] => {
+    const systemMessage = [...messages].reverse().find((message) => message.role === 'system');
+    const nonSystemMessages = messages.filter((message) => message.role !== 'system');
+    const trimmedNonSystemMessages = nonSystemMessages.slice(-MAX_CHAT_HISTORY_MESSAGES);
+    return systemMessage ? [systemMessage, ...trimmedNonSystemMessages] : trimmedNonSystemMessages;
+  };
+
+  const parsePromptControlMarkers = (
+    input: string,
+  ): { text: string; noHistory: boolean } => {
+    let text = input;
+    let noHistory = false;
+    if (text.includes(NO_HISTORY_MARKER)) {
+      noHistory = true;
+      text = text.replace(NO_HISTORY_MARKER, '').trimStart();
     }
+
     if (text.startsWith(CHAT_DETAIL_MARKER)) {
       text = text.slice(CHAT_DETAIL_MARKER.length).trimStart();
     } else if (text.startsWith(CHAT_BRIEF_MARKER)) {
       text = text.slice(CHAT_BRIEF_MARKER.length).trimStart();
     }
+
+    return {text, noHistory};
+  };
+
+  const buildNoHistoryMessages = (input: string): Message[] => {
+    const trimmed = input.trim();
+    const fallbackUserMessage: Message = {
+      role: 'user',
+      content: trimmed,
+      timestamp: Date.now(),
+    };
+
+    if (!trimmed.startsWith('SYSTEM:')) {
+      return [fallbackUserMessage];
+    }
+
+    const afterSystem = trimmed.slice('SYSTEM:'.length).trimStart();
+    const sectionMatch = /\n{2,}([A-Z][A-Z_ ]{2,}):\s*\n/.exec(afterSystem);
+    if (!sectionMatch || sectionMatch.index == null) {
+      return [fallbackUserMessage];
+    }
+
+    const firstSectionIndex = sectionMatch.index;
+    const systemContent = afterSystem.slice(0, firstSectionIndex).trim();
+    const userContent = afterSystem.slice(firstSectionIndex).trim();
+    if (!systemContent || !userContent) {
+      return [fallbackUserMessage];
+    }
+
+    const now = Date.now();
+    return [
+      {role: 'system', content: systemContent, timestamp: now},
+      {role: 'user', content: userContent, timestamp: now},
+    ];
+  };
+
+  const isUserPromptText = (raw: string): boolean => {
+    const {text} = parsePromptControlMarkers(raw);
     return !(text.startsWith(SUMMARY_MARKER) || text.startsWith(NAME_MARKER) || text.startsWith(TAG_MARKER));
   };
 
@@ -368,20 +491,9 @@ useEffect(() => {
         const { requestId, prompt } = job;
         console.log('[EdgeAI] Processing request:', requestId, 'prompt length:', prompt.length);
         
-        let rawPrompt = prompt;
-        let noHistory = false;
-        if (rawPrompt.startsWith(NO_HISTORY_MARKER)) {
-          noHistory = true;
-          rawPrompt = rawPrompt.slice(NO_HISTORY_MARKER.length).trimStart();
-        }
-        let chatDetail = false;
-        if (rawPrompt.startsWith(CHAT_DETAIL_MARKER)) {
-          chatDetail = true;
-          rawPrompt = rawPrompt.slice(CHAT_DETAIL_MARKER.length).trimStart();
-        } else if (rawPrompt.startsWith(CHAT_BRIEF_MARKER)) {
-          chatDetail = false;
-          rawPrompt = rawPrompt.slice(CHAT_BRIEF_MARKER.length).trimStart();
-        }
+        const parsedPrompt = parsePromptControlMarkers(prompt);
+        let rawPrompt = parsedPrompt.text;
+        const noHistory = parsedPrompt.noHistory;
         const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
         const isName = rawPrompt.startsWith(NAME_MARKER);
         const isTag = rawPrompt.startsWith(TAG_MARKER);
@@ -418,8 +530,8 @@ useEffect(() => {
           : isTag
           ? [{ role: 'system', content: TAG_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
           : noHistory
-          ? [userMessage]
-          : [...conversationRef.current, userMessage];
+          ? buildNoHistoryMessages(userContent)
+          : truncateChatHistory([...conversationRef.current, userMessage]);
 
         try {
           if (!context) {
@@ -431,8 +543,30 @@ useEffect(() => {
           console.log('[EdgeAI] Prompt preview:', promptText.substring(0, 200) + '...');
           
           const stopTokens = stopTokensForModel();
+          let generationHitTokenLimit = false;
+
+          const approximateTokenCount = (input: string): number => {
+            const words = input.trim().split(/\s+/).filter(Boolean).length;
+            const punctuation = (input.match(/[.,!?;:]/g) ?? []).length;
+            return words + punctuation;
+          };
+
+          const inferHitTokenLimit = (result: any, nPredict: number, outputText: string): boolean => {
+            const rawPredicted =
+              result?.timings?.predicted_n ??
+              result?.timings?.predictedTokens ??
+              result?.n_tokens_predicted ??
+              result?.tokens_predicted;
+            const predictedCount = Number(rawPredicted);
+            if (Number.isFinite(predictedCount) && predictedCount > 0) {
+              return predictedCount >= Math.max(1, nPredict - 2);
+            }
+            const approxCount = approximateTokenCount(outputText);
+            return approxCount >= Math.max(24, Math.floor(nPredict * 0.9));
+          };
 
           const runSummary = async (summaryText: string, nPredict: number): Promise<string> => {
+            const nPredictClamped = Math.min(nPredict, SUMMARY_MAX_NEW_TOKENS);
             const summaryMessages: Message[] = [
               { role: 'system', content: summaryChunkPrompt, timestamp: Date.now() },
               { role: 'user', content: summaryText, timestamp: Date.now() }
@@ -441,10 +575,10 @@ useEffect(() => {
             const summaryResult = await context.completion(
               {
                 prompt: summaryPrompt,
-                n_predict: nPredict,
-                temperature: 0.2,
-                top_p: 0.9,
-                repeat_penalty: 1.2,
+                n_predict: nPredictClamped,
+                temperature: DEFAULT_TEMPERATURE,
+                top_p: DEFAULT_TOP_P,
+                repeat_penalty: DEFAULT_REPEAT_PENALTY,
                 repeat_last_n: 256,
                 min_p: 0.05,
                 stop: stopTokens
@@ -454,10 +588,12 @@ useEffect(() => {
 
             let out = (summaryResult?.text ?? '').trim();
             out = out.replace(/\b(\w+)\b(?:\s+\1){5,}/gi, '$1');
+            generationHitTokenLimit = inferHitTokenLimit(summaryResult, nPredictClamped, out);
             return out;
           };
 
           const runSummaryFinalCombine = async (summaryText: string, nPredict: number): Promise<string> => {
+            const nPredictClamped = Math.min(nPredict, SUMMARY_MAX_NEW_TOKENS);
             const summaryMessages: Message[] = [
               { role: 'system', content: summaryCombinePrompt, timestamp: Date.now() },
               { role: 'user', content: summaryText, timestamp: Date.now() }
@@ -466,10 +602,10 @@ useEffect(() => {
             const summaryResult = await context.completion(
               {
                 prompt: summaryPrompt,
-                n_predict: nPredict,
-                temperature: 0.12,
-                top_p: 0.88,
-                repeat_penalty: 1.35,
+                n_predict: nPredictClamped,
+                temperature: DEFAULT_TEMPERATURE,
+                top_p: DEFAULT_TOP_P,
+                repeat_penalty: DEFAULT_REPEAT_PENALTY,
                 repeat_last_n: 256,
                 min_p: 0.05,
                 stop: stopTokens
@@ -479,6 +615,7 @@ useEffect(() => {
 
             let out = (summaryResult?.text ?? '').trim();
             out = out.replace(/\b(\w+)\b(?:\s+\1){5,}/gi, '$1');
+            generationHitTokenLimit = inferHitTokenLimit(summaryResult, nPredictClamped, out);
             return out;
           };
 
@@ -510,13 +647,15 @@ useEffect(() => {
               { role: 'user', content: draftText, timestamp: Date.now() }
             ];
             const continuationPrompt = formatPrompt(continuationMessages);
+            const continuationTemperature = isSummary ? DEFAULT_TEMPERATURE : CHAT_TEMPERATURE;
+            const continuationRepeatPenalty = isSummary ? DEFAULT_REPEAT_PENALTY : CHAT_REPEAT_PENALTY;
             const continuationResult = await context.completion(
               {
                 prompt: continuationPrompt,
-                n_predict: nPredict,
-                temperature: 0.2,
-                top_p: 0.9,
-                repeat_penalty: 1.25,
+                n_predict: Math.min(nPredict, DEFAULT_MAX_NEW_TOKENS),
+                temperature: continuationTemperature,
+                top_p: DEFAULT_TOP_P,
+                repeat_penalty: continuationRepeatPenalty,
                 repeat_last_n: 256,
                 min_p: 0.05,
                 stop: stopTokens
@@ -555,13 +694,13 @@ useEffect(() => {
             }
 
             if (chunks.length <= 1) {
-              text = await runSummary(summaryInput, 320);
+              text = await runSummary(summaryInput, SUMMARY_MAX_NEW_TOKENS);
             } else {
               const chunkSummaries: string[] = [];
               for (let i = 0; i < chunks.length; i++) {
                 if (abortCurrentRef.current) break;
                 const chunk = chunks[i];
-                const chunkSummary = await runSummary(chunk, 180);
+                const chunkSummary = await runSummary(chunk, 192);
                 if (abortCurrentRef.current) break;
                 if (chunkSummary) {
                   chunkSummaries.push(chunkSummary);
@@ -573,14 +712,15 @@ useEffect(() => {
               }
             }
           } else if (isName) {
+            const nPredictClamped = 50;
             const namePrompt = formatPrompt(messagesForAI);
             const nameResult = await context.completion(
               {
                 prompt: namePrompt,
-                n_predict: 50,
-                temperature: 0.4,
-                top_p: 0.9,
-                repeat_penalty: 1.4,
+                n_predict: nPredictClamped,
+                temperature: DEFAULT_TEMPERATURE,
+                top_p: DEFAULT_TOP_P,
+                repeat_penalty: DEFAULT_REPEAT_PENALTY,
                 repeat_last_n: 128,
                 min_p: 0.05,
                 stop: stopTokens
@@ -588,15 +728,17 @@ useEffect(() => {
               () => {}
             );
             text = (nameResult?.text ?? '').trim();
+            generationHitTokenLimit = inferHitTokenLimit(nameResult, nPredictClamped, text);
           } else if (isTag) {
+            const nPredictClamped = 60;
             const tagPrompt = formatPrompt(messagesForAI);
             const tagResult = await context.completion(
               {
                 prompt: tagPrompt,
-                n_predict: 60,
-                temperature: 0.3,
-                top_p: 0.9,
-                repeat_penalty: 1.25,
+                n_predict: nPredictClamped,
+                temperature: DEFAULT_TEMPERATURE,
+                top_p: DEFAULT_TOP_P,
+                repeat_penalty: DEFAULT_REPEAT_PENALTY,
                 repeat_last_n: 128,
                 min_p: 0.05,
                 stop: stopTokens
@@ -604,13 +746,15 @@ useEffect(() => {
               () => {}
             );
             text = (tagResult?.text ?? '').trim();
+            generationHitTokenLimit = inferHitTokenLimit(tagResult, nPredictClamped, text);
           } else {
+            const nPredictClamped = DEFAULT_MAX_NEW_TOKENS;
             const completionParams = {
               prompt: promptText,
-              n_predict: chatDetail ? 480 : 220,
-              temperature: 0.25,
-              top_p: 0.85,
-              repeat_penalty: 1.4,
+              n_predict: nPredictClamped,
+              temperature: CHAT_TEMPERATURE,
+              top_p: DEFAULT_TOP_P,
+              repeat_penalty: CHAT_REPEAT_PENALTY,
               repeat_last_n: 256,
               min_p: 0.05,
               stop: stopTokens
@@ -626,15 +770,54 @@ useEffect(() => {
             });
 
             text = (result?.text ?? '').trim();
+            generationHitTokenLimit = inferHitTokenLimit(result, nPredictClamped, text);
           }
 
           const endsCleanly = (s: string) => /[.!?]["')\]]?\s*$/.test(s.trim());
-          const looksCut = (s: string) =>
-            !endsCleanly(s) || /[,;:\-–—]\s*$/.test(s.trim());
 
           const trimToLastCompleteSentence = (input: string): string => {
             const match = input.match(/[\s\S]*[.!?]["')\]]?\s*/);
             return match ? match[0].trim() : input.trim();
+          };
+
+          const hasUnfinishedCodeFence = (input: string): boolean => {
+            const fences = input.match(/```/g) ?? [];
+            return fences.length % 2 === 1;
+          };
+
+          const hasUnmatchedQuote = (input: string): boolean => {
+            const escapedDoubleQuotes = input.match(/\\"/g)?.length ?? 0;
+            const rawDoubleQuotes = input.match(/"/g)?.length ?? 0;
+            const unescapedDoubleQuotes = Math.max(0, rawDoubleQuotes - escapedDoubleQuotes);
+            const smartOpen = input.match(/“/g)?.length ?? 0;
+            const smartClose = input.match(/”/g)?.length ?? 0;
+            const backticks = input.match(/`/g)?.length ?? 0;
+            return unescapedDoubleQuotes % 2 === 1 || smartOpen !== smartClose || backticks % 2 === 1;
+          };
+
+          const looksCutOff = (s: string): boolean => {
+            const t = s.trim();
+            if (!t) return false;
+            if (/[.!?]["')\]]?$/.test(t)) return false;
+            if (/[,\-–—:]$/.test(t)) return true;
+
+            const tail = t.split(/\s+/).slice(-2).join(' ').toLowerCase();
+            const dangling = ['and', 'or', 'to', 'of', 'for', 'with', 'a', 'an', 'the', 'in', 'on', 'at', 'as', 'by'];
+            if (dangling.some(w => tail === w || tail.endsWith(' ' + w))) return true;
+
+            if (t.length > 260 && !/[.!?]/.test(t.slice(-80))) return true;
+            return false;
+          };
+
+          const shouldAttemptContinuation = (input: string, hitTokenLimit: boolean): boolean => {
+            const trimmed = input.trimEnd();
+            if (!trimmed) return false;
+
+            const lastChar = trimmed[trimmed.length - 1] ?? '';
+            const endsMidWord = /[a-z0-9]/i.test(lastChar) && !endsCleanly(trimmed);
+            const unfinishedDelimitedText = hasUnfinishedCodeFence(trimmed) || hasUnmatchedQuote(trimmed);
+            const tokenLimitLikelyCut = hitTokenLimit && endsMidWord;
+            return looksCutOff(trimmed) || endsMidWord || unfinishedDelimitedText || tokenLimitLikelyCut;
           };
 
           const squashWordStutter = (input: string): string => {
@@ -791,28 +974,121 @@ useEffect(() => {
             return out;
           };
 
-          const finishIfCut = async (input: string): Promise<string> => {
-            let out = input.trim();
-            if (endsCleanly(out) && !looksCut(out)) return out;
+          const looksLikeKeywordDump = (input: string): boolean => {
+            const s = input.trim();
+            if (!s) return false;
 
-            for (let i = 0; i < 2; i++) {
-              if (endsCleanly(out) && !looksCut(out)) break;
+            // If there's very little sentence punctuation but many commas, it's likely a dump.
+            const commas = (s.match(/,/g) ?? []).length;
+            const sentencePunct = (s.match(/[.!?]/g) ?? []).length;
+
+            // Many commas, few sentence endings -> dump
+            if (commas >= 8 && sentencePunct === 0) return true;
+
+            // Extremely long single "sentence" with tons of separators
+            if (s.length > 260 && sentencePunct <= 1 && commas >= 6) return true;
+
+            return false;
+          };
+
+          // Collapses comma/space-separated repeated 1-5 word phrases.
+          // Example: "Logistics internship, Logistics internship, ..." -> "Logistics internship"
+          const squashCommaPhraseRepeats = (input: string): string => {
+            let out = input;
+
+            // 1) Collapse exact repeated multi-word phrases separated by commas/spaces.
+            // Matches: "<phrase>, <phrase>, <phrase> ..." (phrase up to 5 words)
+            out = out.replace(
+              /\b((?:[a-z0-9]+(?:\s+[a-z0-9]+){0,4}))\b(?:\s*,\s*\1\b){2,}/gi,
+              '$1'
+            );
+
+            // 2) Collapse repeated single words separated by commas.
+            out = out.replace(/\b([a-z0-9]+)\b(?:\s*,\s*\1\b){3,}/gi, '$1');
+
+            // 3) Clean up leftover doubled commas/spaces.
+            out = out.replace(/\s*,\s*,+/g, ', ').replace(/\s{2,}/g, ' ').trim();
+
+            return out;
+          };
+
+          // Hard length cap for chat outputs to prevent UI explosions when punctuation is missing.
+          const hardCapChatLength = (input: string, maxChars: number = 420): string => {
+            const s = input.trim();
+            if (s.length <= maxChars) return s;
+            return s.slice(0, maxChars).trimEnd();
+          };
+
+          const limitToSentenceCount = (input: string, maxSentences: number): string => {
+            const trimmed = input.trim();
+            if (!trimmed || maxSentences <= 0) return '';
+
+            const sentenceMatches = trimmed.match(/[^.!?]+[.!?]["')\]]*/g);
+            if (!sentenceMatches || sentenceMatches.length <= maxSentences) {
+              return trimmed;
+            }
+
+            return sentenceMatches
+              .slice(0, maxSentences)
+              .map((sentence) => sentence.trim())
+              .join(' ')
+              .trim();
+          };
+
+          const truncateAtTemplateRoleTokens = (input: string): string => {
+            const markers = [
+              '<|im_end|>',
+              '<|im_start|>',
+              '<|system|>',
+              '<|assistant|>',
+              '<|user|>',
+              '</s>',
+              '<|start_header_id|>',
+              '<|end_header_id|>',
+              '<|endoftext|>'
+            ];
+            let cutIndex = -1;
+            for (const marker of markers) {
+              const idx = input.indexOf(marker);
+              if (idx >= 0 && (cutIndex === -1 || idx < cutIndex)) {
+                cutIndex = idx;
+              }
+            }
+            if (cutIndex < 0) return input;
+            return input.slice(0, cutIndex).trimEnd();
+          };
+
+          const finishIfCut = async (
+            input: string,
+            hitTokenLimit: boolean,
+            maxAttempts: number = 2,
+          ): Promise<string> => {
+            let out = input.trim();
+            if (!shouldAttemptContinuation(out, hitTokenLimit)) return out;
+
+            for (let i = 0; i < maxAttempts; i++) {
+              if (!shouldAttemptContinuation(out, hitTokenLimit)) break;
               const continuation = await runContinuation(out, 60);
               const cont = continuation.replace(/^[\s.\-–—:;]+/, '').trim();
               if (!cont) break;
               out = (out.trimEnd() + ' ' + cont).trim();
             }
 
-            if (endsCleanly(out) && !looksCut(out)) return out;
-            return trimToLastCompleteSentence(out);
+            return shouldAttemptContinuation(out, hitTokenLimit)
+              ? trimToLastCompleteSentence(out)
+              : out;
           };
 
           // strip only template artifacts
-          text = text
+          text = truncateAtTemplateRoleTokens(text)
             .replace(/<start_of_turn>/g, '')
             .replace(/<end_of_turn>/g, '')
             .replace(/<\|im_start\|>/g, '')
             .replace(/<\|im_end\|>/g, '')
+            .replace(/<\|begin_of_text\|>/g, '')
+            .replace(/<\|start_header_id\|>/g, '')
+            .replace(/<\|end_header_id\|>/g, '')
+            .replace(/<\|eot_id\|>/g, '')
             .replace(/^\s*model\s*\n/i, '')
             .trim();
           if (isSummary && !abortCurrentRef.current) {
@@ -824,18 +1100,41 @@ useEffect(() => {
             text = squashWordStutter(text);
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
             text = trimRepeatedTail(text);
-            text = await finishIfCut(text);
+            text = await finishIfCut(text, generationHitTokenLimit, 2);
             text = text.trim();
           } else {
-            if (!isName && looksCut(text)) {
-              const continuation = await runContinuation(text, 60);
-              const cont = continuation.replace(/^[\s.\-–—:;]+/, '').trim();
-              if (cont) text = (text.trimEnd() + ' ' + cont).trim();
+            // Non-summary (chat) cleanup
+            if (!isName && !isTag) {
+              text = await finishIfCut(text, generationHitTokenLimit, 1);
             }
+
+            text = truncateAtTemplateRoleTokens(text).trim();
+
+            // New: squash comma-separated phrase loops
+            text = squashCommaPhraseRepeats(text);
+
             text = squashWordStutter(text);
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
+
+            // New: if it still looks like a keyword dump, force a safe clamp
+            if (!isName && !isTag && looksLikeKeywordDump(text)) {
+              text = hardCapChatLength(text, 260);
+            }
+
+            if (!isName && !isTag) {
+              text = limitToSentenceCount(text, 3);
+            }
+
+            // New: final hard cap for any case where punctuation is absent
+            if (!isName && !isTag) {
+              text = hardCapChatLength(text, 420);
+            }
+
             text = text.trim();
           }
+
+          // Remove any leftover chat/template markers (failsafe).
+          text = text.replace(/<\|[^|>]*\|>/g, '').trim();
 
           if (abortCurrentRef.current && isSummary) {
             abortCurrentRef.current = false;
@@ -898,9 +1197,10 @@ useEffect(() => {
       return;
     }
     console.log('[EdgeAI] Adding to queue. Current queue length:', queueRef.current.length);
-    const isName = prompt.startsWith(NAME_MARKER);
-    const isSummary = prompt.startsWith(SUMMARY_MARKER);
-    const isTag = prompt.startsWith(TAG_MARKER);
+    const normalizedPrompt = parsePromptControlMarkers(String(prompt)).text;
+    const isName = normalizedPrompt.startsWith(NAME_MARKER);
+    const isSummary = normalizedPrompt.startsWith(SUMMARY_MARKER);
+    const isTag = normalizedPrompt.startsWith(TAG_MARKER);
     const isUserPrompt = !isSummary && !isName && !isTag;
     let enqueued = false;
 

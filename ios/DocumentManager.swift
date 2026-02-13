@@ -479,8 +479,10 @@ class DocumentManager: ObservableObject {
 
         let prompt = """
         <<<TAG_REQUEST>>>
-        Extract 4 single-word tags from this document excerpt.
-        Output only a comma-separated list of tags.
+        Extract exactly 4 single-word tags from this document excerpt.
+        Output only a comma-separated list with exactly 4 items.
+        Use specific topic words only.
+        Do not use stopwords like: and, or, the, a, an, including, with, for.
 
         EXCERPT:
         \(snippet)
@@ -489,14 +491,35 @@ class DocumentManager: ObservableObject {
         edgeAI.generate(prompt, resolver: { result in
             DispatchQueue.main.async {
                 let raw = (result as? String ?? "")
-                let tags = Self.parseTags(from: raw)
-                let category = document.category.rawValue
-                let filtered = tags.filter { $0.caseInsensitiveCompare(category) != .orderedSame }
-                let combined = ([category] + filtered).prefix(5)
-                let finalTags = Array(combined)
-                if !finalTags.isEmpty {
-                    self.updateTags(for: document.id, to: finalTags)
+                let category = document.category.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let sourceForFallback = "\(document.title)\n\(snippet)"
+
+                var tags = Self.parseTags(from: raw, sourceText: sourceForFallback, limit: 4)
+                    .filter { $0.caseInsensitiveCompare(category) != .orderedSame }
+
+                if tags.count < 4 {
+                    let existing = Set(tags.map { $0.lowercased() } + [category.lowercased()])
+                    let topUp = Self.extractFallbackTags(
+                        from: sourceForFallback,
+                        excluding: existing,
+                        limit: 4 - tags.count
+                    )
+                    tags.append(contentsOf: topUp)
                 }
+
+                if tags.count < 4 {
+                    var used = Set(tags.map { $0.lowercased() } + [category.lowercased()])
+                    for filler in Self.defaultTagFallbacks {
+                        if tags.count >= 4 { break }
+                        let key = filler.lowercased()
+                        if used.contains(key) { continue }
+                        used.insert(key)
+                        tags.append(filler)
+                    }
+                }
+
+                let finalTags = [category] + Array(tags.prefix(4))
+                self.updateTags(for: document.id, to: finalTags)
             }
         }, rejecter: { code, message, _ in
             print("❌ DocumentManager: Tag generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
@@ -1940,29 +1963,93 @@ class DocumentManager: ObservableObject {
         return String(joined[..<idx])
     }
 
-    static func parseTags(from text: String) -> [String] {
+    private static let tagStopwords: Set<String> = [
+        "a", "an", "and", "or", "the", "of", "to", "in", "on", "at", "by", "for", "from", "with", "without",
+        "into", "onto", "about", "over", "under", "through", "between", "among", "is", "are", "was", "were",
+        "be", "been", "being", "this", "that", "these", "those", "it", "its", "their", "they", "them", "you",
+        "your", "our", "ours", "we", "i", "me", "my", "as", "if", "then", "else", "not", "can", "could",
+        "would", "should", "will", "including", "include", "includes", "using", "used", "use", "other", "etc"
+    ]
+
+    private static let defaultTagFallbacks: [String] = ["document", "content", "details", "reference"]
+
+    private static func normalizeTagToken(_ raw: String) -> String? {
+        let token = raw
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard token.count >= 3 else { return nil }
+        guard token.rangeOfCharacter(from: .letters) != nil else { return nil }
+        guard !tagStopwords.contains(token) else { return nil }
+        return token
+    }
+
+    private static func extractFallbackTags(from source: String, excluding: Set<String>, limit: Int) -> [String] {
+        guard limit > 0 else { return [] }
+
+        let tokens = source
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+
+        var freq: [String: Int] = [:]
+        for token in tokens {
+            guard let normalized = normalizeTagToken(token) else { continue }
+            if excluding.contains(normalized) { continue }
+            freq[normalized, default: 0] += 1
+        }
+
+        let ranked = freq.sorted { lhs, rhs in
+            if lhs.value == rhs.value { return lhs.key < rhs.key }
+            return lhs.value > rhs.value
+        }
+
+        return Array(ranked.prefix(limit).map { $0.key })
+    }
+
+    static func parseTags(from text: String, sourceText: String? = nil, limit: Int = 4) -> [String] {
+        guard limit > 0 else { return [] }
+
         let cleaned = text
             .replacingOccurrences(of: "[\\[\\]\\(\\)\"'“”`]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "[^A-Za-z0-9,\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9,;|\\n\\s]", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         let parts = cleaned
-            .split { $0 == "," || $0 == "\n" || $0 == ";" }
+            .split { $0 == "," || $0 == "\n" || $0 == ";" || $0 == "|" }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         var seen = Set<String>()
         var tags: [String] = []
         for part in parts {
-            let word = part.split(separator: " ").first.map(String.init) ?? ""
-            if word.isEmpty { continue }
-            let key = word.lowercased()
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            tags.append(word)
-            if tags.count == 4 { break }
+            let words = part.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+            for word in words {
+                guard let normalized = normalizeTagToken(word) else { continue }
+                if seen.contains(normalized) { continue }
+                seen.insert(normalized)
+                tags.append(normalized)
+                break
+            }
+            if tags.count == limit { break }
         }
+
+        if tags.count < limit, let sourceText = sourceText {
+            let additional = extractFallbackTags(
+                from: sourceText,
+                excluding: seen,
+                limit: limit - tags.count
+            )
+            for token in additional {
+                if seen.contains(token) { continue }
+                seen.insert(token)
+                tags.append(token)
+                if tags.count == limit { break }
+            }
+        }
+
         return tags
     }
 
