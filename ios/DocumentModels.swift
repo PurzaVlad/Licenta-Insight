@@ -160,43 +160,95 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         ocrPages: [OCRPage]?,
         provided: [OCRChunk]?
     ) -> [OCRChunk] {
-        if let provided, !provided.isEmpty { return provided }
+        if let provided, !provided.isEmpty, providedOCRChunksAreValid(provided, for: ocrPages) {
+            return provided.map { chunk in
+                OCRChunk(
+                    chunkId: chunk.chunkId,
+                    documentId: chunk.documentId,
+                    pageNumber: chunk.pageNumber,
+                    text: chunkTextWithPagePrefix(pageNumber: chunk.pageNumber, text: chunk.text)
+                )
+            }
+        }
 
         var out: [OCRChunk] = []
         if let pages = ocrPages, !pages.isEmpty {
             for page in pages {
                 let blocks = page.blocks.sorted { $0.order < $1.order }
-                let text = blocks.map { $0.text }.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                let joined = blocks.map { $0.text }.joined(separator: " ")
+                let text = normalizeOCRWhitespace(joined)
                 if text.isEmpty { continue }
-                out.append(
-                    OCRChunk(
-                        documentId: documentId,
-                        pageNumber: page.pageIndex + 1,
-                        text: text
+                let chunks = splitTextIntoChunks(text, chunkSize: 1200, overlap: 160)
+                for chunk in chunks {
+                    out.append(
+                        OCRChunk(
+                            documentId: documentId,
+                            pageNumber: page.pageIndex + 1,
+                            text: chunkTextWithPagePrefix(pageNumber: page.pageIndex + 1, text: chunk)
+                        )
                     )
-                )
+                }
             }
             if !out.isEmpty { return out }
         }
 
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return [] }
-        let chunkSize = 1200
-        let overlap = 180
-        var start = trimmed.startIndex
-
-        while start < trimmed.endIndex {
-            let end = trimmed.index(start, offsetBy: chunkSize, limitedBy: trimmed.endIndex) ?? trimmed.endIndex
-            let chunk = String(trimmed[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !chunk.isEmpty {
-                out.append(OCRChunk(documentId: documentId, pageNumber: nil, text: chunk))
-            }
-            if end == trimmed.endIndex { break }
-            let rewind = min(overlap, trimmed.distance(from: start, to: end))
-            start = trimmed.index(end, offsetBy: -rewind)
+        let fallbackChunks = splitTextIntoChunks(trimmed, chunkSize: 1200, overlap: 180)
+        for chunk in fallbackChunks where !chunk.isEmpty {
+            out.append(OCRChunk(documentId: documentId, pageNumber: nil, text: chunk))
         }
 
         return out
+    }
+
+    private static func providedOCRChunksAreValid(_ provided: [OCRChunk], for ocrPages: [OCRPage]?) -> Bool {
+        guard let pages = ocrPages, pages.count >= 2 else {
+            return true
+        }
+
+        let pageCount = pages.count
+        let minCoverage = Int(ceil(Double(pageCount) * 0.8))
+        let providedPageNumbers = provided.compactMap(\.pageNumber)
+        let uniqueProvidedPages = Set(providedPageNumbers)
+        let countCoverageOK =
+            uniqueProvidedPages.count >= pageCount ||
+            uniqueProvidedPages.count >= minCoverage
+        let hasSpread = !providedPageNumbers.isEmpty && uniqueProvidedPages.count >= 2
+
+        return countCoverageOK && hasSpread
+    }
+
+    private static func normalizeOCRWhitespace(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func chunkTextWithPagePrefix(pageNumber: Int?, text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pageNumber, pageNumber > 0 else { return trimmed }
+        if trimmed.lowercased().hasPrefix("[page \(pageNumber)]") { return trimmed }
+        return "[Page \(pageNumber)] \(trimmed)"
+    }
+
+    private static func splitTextIntoChunks(_ text: String, chunkSize: Int, overlap: Int) -> [String] {
+        if text.isEmpty { return [] }
+        var chunks: [String] = []
+        var start = text.startIndex
+
+        while start < text.endIndex {
+            let end = text.index(start, offsetBy: chunkSize, limitedBy: text.endIndex) ?? text.endIndex
+            let chunk = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunk.isEmpty {
+                chunks.append(chunk)
+            }
+            if end == text.endIndex { break }
+            let rewind = min(overlap, text.distance(from: start, to: end))
+            start = text.index(end, offsetBy: -rewind)
+        }
+
+        return chunks
     }
 }
 

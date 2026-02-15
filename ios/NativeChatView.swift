@@ -23,6 +23,9 @@ struct NativeChatView: View {
         let documents: [Document]
         let primaryDocument: Document?
         let topScoreByDocumentId: [UUID: Double]
+        let retrievalQueryUsed: String?
+        let selectedHits: [ChunkHit]
+        let allRankedHits: [ChunkHit]
     }
 
     @State private var input: String = ""
@@ -55,6 +58,8 @@ struct NativeChatView: View {
     - Do not output headings (e.g., "WORK EXPERIENCE") unless the user asked for a heading.
     - Do not repeat phrases.
     - Be concise.
+    - For count questions (e.g., "how many", "number of", "count", "total"), bind numbers to the correct entity on the same line/chunk; do not use unrelated numbers.
+    - If multiple numbers appear in the evidence, pick the number explicitly associated with the asked subject (same line/row/sentence), and do not invent.
     - No explanations unless asked.
     - Never include system tokens or internal markers.
     - Use only the provided context.
@@ -68,8 +73,8 @@ struct NativeChatView: View {
     private let maxSummaryCharsPerDoc = 420
     private let maxSnippetChars = 420
     private let maxSnippetsPerDoc = 2
-    private let maxOCRSnippetsPerDoc = 1
-    private let useNoHistoryForChat = false
+    private let maxOCRSnippetsPerDoc = 4
+    private let useNoHistoryForChat = true
     private let defaultOCRDocCount = 3
     private let lowExtractedTextThreshold = 700
     private let semanticWeight: Double = 0.9
@@ -81,8 +86,16 @@ struct NativeChatView: View {
     private let numericTokenBoostWeight: Double = 1.6
     private let anchorChunkBoostWeight: Double = 0.35
     private let anchorChunkPenaltyWeight: Double = 0.15
+    private let shortAcronymAnchorBoostWeight: Double = 0.35
     private let lastDocumentBiasWeight: Double = 0.08
-    private let minRetrievalEvidenceScore: Double = 0.35
+    private let bm25Weight: Double = 0.65
+    private let trigramWeight: Double = 0.35
+    private let evidenceAbsoluteFloor: Double = 0.12
+    private let evidenceMedianMargin: Double = 0.08
+    private let evidenceGapThreshold: Double = 0.10
+    private let passBTopEvidenceLimit = 12
+    private let passBGatingKeywordMatchMin = 2
+    private let expandedEvidenceLimit = 18
 
     var body: some View {
         NavigationView {
@@ -469,19 +482,110 @@ struct NativeChatView: View {
         "how","what","which","who","when","where","why","anything","about"
     ]
 
-    private func retrievalTokens(_ text: String) -> Set<String> {
+    private func retrievalTokenArray(_ text: String) -> [String] {
         let lowered = cleanLine(text).lowercased()
-        let tokens = lowered
+        return lowered
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
             .filter { $0.count >= 3 && !Self.retrievalStopwords.contains($0) }
-        return Set(tokens)
+            .map { token in
+                if token.count >= 5 && token.hasSuffix("s") {
+                    return String(token.dropLast())
+                }
+                return token
+            }
+    }
+
+    private func retrievalTokens(_ text: String) -> Set<String> {
+        Set(retrievalTokenArray(text))
+    }
+
+    private func normalizedForTrigrams(_ text: String) -> String {
+        cleanLine(text)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func characterTrigrams(for text: String) -> Set<String> {
+        let normalized = normalizedForTrigrams(text)
+        if normalized.isEmpty { return [] }
+        if normalized.count < 3 { return [normalized] }
+        let chars = Array(normalized)
+        var grams = Set<String>()
+        for i in 0...(chars.count - 3) {
+            grams.insert(String(chars[i...(i + 2)]))
+        }
+        return grams
+    }
+
+    private func trigramJaccardScore(queryTrigrams: Set<String>, chunkTrigrams: Set<String>) -> Double {
+        if queryTrigrams.isEmpty || chunkTrigrams.isEmpty { return 0 }
+        let intersection = queryTrigrams.intersection(chunkTrigrams).count
+        if intersection == 0 { return 0 }
+        let union = queryTrigrams.union(chunkTrigrams).count
+        return Double(intersection) / Double(max(1, union))
+    }
+
+    private struct ChunkLexicalFeatures {
+        let tokens: [String]
+        let tokenSet: Set<String>
+        let termFreq: [String: Int]
+        let length: Int
+        let trigrams: Set<String>
+    }
+
+    private func buildChunkLexicalFeatures(for text: String) -> ChunkLexicalFeatures {
+        let tokens = retrievalTokenArray(text)
+        var termFreq: [String: Int] = [:]
+        for token in tokens {
+            termFreq[token, default: 0] += 1
+        }
+        return ChunkLexicalFeatures(
+            tokens: tokens,
+            tokenSet: Set(tokens),
+            termFreq: termFreq,
+            length: max(1, tokens.count),
+            trigrams: characterTrigrams(for: text)
+        )
+    }
+
+    private func bm25Score(
+        queryTokens: Set<String>,
+        termFreq: [String: Int],
+        docLength: Int,
+        documentFrequency: [String: Int],
+        totalDocs: Int,
+        averageDocLength: Double
+    ) -> Double {
+        if queryTokens.isEmpty || termFreq.isEmpty || totalDocs == 0 { return 0 }
+        let k1 = 1.2
+        let b = 0.75
+        let avgdl = max(1.0, averageDocLength)
+
+        var score = 0.0
+        for token in queryTokens {
+            let tf = Double(termFreq[token] ?? 0)
+            if tf <= 0 { continue }
+            let df = Double(documentFrequency[token] ?? 0)
+            let n = Double(totalDocs)
+            let idf = log(1.0 + ((n - df + 0.5) / (df + 0.5)))
+            let denominator = tf + k1 * (1.0 - b + b * (Double(docLength) / avgdl))
+            if denominator > 0 {
+                score += idf * ((tf * (k1 + 1.0)) / denominator)
+            }
+        }
+
+        return score
     }
 
     private func anchorTokens(from question: String) -> [String] {
         let rawTokens = question.split { !$0.isLetter && !$0.isNumber && $0 != "-" }.map(String.init)
         let anchors = rawTokens.filter { token in
             let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty { return false }
+            if isShortAcronymToken(t) { return true }
             if t.count < 5 { return false }
             if Self.anchorStopwords.contains(t.lowercased()) { return false }
             let hasUpper = t.rangeOfCharacter(from: .uppercaseLetters) != nil
@@ -506,7 +610,12 @@ struct NativeChatView: View {
         if anchors.isEmpty { return docs }
         let filtered = docs.filter { doc in
             let contentSample = compact(doc.content, maxChars: 900)
-            let blob = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary) \(contentSample)"
+            let rawOCRSample = doc.ocrChunks
+                .prefix(2)
+                .map(\.text)
+                .joined(separator: " ")
+            let ocrSample = compact(rawOCRSample, maxChars: 900)
+            let blob = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary) \(contentSample) \(ocrSample)"
             return textContainsAnyAnchor(blob, anchors: anchors)
         }
         return filtered.isEmpty ? docs : filtered
@@ -516,6 +625,7 @@ struct NativeChatView: View {
         let q = cleanLine(question).lowercased()
         if q.isEmpty { return question }
         let tokens = Set(q.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        let hasStrongAnchor = !anchorTokens(from: question).isEmpty
 
         func hasAnyToken(_ terms: [String]) -> Bool {
             !tokens.intersection(Set(terms)).isEmpty
@@ -534,8 +644,9 @@ struct NativeChatView: View {
         }
 
         // LOCATION
-        if hasAnyToken(["city", "country", "location", "based", "region", "address"]) ||
-            hasAnyPhrase(["where", "based in"]) {
+        if !hasStrongAnchor &&
+            (hasAnyToken(["city", "country", "location", "based", "region", "address"]) ||
+            hasAnyPhrase(["where", "based in"])) {
             extras.append("location city country region address")
         }
 
@@ -562,10 +673,8 @@ struct NativeChatView: View {
         DocumentManager.inferCategory(title: "", content: question, summary: question)
     }
 
-    private func semanticOverlapScore(questionTokens: Set<String>, chunkText: String) -> Double {
-        if questionTokens.isEmpty { return 0 }
-        let chunkTokens = retrievalTokens(chunkText)
-        if chunkTokens.isEmpty { return 0 }
+    private func semanticOverlapScore(questionTokens: Set<String>, chunkTokens: Set<String>) -> Double {
+        if questionTokens.isEmpty || chunkTokens.isEmpty { return 0 }
         let overlap = questionTokens.intersection(chunkTokens).count
         return Double(overlap) / Double(max(1, questionTokens.count))
     }
@@ -592,18 +701,39 @@ struct NativeChatView: View {
     }
 
     private func exactQueryTokens(from question: String) -> [String] {
-        let source = normalizedAlphaNumericText(question)
-        let tokens = source.split(separator: " ").map(String.init)
+        let rawTokens = cleanLine(question)
+            .split { !$0.isLetter && !$0.isNumber && $0 != "-" }
+            .map(String.init)
         var seen = Set<String>()
         var out: [String] = []
-        for tok in tokens {
-            if tok.count < 4 { continue }
-            if Self.retrievalStopwords.contains(tok) { continue }
-            if seen.insert(tok).inserted {
-                out.append(tok)
+        for raw in rawTokens {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            let normalized = trimmed.lowercased().replacingOccurrences(of: "-", with: "")
+            if normalized.isEmpty { continue }
+
+            let isShortAcronym = isShortAcronymToken(trimmed)
+            let hasDigitOrHyphen =
+                trimmed.rangeOfCharacter(from: .decimalDigits) != nil ||
+                trimmed.contains("-")
+            let minLen = (isShortAcronym || hasDigitOrHyphen) ? 2 : 4
+
+            if normalized.count < minLen { continue }
+            if Self.retrievalStopwords.contains(normalized) { continue }
+
+            if seen.insert(normalized).inserted {
+                out.append(normalized)
             }
         }
         return out
+    }
+
+    private func isShortAcronymToken(_ token: String) -> Bool {
+        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.count < 2 || t.count > 5 { return false }
+        let lower = t.lowercased()
+        if Self.anchorStopwords.contains(lower) || Self.retrievalStopwords.contains(lower) { return false }
+        return t.allSatisfy { $0.isLetter }
     }
 
     private func exactQueryPhrases(from question: String) -> [String] {
@@ -817,64 +947,113 @@ struct NativeChatView: View {
         let queryForRetrieval = retrievalQuery ?? expandQuery(question)
         let questionTokens = retrievalTokens(queryForRetrieval)
         let anchors = anchorTokens(from: question)
+        let shortAcronymAnchors = anchors.filter { isShortAcronymToken($0) }
         let exactTokens = exactQueryTokens(from: question)
         let phrases = exactQueryPhrases(from: question)
         let predictedField = predictField(for: question)
-        var hits: [ChunkHit] = []
+        let queryTrigrams = characterTrigrams(for: queryForRetrieval)
+        var rankedCandidates: [(document: Document, chunk: OCRChunk, features: ChunkLexicalFeatures)] = []
+        var documentFrequency: [String: Int] = [:]
+        var totalTokenCount = 0
 
         for doc in allDocs {
-            let docTypeMatch = doc.category == predictedField ? 1.0 : 0.0
-            let tagMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.tags.joined(separator: " "))
-            let titleMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.title)
             let chunks = doc.ocrChunks.isEmpty
                 ? [OCRChunk(documentId: doc.id, pageNumber: nil, text: doc.content)]
                 : doc.ocrChunks
 
             for chunk in chunks {
-                let semanticScore = semanticOverlapScore(questionTokens: questionTokens, chunkText: chunk.text)
-                let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: chunk.text)
-                let hasAnchorMatch = !anchors.isEmpty && textContainsAnyAnchor(chunk.text, anchors: anchors)
-                let anchorAdjustment = anchors.isEmpty
-                    ? 0.0
-                    : (hasAnchorMatch ? anchorChunkBoostWeight : -anchorChunkPenaltyWeight)
-                let lastDocBias =
-                    (applyLastDocumentBias && preferredDocumentId == doc.id) ? lastDocumentBiasWeight : 0.0
-                let finalScore =
-                    (semanticWeight * semanticScore) +
-                    (docTypeBoostWeight * docTypeMatch) +
-                    (tagBoostWeight * tagMatch) +
-                    (titleBoostWeight * titleMatch) +
-                    (exactTokenBoostWeight * exact.exactToken) +
-                    (phraseBoostWeight * exact.phrase) +
-                    (numericTokenBoostWeight * exact.numeric) +
-                    anchorAdjustment +
-                    lastDocBias
-
-                if semanticScore <= 0 &&
-                    tagMatch <= 0 &&
-                    titleMatch <= 0 &&
-                    exact.exactToken <= 0 &&
-                    exact.phrase <= 0 &&
-                    exact.numeric <= 0 &&
-                    anchorAdjustment <= 0 {
-                    continue
+                let features = buildChunkLexicalFeatures(for: chunk.text)
+                if features.tokenSet.isEmpty && features.trigrams.isEmpty { continue }
+                rankedCandidates.append((document: doc, chunk: chunk, features: features))
+                totalTokenCount += features.length
+                for token in features.tokenSet {
+                    documentFrequency[token, default: 0] += 1
                 }
-
-                hits.append(
-                    ChunkHit(
-                        document: doc,
-                        chunk: chunk,
-                        semanticScore: semanticScore,
-                        docTypeMatch: docTypeMatch,
-                        tagMatch: tagMatch,
-                        titleMatch: titleMatch,
-                        exactTokenMatch: exact.exactToken,
-                        phraseMatch: exact.phrase,
-                        numericMatch: exact.numeric,
-                        finalScore: finalScore
-                    )
-                )
             }
+        }
+
+        let totalDocs = rankedCandidates.count
+        let averageDocLength = totalDocs == 0 ? 1.0 : Double(totalTokenCount) / Double(totalDocs)
+        var bm25ByChunkId: [UUID: Double] = [:]
+        var maxBM25 = 0.0
+        for candidate in rankedCandidates {
+            let rawBM25 = bm25Score(
+                queryTokens: questionTokens,
+                termFreq: candidate.features.termFreq,
+                docLength: candidate.features.length,
+                documentFrequency: documentFrequency,
+                totalDocs: totalDocs,
+                averageDocLength: averageDocLength
+            )
+            bm25ByChunkId[candidate.chunk.chunkId] = rawBM25
+            if rawBM25 > maxBM25 { maxBM25 = rawBM25 }
+        }
+
+        var hits: [ChunkHit] = []
+
+        for candidate in rankedCandidates {
+            let doc = candidate.document
+            let chunk = candidate.chunk
+            let features = candidate.features
+            let docTypeMatch = doc.category == predictedField ? 1.0 : 0.0
+            let tagMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.tags.joined(separator: " "))
+            let titleMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.title)
+            let lexicalOverlap = semanticOverlapScore(questionTokens: questionTokens, chunkTokens: features.tokenSet)
+            let normalizedBM25 = maxBM25 > 0 ? ((bm25ByChunkId[chunk.chunkId] ?? 0) / maxBM25) : 0
+            let trigramScore = trigramJaccardScore(queryTrigrams: queryTrigrams, chunkTrigrams: features.trigrams)
+            let semanticScore = (bm25Weight * normalizedBM25) + (trigramWeight * trigramScore)
+            let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: chunk.text)
+            let hasAnchorMatch = !anchors.isEmpty && textContainsAnyAnchor(chunk.text, anchors: anchors)
+            let anchorAdjustment = anchors.isEmpty
+                ? 0.0
+                : (hasAnchorMatch ? anchorChunkBoostWeight : -anchorChunkPenaltyWeight)
+            let shortAcronymBonus =
+                shortAcronymAnchors.isEmpty
+                ? 0.0
+                : (textContainsAnyAnchor(chunk.text, anchors: shortAcronymAnchors)
+                    ? shortAcronymAnchorBoostWeight
+                    : 0.0)
+            let lastDocBias =
+                (applyLastDocumentBias && preferredDocumentId == doc.id) ? lastDocumentBiasWeight : 0.0
+            let finalScore =
+                (semanticWeight * semanticScore) +
+                (0.25 * lexicalOverlap) +
+                (docTypeBoostWeight * docTypeMatch) +
+                (tagBoostWeight * tagMatch) +
+                (titleBoostWeight * titleMatch) +
+                (exactTokenBoostWeight * exact.exactToken) +
+                (phraseBoostWeight * exact.phrase) +
+                (numericTokenBoostWeight * exact.numeric) +
+                anchorAdjustment +
+                shortAcronymBonus +
+                lastDocBias
+
+            if semanticScore <= 0 &&
+                lexicalOverlap <= 0 &&
+                tagMatch <= 0 &&
+                titleMatch <= 0 &&
+                exact.exactToken <= 0 &&
+                exact.phrase <= 0 &&
+                exact.numeric <= 0 &&
+                anchorAdjustment <= 0 &&
+                shortAcronymBonus <= 0 {
+                continue
+            }
+
+            hits.append(
+                ChunkHit(
+                    document: doc,
+                    chunk: chunk,
+                    semanticScore: semanticScore,
+                    docTypeMatch: docTypeMatch,
+                    tagMatch: tagMatch,
+                    titleMatch: titleMatch,
+                    exactTokenMatch: exact.exactToken,
+                    phraseMatch: exact.phrase,
+                    numericMatch: exact.numeric,
+                    finalScore: finalScore
+                )
+            )
         }
 
         return hits.sorted { lhs, rhs in
@@ -889,47 +1068,184 @@ struct NativeChatView: View {
         let score: Double
     }
 
-    private func passAChunkCandidates(from hits: [ChunkHit]) -> [ChunkHit] {
-        if hits.isEmpty { return [] }
-        var topDocIds: [UUID] = []
-        var seen = Set<UUID>()
-        for hit in hits {
-            if seen.insert(hit.document.id).inserted {
-                topDocIds.append(hit.document.id)
-                if topDocIds.count >= 3 { break }
-            }
-        }
-        if topDocIds.isEmpty { return [] }
-        let topDocSet = Set(topDocIds)
-        let acrossTopDocs = hits.filter { topDocSet.contains($0.document.id) }
-        return Array(acrossTopDocs.prefix(20))
+    private func isCountQuestion(_ question: String) -> Bool {
+        let q = cleanLine(question).lowercased()
+        if q.isEmpty { return false }
+        return q.contains("how many") || q.contains("number of") || q.contains("count") || q.contains("total")
     }
 
-    private func passBRerankScore(for hit: ChunkHit) -> Double {
+    private func normalizedForMatching(_ text: String) -> String {
+        cleanLine(text)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+    }
+
+    private func strongestSubjectAnchorToken(from question: String) -> String? {
+        anchorTokens(from: question).first.map { normalizedForMatching($0) }
+    }
+
+    private func passBFeatures(
+        for hit: ChunkHit,
+        subjectToken: String?,
+        questionTokens: Set<String>
+    ) -> (subjectMatch: Bool, queryKeywordMatches: Int) {
+        let chunkNormalized = normalizedForMatching(hit.chunk.text)
+        let subjectMatch = subjectToken.map { chunkNormalized.contains($0) } ?? false
+        let chunkTokens = retrievalTokens(hit.chunk.text)
+        let queryKeywordMatches = questionTokens.intersection(chunkTokens).count
+        return (subjectMatch, queryKeywordMatches)
+    }
+
+    private func chunkContainsDigits(_ text: String) -> Bool {
+        text.rangeOfCharacter(from: .decimalDigits) != nil
+    }
+
+    private func passAChunkCandidates(from hits: [ChunkHit]) -> [ChunkHit] {
+        if hits.isEmpty { return [] }
+        let perDocLimit = 10
+        let candidateCap = 80
+
+        var docOrder: [UUID] = []
+        var grouped: [UUID: [ChunkHit]] = [:]
+        for hit in hits {
+            let docId = hit.document.id
+            if grouped[docId] == nil {
+                grouped[docId] = []
+                docOrder.append(docId)
+            }
+            grouped[docId]?.append(hit)
+        }
+
+        var merged: [ChunkHit] = []
+        merged.reserveCapacity(candidateCap)
+        for docId in docOrder {
+            guard let docHits = grouped[docId] else { continue }
+            merged.append(contentsOf: docHits.prefix(perDocLimit))
+            if merged.count >= candidateCap { break }
+        }
+
+        if merged.count > candidateCap {
+            return Array(merged.prefix(candidateCap))
+        }
+        return merged
+    }
+
+    private func passBRerankScore(
+        for hit: ChunkHit,
+        isCountQuestion: Bool,
+        subjectToken: String?,
+        questionTokens: Set<String>
+    ) -> Double {
         let overlap = hit.semanticScore
         let numbers = hit.numericMatch
+        let hasDigits = chunkContainsDigits(hit.chunk.text)
+        let features = passBFeatures(
+            for: hit,
+            subjectToken: subjectToken,
+            questionTokens: questionTokens
+        )
         let exactKeywordHits =
             (0.75 * hit.exactTokenMatch) +
             (0.55 * hit.phraseMatch) +
             (0.25 * hit.titleMatch) +
             (0.2 * hit.tagMatch)
+        let countQuestionBonus = isCountQuestion ? (hasDigits ? 0.85 : 0.0) : 0.0
+        let numericWeight = isCountQuestion ? 1.8 : 1.2
+        let subjectBonus = features.subjectMatch ? 0.95 : 0.0
         return
             (1.25 * overlap) +
-            (1.2 * numbers) +
-            (1.1 * exactKeywordHits)
+            (numericWeight * numbers) +
+            (1.1 * exactKeywordHits) +
+            countQuestionBonus +
+            subjectBonus
     }
 
-    private func twoPassContextHits(from hits: [ChunkHit]) -> [ChunkHit] {
+    private func twoPassContextHits(from hits: [ChunkHit], question: String) -> [ChunkHit] {
         let passA = passAChunkCandidates(from: hits)
         if passA.isEmpty { return [] }
+
+        let countQuestion = isCountQuestion(question)
+        let subjectToken = strongestSubjectAnchorToken(from: question)
+        let questionTokens = retrievalTokens(question)
         let reranked = passA.map { hit in
-            PassBHitScore(hit: hit, score: passBRerankScore(for: hit))
+            PassBHitScore(
+                hit: hit,
+                score: passBRerankScore(
+                    for: hit,
+                    isCountQuestion: countQuestion,
+                    subjectToken: subjectToken,
+                    questionTokens: questionTokens
+                )
+            )
         }.sorted { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             if lhs.hit.finalScore != rhs.hit.finalScore { return lhs.hit.finalScore > rhs.hit.finalScore }
             return lhs.hit.document.dateCreated > rhs.hit.document.dateCreated
         }
-        return Array(reranked.prefix(6).map(\.hit))
+        let topEvidence = Array(reranked.prefix(passBTopEvidenceLimit).map(\.hit))
+
+        let gated = topEvidence.filter { hit in
+            let features = passBFeatures(
+                for: hit,
+                subjectToken: subjectToken,
+                questionTokens: questionTokens
+            )
+            return features.subjectMatch || features.queryKeywordMatches >= passBGatingKeywordMatchMin
+        }
+        return gated.isEmpty ? topEvidence : gated
+    }
+
+    private func expandedHitsWithNeighbors(from hits: [ChunkHit], allHits: [ChunkHit]) -> [ChunkHit] {
+        if hits.isEmpty { return [] }
+        var byChunkId: [UUID: ChunkHit] = [:]
+        for hit in allHits {
+            if let existing = byChunkId[hit.chunk.chunkId], existing.finalScore >= hit.finalScore {
+                continue
+            }
+            byChunkId[hit.chunk.chunkId] = hit
+        }
+
+        var output: [ChunkHit] = []
+        var seen = Set<UUID>()
+
+        for seed in hits {
+            let chunks = seed.document.ocrChunks.isEmpty ? [seed.chunk] : seed.document.ocrChunks
+            guard let centerIndex = chunks.firstIndex(where: { $0.chunkId == seed.chunk.chunkId }) else {
+                if seen.insert(seed.chunk.chunkId).inserted {
+                    output.append(seed)
+                    if output.count >= expandedEvidenceLimit { break }
+                }
+                continue
+            }
+
+            let candidateIndices = [centerIndex - 1, centerIndex, centerIndex + 1]
+            for idx in candidateIndices where idx >= 0 && idx < chunks.count {
+                let candidateChunk = chunks[idx]
+                if let seedPage = seed.chunk.pageNumber, let candidatePage = candidateChunk.pageNumber, seedPage != candidatePage {
+                    continue
+                }
+                let resolved = byChunkId[candidateChunk.chunkId] ?? seed
+                if seen.insert(resolved.chunk.chunkId).inserted {
+                    output.append(resolved)
+                    if output.count >= expandedEvidenceLimit { break }
+                }
+            }
+            if output.count >= expandedEvidenceLimit { break }
+        }
+
+        return output.isEmpty ? hits : output
+    }
+
+    private func passesAdaptiveEvidenceThreshold(_ hits: [ChunkHit]) -> Bool {
+        guard !hits.isEmpty else { return false }
+        let sortedScores = hits.map(\.finalScore).sorted(by: >)
+        let best = sortedScores[0]
+        if best >= evidenceAbsoluteFloor { return true }
+        let median = sortedScores[sortedScores.count / 2]
+        if best >= (median + evidenceMedianMargin) { return true }
+        let second = sortedScores.count > 1 ? sortedScores[1] : best
+        let gap = best - second
+        return gap >= evidenceGapThreshold
     }
 
     private func selectDocumentsByChunkRanking(
@@ -940,7 +1256,14 @@ struct NativeChatView: View {
         retrievalQuery: String? = nil
     ) -> DocumentSelectionResult {
         if allDocs.isEmpty {
-            return DocumentSelectionResult(documents: [], primaryDocument: nil, topScoreByDocumentId: [:])
+            return DocumentSelectionResult(
+                documents: [],
+                primaryDocument: nil,
+                topScoreByDocumentId: [:],
+                retrievalQueryUsed: retrievalQuery,
+                selectedHits: [],
+                allRankedHits: []
+            )
         }
         let candidateDocs = anchorFilteredDocuments(question: question, docs: allDocs)
 
@@ -964,16 +1287,27 @@ struct NativeChatView: View {
             return DocumentSelectionResult(
                 documents: fallbackDocs,
                 primaryDocument: fallbackDocs.first,
-                topScoreByDocumentId: fallbackScores
+                topScoreByDocumentId: fallbackScores,
+                retrievalQueryUsed: retrievalQuery,
+                selectedHits: [],
+                allRankedHits: hits
+            )
+        }
+        if !passesAdaptiveEvidenceThreshold(hits) {
+            return DocumentSelectionResult(
+                documents: [],
+                primaryDocument: nil,
+                topScoreByDocumentId: [:],
+                retrievalQueryUsed: retrievalQuery,
+                selectedHits: [],
+                allRankedHits: hits
             )
         }
 
-        let best = hits.first?.finalScore ?? 0
-        if best < minRetrievalEvidenceScore {
-            return DocumentSelectionResult(documents: [], primaryDocument: nil, topScoreByDocumentId: [:])
-        }
-
-        let contextHits = twoPassContextHits(from: hits)
+        let contextHits = expandedHitsWithNeighbors(
+            from: twoPassContextHits(from: hits, question: question),
+            allHits: hits
+        )
         if contextHits.isEmpty {
             let fallbackScored = fallbackScoredSelection(
                 question: question,
@@ -987,7 +1321,10 @@ struct NativeChatView: View {
             return DocumentSelectionResult(
                 documents: fallbackDocs,
                 primaryDocument: fallbackDocs.first,
-                topScoreByDocumentId: fallbackScores
+                topScoreByDocumentId: fallbackScores,
+                retrievalQueryUsed: retrievalQuery,
+                selectedHits: [],
+                allRankedHits: hits
             )
         }
 
@@ -1005,7 +1342,14 @@ struct NativeChatView: View {
         }
 
         if selected.isEmpty {
-            return DocumentSelectionResult(documents: [], primaryDocument: nil, topScoreByDocumentId: [:])
+            return DocumentSelectionResult(
+                documents: [],
+                primaryDocument: nil,
+                topScoreByDocumentId: [:],
+                retrievalQueryUsed: retrievalQuery,
+                selectedHits: contextHits,
+                allRankedHits: hits
+            )
         }
 
         let primaryDocId = contextHits.first?.document.id
@@ -1018,17 +1362,84 @@ struct NativeChatView: View {
         return DocumentSelectionResult(
             documents: selected,
             primaryDocument: primaryDocument,
-            topScoreByDocumentId: selectedScores
+            topScoreByDocumentId: selectedScores,
+            retrievalQueryUsed: retrievalQuery,
+            selectedHits: contextHits,
+            allRankedHits: hits
         )
+    }
+
+    private func logRetrievalTrace(
+        question: String,
+        selection: DocumentSelectionResult
+    ) {
+        let hits = selection.selectedHits
+        let globalHits = selection.allRankedHits
+        let topK = 10
+
+        print("================ RETRIEVAL TRACE ================")
+        print("Question: \"\(cleanLine(question))\"")
+        print("")
+        print("Top K Global Chunks (pre Pass A, K = \(topK)):")
+        print("")
+
+        if globalHits.isEmpty {
+            print("(no chunk hits)")
+            print("")
+        } else {
+            for (index, hit) in globalHits.prefix(topK).enumerated() {
+                let page = hit.chunk.pageNumber.map { "Page \($0)" } ?? "Page ?"
+                let snippet = trimToCharBudget(hit.chunk.text, maxChars: 520)
+
+                print("[\(index + 1)] Score: \(String(format: "%.2f", hit.finalScore))")
+                print("Doc: \(hit.document.title)")
+                print("Chunk: \(hit.chunk.chunkId.uuidString) \(page)")
+                print("----------------------------------------")
+                print("\"\(snippet)\"")
+                print("----------------------------------------")
+                print("")
+            }
+        }
+
+        print("Top K Selected Evidence Chunks (post Pass B, K = \(topK)):")
+        print("")
+
+        if hits.isEmpty {
+            print("(no selected evidence chunks)")
+            print("")
+        } else {
+            for (index, hit) in hits.prefix(topK).enumerated() {
+                let page = hit.chunk.pageNumber.map { "Page \($0)" } ?? "Page ?"
+                let snippet = trimToCharBudget(hit.chunk.text, maxChars: 520)
+
+                print("[\(index + 1)] Score: \(String(format: "%.2f", hit.finalScore))")
+                print("Doc: \(hit.document.title)")
+                print("Chunk: \(hit.chunk.chunkId.uuidString) \(page)")
+                print("----------------------------------------")
+                print("\"\(snippet)\"")
+                print("----------------------------------------")
+                print("")
+            }
+        }
+
+        let scores = globalHits.map(\.finalScore).sorted(by: >)
+        let best = scores.first ?? 0
+        let median = scores.isEmpty ? 0 : scores[scores.count / 2]
+        let second = scores.count > 1 ? scores[1] : best
+        let gap = best - second
+        print("AdaptiveThreshold floor=\(String(format: "%.2f", evidenceAbsoluteFloor)) median+margin=\(String(format: "%.2f", evidenceMedianMargin)) gap=\(String(format: "%.2f", evidenceGapThreshold))")
+        print("EvidenceStats best=\(String(format: "%.2f", best)) median=\(String(format: "%.2f", median)) gap=\(String(format: "%.2f", gap))")
+        print("=================================================")
     }
 
     private func retrySelectionWithExpandedQueryIfNeeded(
         question: String,
         allDocs: [Document],
         preferredDocumentId: UUID?,
+        applyLastDocumentBias: Bool,
         currentSelection: DocumentSelectionResult
     ) -> DocumentSelectionResult {
-        if !currentSelection.documents.isEmpty { return currentSelection }
+        if !currentSelection.selectedHits.isEmpty { return currentSelection }
 
         let expanded = expandQuery(question)
         if cleanLine(expanded).lowercased() == cleanLine(question).lowercased() {
@@ -1039,7 +1450,7 @@ struct NativeChatView: View {
             question: question,
             allDocs: allDocs,
             preferredDocumentId: preferredDocumentId,
-            applyLastDocumentBias: true,
+            applyLastDocumentBias: applyLastDocumentBias,
             retrievalQuery: expanded
         )
     }
@@ -1111,7 +1522,10 @@ struct NativeChatView: View {
         phrases: [String],
         text: String
     ) -> Double {
-        let semantic = semanticOverlapScore(questionTokens: questionTokens, chunkText: text)
+        let semantic = semanticOverlapScore(
+            questionTokens: questionTokens,
+            chunkTokens: retrievalTokens(text)
+        )
         let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: text)
         return
             (semanticWeight * semantic) +
@@ -1330,25 +1744,29 @@ struct NativeChatView: View {
     private func buildAnswerPrompt(
         question: String,
         selectedDocs: [Document],
-        topScoreByDocumentId: [UUID: Double]
+        topScoreByDocumentId: [UUID: Double],
+        selectedHits: [ChunkHit]
     ) -> String {
         let folders = trimToCharBudget(buildFolderIndex(), maxChars: folderContextCharBudget)
-        let selectedContext = buildSelectedDocumentContext(
-            selected: selectedDocs,
-            question: question,
-            topScoreByDocumentId: topScoreByDocumentId
-        )
+        let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
+        let selectedDocList = selectedDocs.isEmpty
+            ? "SelectedDocs: None"
+            : selectedDocs.map { "- \($0.title) [\($0.id.uuidString)] score=\(String(format: "%.2f", topScoreByDocumentId[$0.id] ?? 0))" }.joined(separator: "\n")
         let activeContextBlock = """
         FOLDERS:
         \(folders)
 
-        DOCUMENTS:
-        \(selectedContext)
+        \(selectedDocList)
+
+        \(evidence)
         """
         let lastDocId = sessionState.lastReferencedDocumentId?.uuidString ?? "None"
         return """
         SYSTEM:
         \(chatPreprompt)
+        Internal process (do not expose):
+        1) EXTRACT: find the smallest direct quote from EVIDENCE_CHUNKS that answers the QUESTION. If none exists, set EXTRACT=NONE.
+        2) ANSWER: use only EXTRACT. If EXTRACT=NONE, output exactly: "Not specified in the documents."
         Use SESSION_POINTER only for follow-up retrieval continuity.
         Never treat SESSION_POINTER fields as factual evidence.
         Do not use prior chat/answer text as a factual source.
@@ -1362,6 +1780,23 @@ struct NativeChatView: View {
         QUESTION:
         \(question)
         """
+    }
+
+    private func buildEvidenceFromSelectedHits(_ hits: [ChunkHit], maxChars: Int) -> String {
+        if hits.isEmpty { return "EVIDENCE_CHUNKS: None" }
+
+        var out: [String] = []
+        for (i, hit) in hits.enumerated() {
+            let page = hit.chunk.pageNumber.map { "Page \($0)" } ?? "Page ?"
+            let text = trimToCharBudget(hit.chunk.text, maxChars: 520)
+            out.append("""
+            [\(i + 1)] score=\(String(format: "%.2f", hit.finalScore)) doc="\(hit.document.title)" \(page) chunk=\(hit.chunk.chunkId.uuidString)
+            \(text)
+            """)
+        }
+
+        let joined = out.joined(separator: "\n\n")
+        return trimToCharBudget("EVIDENCE_CHUNKS:\n\(joined)", maxChars: maxChars)
     }
 
     private func buildPrompt(for question: String) -> String {
@@ -1393,7 +1828,11 @@ struct NativeChatView: View {
         let shortFollowUp = hasAssistantHistory &&
             cleanLine(question).split { !$0.isLetter && !$0.isNumber }.count <= 6
         let anchorFollowUp = isAnaphoraFollowUp(question) || shortFollowUp
-        if !challengeQuestion, anchorFollowUp, let anchor = makeThreadAnchor(history: self.messages) {
+        let hasStrongQuestionAnchor = !anchorTokens(from: question).isEmpty
+        if !challengeQuestion,
+           !hasStrongQuestionAnchor,
+           anchorFollowUp,
+           let anchor = makeThreadAnchor(history: self.messages) {
             effectiveQuestion = anchor + question
         }
 
@@ -1407,27 +1846,35 @@ struct NativeChatView: View {
         let allDocs = !scopedDocumentIds.isEmpty
             ? scopedDocsRaw
             : documentManager.conversationEligibleDocuments()
+        let applyLastDocumentBias = !hasStrongQuestionAnchor
         let initialSelection = selectDocumentsByChunkRanking(
             question: effectiveQuestion,
             allDocs: allDocs,
             preferredDocumentId: sessionState.lastReferencedDocumentId,
-            applyLastDocumentBias: true
+            applyLastDocumentBias: applyLastDocumentBias
         )
         let selection = retrySelectionWithExpandedQueryIfNeeded(
             question: effectiveQuestion,
             allDocs: allDocs,
             preferredDocumentId: sessionState.lastReferencedDocumentId,
+            applyLastDocumentBias: applyLastDocumentBias,
             currentSelection: initialSelection
         )
 
-        if selection.documents.isEmpty {
+        logRetrievalTrace(
+            question: effectiveQuestion,
+            selection: selection
+        )
+
+        if selection.selectedHits.isEmpty {
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil)
         }
 
         let prompt = buildAnswerPrompt(
             question: effectiveQuestion,
             selectedDocs: selection.documents,
-            topScoreByDocumentId: selection.topScoreByDocumentId
+            topScoreByDocumentId: selection.topScoreByDocumentId,
+            selectedHits: selection.selectedHits
         )
         let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
         return ChatLLMResult(reply: reply, primaryDocument: selection.primaryDocument)

@@ -392,6 +392,7 @@ class DocumentManager: ObservableObject {
                 content: old.content,
                 summary: old.summary,
                 ocrPages: newPages,
+                ocrChunks: nil,
                 category: old.category,
                 keywordsResume: old.keywordsResume,
                 tags: old.tags,
@@ -405,6 +406,15 @@ class DocumentManager: ObservableObject {
                 originalFileData: old.originalFileData
             )
             documents[idx] = updated
+            let chunkPages = updated.ocrChunks.compactMap(\.pageNumber)
+            let minChunkPage = chunkPages.min()
+            let maxChunkPage = chunkPages.max()
+            print(
+                "OCR update for doc \(updated.id): " +
+                "ocrPages.count=\(updated.ocrPages?.count ?? 0), " +
+                "ocrChunks.count=\(updated.ocrChunks.count), " +
+                "chunkPageRange=\(minChunkPage.map(String.init) ?? "nil")...\(maxChunkPage.map(String.init) ?? "nil")"
+            )
             saveState()
         }
     }

@@ -118,6 +118,8 @@ const CHAT_SYSTEM_PROMPT = `You are a document assistant.
 Rules:
 - Answer in maximum 3 sentences.
 - Be concise.
+- For count questions (e.g., "how many", "number of", "count", "total"), bind numbers to the correct entity on the same line/chunk; do not use unrelated numbers.
+- If multiple numbers appear in the evidence, pick the number explicitly associated with the asked subject (same line/row/sentence), and do not invent.
 - No explanations unless asked.
 - Never include system tokens or internal markers.
 - If information is not found, say only: "Not specified in the documents."`;
@@ -1150,10 +1152,18 @@ useEffect(() => {
           if (!text) text = "(No output)";
 
           if (!isSummary && !isName && !noHistory) {
-            if (text.length > 0) {
-              const assistantMessage: Message = { role: 'assistant', content: text, timestamp: Date.now() };
+            const isFallback =
+              text.trim() === "Not specified in the documents.";
+
+            if (text.length > 0 && !isFallback) {
+              const assistantMessage: Message = {
+                role: 'assistant',
+                content: text,
+                timestamp: Date.now(),
+              };
               conversationRef.current = [...messagesForAI, assistantMessage];
             } else {
+              // Do NOT store fallback answers in history
               conversationRef.current = messagesForAI;
             }
           }
