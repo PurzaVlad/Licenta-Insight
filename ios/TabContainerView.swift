@@ -509,11 +509,49 @@ struct TabContainerView: View {
 
         edgeAI.generate(next.prompt, resolver: { result in
             DispatchQueue.main.async {
-                self.summaryRequestsInFlight.remove(next.documentId)
-                if !self.canceledSummaryIds.contains(next.documentId),
-                   let summary = result as? String, !summary.isEmpty {
-                    self.documentManager.updateSummary(for: next.documentId, to: summary)
+                let raw = (result as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if self.canceledSummaryIds.contains(next.documentId) {
+                    self.summaryRequestsInFlight.remove(next.documentId)
+                    self.finishSummary(for: next.documentId)
+                    return
                 }
+
+                if raw.isEmpty {
+                    self.summaryRequestsInFlight.remove(next.documentId)
+                    self.finishSummary(for: next.documentId)
+                    return
+                }
+
+                if self.isChattySummaryOutput(raw) {
+                    let strictPrompt = self.makeStrictRewritePrompt(from: next.prompt)
+                    edgeAI.generate(strictPrompt, resolver: { retryResult in
+                        DispatchQueue.main.async {
+                            let retryText = (retryResult as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            let final = self.cleanedSummaryText(retryText.isEmpty ? raw : retryText)
+                            if !self.canceledSummaryIds.contains(next.documentId), !final.isEmpty {
+                                self.documentManager.updateSummary(for: next.documentId, to: final)
+                            }
+                            self.summaryRequestsInFlight.remove(next.documentId)
+                            self.finishSummary(for: next.documentId)
+                        }
+                    }, rejecter: { _, _, _ in
+                        DispatchQueue.main.async {
+                            let final = self.cleanedSummaryText(raw)
+                            if !self.canceledSummaryIds.contains(next.documentId), !final.isEmpty {
+                                self.documentManager.updateSummary(for: next.documentId, to: final)
+                            }
+                            self.summaryRequestsInFlight.remove(next.documentId)
+                            self.finishSummary(for: next.documentId)
+                        }
+                    })
+                    return
+                }
+
+                let final = self.cleanedSummaryText(raw)
+                if !final.isEmpty {
+                    self.documentManager.updateSummary(for: next.documentId, to: final)
+                }
+                self.summaryRequestsInFlight.remove(next.documentId)
                 self.finishSummary(for: next.documentId)
             }
         }, rejecter: { _, _, _ in
@@ -522,6 +560,59 @@ struct TabContainerView: View {
                 self.finishSummary(for: next.documentId)
             }
         })
+    }
+
+    private func cleanedSummaryText(_ text: String) -> String {
+        var lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let bannedPrefixes = [
+            "i understand",
+            "you've provided",
+            "you have provided",
+            "if you have any",
+            "feel free to ask",
+            "i'll do my best to assist",
+            "i can help",
+            "let me know"
+        ]
+
+        lines.removeAll { line in
+            let lower = line.lowercased()
+            return bannedPrefixes.contains { lower.hasPrefix($0) || lower.contains($0) }
+        }
+
+        return lines.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isChattySummaryOutput(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let patterns = [
+            "i understand you've provided",
+            "i understand you have provided",
+            "if you have any particular questions",
+            "feel free to ask",
+            "i'll do my best to assist",
+            "i can help you",
+            "what would you like"
+        ]
+        return patterns.contains { lower.contains($0) }
+    }
+
+    private func makeStrictRewritePrompt(from originalPrompt: String) -> String {
+        """
+        <<<NO_HISTORY>>>
+        You are rewriting a failed summary output into a proper document summary.
+        Return only summary text, no meta commentary.
+        Do not address the user.
+        Do not ask questions.
+        Do not use phrases like "I understand", "you've provided", or "feel free to ask".
+        Use concise natural language paragraphs.
+
+        \(originalPrompt)
+        """
     }
 
     private func generateMissingTagsIfNeeded() {
@@ -684,12 +775,12 @@ struct TabContainerView: View {
     }
 
     private func validatePasscode() {
-        guard let stored = KeychainService.getPasscode() else {
+        guard KeychainService.passcodeExists() else {
             unlockErrorMessage = "No passcode set."
             passcodeEntry = ""
             return
         }
-        if passcodeEntry == stored {
+        if KeychainService.verifyPasscode(passcodeEntry) {
             isLocked = false
             unlockErrorMessage = ""
             passcodeEntry = ""

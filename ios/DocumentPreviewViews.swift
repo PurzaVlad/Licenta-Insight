@@ -1779,13 +1779,8 @@ struct DocumentSummaryView: View {
                                         }
                                     }
                                     Section("Content") {
-                                        Picker("Content", selection: $selectedSummaryContent) {
-                                            Text("General").tag(DocumentManager.SummaryContent.general)
-                                            Text("Finance").tag(DocumentManager.SummaryContent.finance)
-                                            Text("Legal").tag(DocumentManager.SummaryContent.legal)
-                                            Text("Academic").tag(DocumentManager.SummaryContent.academic)
-                                            Text("Medical").tag(DocumentManager.SummaryContent.medical)
-                                        }
+                                        Text("General")
+                                            .foregroundColor(.secondary)
                                     }
                                 } label: {
                                     Label(summaryStyleLabel, systemImage: "slider.horizontal.3")

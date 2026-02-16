@@ -6,42 +6,44 @@ import SSZipArchive
 import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
-    enum SummaryLength: String, CaseIterable {
-        case short
-        case medium
-        case long
-    }
-
     enum SummaryContent: String, CaseIterable {
         case general
-        case finance
-        case legal
-        case academic
-        case medical
     }
 
+    // Constants
     static let summaryUnavailableMessage = "Not available as source file is still available."
     static let ocrUnavailableWhileSourceExistsMessage = "No OCR because source file is still available."
-    private static let appGroupIdentifier = "group.com.purzavlad.identity"
-    private static let sharedInboxFolderName = "ShareInbox"
+
+    // Services (injected for testability)
+    private let persistenceService: PersistenceService
+    private let fileProcessingService: FileProcessingService
+    private let ocrService: OCRService
+    private let aiService: AIService
+    private let validationService: ValidationService
+
+    // Published state
     @Published var documents: [Document] = []
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
     @Published private(set) var lastAccessedMap: [UUID: Date] = [:]
-    private let maxOCRChars = 50000
-    private let documentsKey = "SavedDocuments_v2" // legacy (migration only)
-    private let documentsFileName = "SavedDocuments_v2.json"
-    private let lastAccessedKey = "LastAccessedMap_v1"
+
+    // Private state
     private let sharedInboxImportQueue = DispatchQueue(label: "com.purzavlad.identity.sharedInboxImport", qos: .utility)
     private var isImportingSharedInbox = false
 
-    private struct PersistedState: Codable {
-        var documents: [Document]
-        var folders: [DocumentFolder]
-        var prefersGridLayout: Bool
-    }
-    
-    init() {
+    init(
+        persistenceService: PersistenceService = .shared,
+        fileProcessingService: FileProcessingService = .shared,
+        ocrService: OCRService = .shared,
+        aiService: AIService = .shared,
+        validationService: ValidationService = .shared
+    ) {
+        self.persistenceService = persistenceService
+        self.fileProcessingService = fileProcessingService
+        self.ocrService = ocrService
+        self.aiService = aiService
+        self.validationService = validationService
+
         loadDocuments()
         lastAccessedMap = loadLastAccessedMap()
         importSharedInboxIfNeeded()
@@ -81,8 +83,18 @@ class DocumentManager: ObservableObject {
 
             var importedDocuments: [Document] = []
             var consumedURLs: [URL] = []
+            var invalidURLs: [URL] = []
 
             for url in fileURLs {
+                // Validate file before processing
+                do {
+                    try ValidationService.shared.validateFile(url)
+                } catch {
+                    print("⚠️ DocumentManager: Skipping invalid file '\(url.lastPathComponent)': \(error.localizedDescription)")
+                    invalidURLs.append(url)
+                    continue
+                }
+
                 if let document = self.processFile(at: url) {
                     importedDocuments.append(document)
                     consumedURLs.append(url)
@@ -96,10 +108,15 @@ class DocumentManager: ObservableObject {
                 for url in consumedURLs {
                     try? fm.removeItem(at: url)
                 }
+                // Also clean up invalid files
+                for url in invalidURLs {
+                    try? fm.removeItem(at: url)
+                }
                 self.isImportingSharedInbox = false
             }
         }
     }
+
 
     func updateLastAccessed(id: UUID) {
         lastAccessedMap[id] = Date()
@@ -111,25 +128,19 @@ class DocumentManager: ObservableObject {
     }
 
     private func loadLastAccessedMap() -> [UUID: Date] {
-        guard let data = UserDefaults.standard.data(forKey: lastAccessedKey) else { return [:] }
         do {
-            let raw = try JSONDecoder().decode([String: Date].self, from: data)
-            var map: [UUID: Date] = [:]
-            for (key, value) in raw {
-                if let id = UUID(uuidString: key) {
-                    map[id] = value
-                }
-            }
-            return map
+            return try persistenceService.loadLastAccessedMap()
         } catch {
+            print("⚠️ DocumentManager: Failed to load last accessed map: \(error.localizedDescription)")
             return [:]
         }
     }
 
     private func saveLastAccessedMap() {
-        let raw = Dictionary(uniqueKeysWithValues: lastAccessedMap.map { ($0.key.uuidString, $0.value) })
-        if let data = try? JSONEncoder().encode(raw) {
-            UserDefaults.standard.set(data, forKey: lastAccessedKey)
+        do {
+            try persistenceService.saveLastAccessedMap(lastAccessedMap)
+        } catch {
+            print("❌ DocumentManager: Failed to save last accessed map: \(error.localizedDescription)")
         }
     }
 
@@ -831,25 +842,22 @@ class DocumentManager: ObservableObject {
         content: SummaryContent = .general
     ) {
         if document.type == .zip { return }
+        _ = content
         print("🤖 DocumentManager: Generating summary for '\(document.title)'")
-        var promptBody = ""
+        var ocr = ""
         if let pages = document.ocrPages, !pages.isEmpty {
             let ocrText = Self.buildStructuredText(from: pages, includePageLabels: true)
             if ocrText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 40 {
-                promptBody = ocrText
+                ocr = ocrText
             }
         }
-        if promptBody.isEmpty {
-            promptBody = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ocr.isEmpty {
+            ocr = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let styleMarker = "<<<SUMMARY_STYLE:length=\(length.rawValue);content=\(content.rawValue)>>>"
-        let prompt = """
-        <<<SUMMARY_REQUEST>>>
-        \(styleMarker)
-        \(promptBody)
-        """
+        let truncatedOCR = String(ocr.prefix(20000))
+        let prompt = Self.buildSummaryPrompt(input: truncatedOCR, length: length)
 
-        print("🤖 DocumentManager: Sending summary request, content length: \(promptBody.count)")
+        print("🤖 DocumentManager: Sending summary request, content length: \(truncatedOCR.count)")
         if force {
             updateSummary(for: document.id, to: "Processing summary...")
         }
@@ -1720,30 +1728,8 @@ class DocumentManager: ObservableObject {
     // MARK: - Auto Categorization + Keywords
 
     private static func withInferredMetadataIfNeeded(_ doc: Document) -> Document {
-        // If we already have a keyword resume, assume metadata is present.
-        if !doc.keywordsResume.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return doc
-        }
-        let inferredCategory = inferCategory(title: doc.title, content: doc.content, summary: doc.summary)
-        let inferredKeywords = makeKeywordsResume(title: doc.title, content: doc.content, summary: doc.summary)
-        return Document(
-            id: doc.id,
-            title: doc.title,
-            content: doc.content,
-            summary: doc.summary,
-            ocrPages: doc.ocrPages,
-            category: inferredCategory,
-            keywordsResume: inferredKeywords,
-            tags: doc.tags,
-            sourceDocumentId: doc.sourceDocumentId,
-            dateCreated: doc.dateCreated,
-            folderId: doc.folderId,
-            sortOrder: doc.sortOrder,
-            type: doc.type,
-            imageData: doc.imageData,
-            pdfData: doc.pdfData,
-            originalFileData: doc.originalFileData
-        )
+        // All documents use general category
+        return doc
     }
 
     private static func withBackfilledMetadata(_ doc: Document) -> Document {
@@ -1906,71 +1892,11 @@ class DocumentManager: ObservableObject {
     }
 
     static func inferCategory(title: String, content: String, summary: String) -> Document.DocumentCategory {
-        let t = title.lowercased()
-        let s = summary.lowercased()
-        let c = String(content.prefix(4000)).lowercased()
-        let combined = "\(t)\n\(s)\n\(c)"
-
-        func has(_ needles: [String]) -> Bool {
-            for n in needles where combined.contains(n) { return true }
-            return false
-        }
-
-        if has(["cv", "resume", "résumé", "curriculum vitae", "work experience", "education", "skills", "linkedin", "github"]) {
-            return .resume
-        }
-        if has(["invoice", "receipt", "statement", "payment", "balance", "iban", "swift", "tax", "salary", "budget"]) {
-            return combined.contains("receipt") ? .receipts : .finance
-        }
-        if has(["agreement", "contract", "terms", "nda", "non-disclosure", "liability", "lease", "court", "jurisdiction"]) {
-            return .legal
-        }
-        if has(["diagnosis", "prescription", "patient", "clinic", "doctor", "hospital", "medication", "allergy"]) {
-            return .medical
-        }
-        if has(["passport", "driver", "license", "identity", "id card", "ssn", "social security"]) {
-            return .identity
-        }
-        if has(["meeting", "notes", "minutes", "agenda", "todo", "brainstorm", "journal"]) {
-            return .notes
-        }
         return .general
     }
 
     static func makeKeywordsResume(title: String, content: String, summary: String) -> String {
-        let stop: Set<String> = [
-            "the","and","for","with","that","this","from","are","was","were","have","has","had",
-            "you","your","they","their","them","not","but","can","will","would","should","could",
-            "a","an","to","of","in","on","at","as","by","or","be","is","it","we","i"
-        ]
-
-        let text = "\(title)\n\(summary)\n\(String(content.prefix(2500)))".lowercased()
-        let tokens = text
-            .split { !$0.isLetter && !$0.isNumber }
-            .map(String.init)
-            .filter { $0.count >= 3 && !stop.contains($0) }
-
-        var freq: [String: Int] = [:]
-        for tok in tokens {
-            freq[tok, default: 0] += 1
-        }
-
-        let ranked = freq
-            .sorted { a, b in a.value == b.value ? a.key < b.key : a.value > b.value }
-            .map { $0.key }
-
-        var parts: [String] = []
-        for w in ranked {
-            if parts.count >= 10 { break }
-            parts.append(w)
-            let candidate = parts.joined(separator: ", ")
-            if candidate.count >= 50 { break }
-        }
-
-        let joined = parts.joined(separator: ", ")
-        if joined.count <= 50 { return joined }
-        let idx = joined.index(joined.startIndex, offsetBy: 50)
-        return String(joined[..<idx])
+        return ""
     }
 
     private static let tagStopwords: Set<String> = [

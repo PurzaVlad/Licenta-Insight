@@ -89,16 +89,14 @@ class ConversationState {
     }
     
     private func updateEntities(from text: String, documentTitle: String?) {
-        // Extract invoice numbers, account IDs, etc.
-        let invoicePattern = "\\b[A-Z]{3}-\\d{4}-\\d{3}\\b"  // e.g., INV-2024-001
-        if let invoice = text.firstMatch(of: invoicePattern) {
-            activeEntities["invoice"] = String(invoice)
-        }
-        
-        // Extract account numbers (e.g., ACC-12345)
-        let accountPattern = "\\b[A-Z]{3}-\\d+\\b"
-        if let account = text.firstMatch(of: accountPattern) {
-            activeEntities["account"] = String(account)
+        // Extract common entity patterns (alphanumeric identifiers)
+        let entityPattern = "\\b[A-Z]{2,4}-\\d+\\b"
+        if let entity = text.firstMatch(of: entityPattern) {
+            let entityStr = String(entity)
+            // Store by prefix (e.g., "INV-123" -> prefix "INV")
+            if let prefix = entityStr.split(separator: "-").first {
+                activeEntities[String(prefix).lowercased()] = entityStr
+            }
         }
         
         // Extract document IDs from response

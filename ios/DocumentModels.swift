@@ -21,13 +21,6 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
 
     enum DocumentCategory: String, CaseIterable, Codable {
         case general = "General"
-        case resume = "Resume"
-        case legal = "Legal"
-        case finance = "Finance"
-        case medical = "Medical"
-        case identity = "Identity"
-        case notes = "Notes"
-        case receipts = "Receipts"
     }
 
     enum DocumentType: String, CaseIterable, Codable {
