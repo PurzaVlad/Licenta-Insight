@@ -134,9 +134,9 @@ class AIService {
 
         // Clean up the text - remove brackets, quotes, special chars
         var cleaned = text
-        cleaned = cleaned.replacingOccurrences(of: "[\\[\\]\\(\\)\"'""`]", with: "", options: .regularExpression, range: nil)
-        cleaned = cleaned.replacingOccurrences(of: "[^A-Za-z0-9,;|\\n\\s]", with: " ", options: .regularExpression, range: nil)
-        cleaned = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression, range: nil)
+        cleaned = cleaned.replacingOccurrences(of: "[\\[\\]\\(\\)\"'""`]", with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "[^A-Za-z0-9,;|\\n\\s]", with: " ", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Split and process tags
@@ -182,7 +182,7 @@ class AIService {
     /// Normalizes and validates a tag token
     private static func normalizeTagToken(_ raw: String) -> String? {
         var token = raw.lowercased()
-        token = token.replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression, range: nil)
+        token = token.replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
         token = token.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard token.count >= 3 else { return nil }
@@ -196,9 +196,9 @@ class AIService {
     /// Cleans AI-generated summary output
     func cleanSummaryOutput(_ raw: String) -> String {
         var result = raw
-        result = result.replacingOccurrences(of: "^\\s*Summary:\\s*", with: "", options: [.regularExpression, .caseInsensitive], range: nil)
-        result = result.replacingOccurrences(of: "^\\s*Here is a .* summary.*:\\s*", with: "", options: [.regularExpression, .caseInsensitive], range: nil)
-        result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression, range: nil)
+        result = result.replacingOccurrences(of: "^\\s*Summary:\\s*", with: "", options: [.regularExpression, .caseInsensitive])
+        result = result.replacingOccurrences(of: "^\\s*Here is a .* summary.*:\\s*", with: "", options: [.regularExpression, .caseInsensitive])
+        result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         return result
     }
