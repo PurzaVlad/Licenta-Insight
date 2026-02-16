@@ -12,6 +12,8 @@ struct ChatMessage: Identifiable, Equatable {
 struct NativeChatView: View {
     private struct SessionState {
         var lastReferencedDocumentId: UUID?
+        var lastOriginalQuestion: String?
+        var lastAssistantResponse: String?
     }
 
     private struct ChatLLMResult {
@@ -26,6 +28,42 @@ struct NativeChatView: View {
         let retrievalQueryUsed: String?
         let selectedHits: [ChunkHit]
         let allRankedHits: [ChunkHit]
+    }
+
+    private enum QueryIntent: String, Codable {
+        case askDocFact = "ask_doc_fact"
+        case followupClarification = "followup_clarification"
+        case challengeDispute = "challenge_dispute"
+        case smalltalk = "smalltalk"
+        case newTopic = "new_topic"
+    }
+
+    private enum ExpectedAnswerType: String, Codable {
+        case number = "number"
+        case date = "date"
+        case entity = "entity"
+        case paragraph = "paragraph"
+        case yesno = "yesno"
+    }
+
+    private struct QueryAnalysis: Codable {
+        let intent: String
+        let focusTerms: [String]
+        let softExpansions: [String]
+        let language: String
+        let needsPreviousDocBias: Bool
+        let expectedAnswerType: String
+        let mustNotAnswer: Bool
+        
+        enum CodingKeys: String, CodingKey {
+            case intent
+            case focusTerms = "focus_terms"
+            case softExpansions = "soft_expansions"
+            case language
+            case needsPreviousDocBias = "needs_previous_doc_bias"
+            case expectedAnswerType = "expected_answer_type"
+            case mustNotAnswer = "must_not_answer"
+        }
     }
 
     @State private var input: String = ""
@@ -550,9 +588,12 @@ struct NativeChatView: View {
         if normalized.isEmpty { return [] }
         if normalized.count < 3 { return [normalized] }
         let chars = Array(normalized)
+        guard chars.count >= 3 else { return [] }
         var grams = Set<String>()
         for i in 0...(chars.count - 3) {
-            grams.insert(String(chars[i...(i + 2)]))
+            let endIndex = i + 2
+            guard endIndex < chars.count else { break }
+            grams.insert(String(chars[i...endIndex]))
         }
         return grams
     }
@@ -714,6 +755,30 @@ struct NativeChatView: View {
         return question + "\n\nQuery hints: " + extras.joined(separator: " ")
     }
 
+    private func expandQueryWithAnalysis(_ question: String, analysis: QueryAnalysis?) -> String {
+        // If we have LLM analysis, use its focus_terms and soft_expansions
+        if let analysis = analysis {
+            var enrichedQuery = question
+            
+            // Add focus terms (key entities/concepts)
+            if !analysis.focusTerms.isEmpty {
+                let focusHints = analysis.focusTerms.joined(separator: " ")
+                enrichedQuery += "\n\nFocus: \(focusHints)"
+            }
+            
+            // Add soft expansions (synonyms/paraphrases)
+            if !analysis.softExpansions.isEmpty {
+                let expansionHints = analysis.softExpansions.joined(separator: " ")
+                enrichedQuery += "\n\nExpansions: \(expansionHints)"
+            }
+            
+            return enrichedQuery
+        }
+        
+        // Fallback to heuristic-based expansion
+        return expandQuery(question)
+    }
+
     private func predictField(for question: String) -> Document.DocumentCategory {
         DocumentManager.inferCategory(title: "", content: question, summary: question)
     }
@@ -799,7 +864,9 @@ struct NativeChatView: View {
         for n in 2...3 {
             if words.count < n { continue }
             for i in 0...(words.count - n) {
-                let phrase = words[i..<(i + n)].joined(separator: " ")
+                let endIndex = i + n
+                guard endIndex <= words.count else { continue }
+                let phrase = words[i..<endIndex].joined(separator: " ")
                 if phrase.count < 6 { continue }
                 if seen.insert(phrase).inserted {
                     phrases.append(phrase)
@@ -982,14 +1049,43 @@ struct NativeChatView: View {
         sessionState.lastReferencedDocumentId = primaryDocument?.id
     }
 
+    private func generateClarifyingQuestion(edgeAI: EdgeAI, userChallenge: String, originalQuestion: String?, lastResponse: String?) async throws -> String {
+        let context = """
+        Original question: \(originalQuestion ?? "Unknown")
+        My previous answer: \(lastResponse ?? "Unknown")
+        User's feedback: \(userChallenge)
+        """
+        
+        let prompt = """
+        The user is disputing or questioning my previous answer.
+        
+        Context:
+        \(context)
+        
+        Generate a single, concise clarifying question (1-2 sentences) to understand:
+        - What specifically was wrong or unclear
+        - What information they were actually looking for
+        - How to better answer their original question
+        
+        Be natural, helpful, and show you're trying to correct the mistake.
+        Do NOT apologize excessively. Just ask what they need.
+        
+        Output ONLY the clarifying question, nothing else.
+        """
+        
+        let clarification = try await callLLM(edgeAI: edgeAI, prompt: prompt)
+        return clarification.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func rankedChunkHits(
         question: String,
         retrievalQuery: String? = nil,
         allDocs: [Document],
         preferredDocumentId: UUID?,
-        applyLastDocumentBias: Bool
+        applyLastDocumentBias: Bool,
+        queryAnalysis: QueryAnalysis? = nil
     ) -> [ChunkHit] {
-        let queryForRetrieval = retrievalQuery ?? expandQuery(question)
+        let queryForRetrieval = retrievalQuery ?? expandQueryWithAnalysis(question, analysis: queryAnalysis)
         let questionTokens = retrievalTokens(queryForRetrieval)
         let exactTokens = exactQueryTokens(from: question)
         let phrases = exactQueryPhrases(from: question)
@@ -1273,7 +1369,8 @@ struct NativeChatView: View {
         allDocs: [Document],
         preferredDocumentId: UUID?,
         applyLastDocumentBias: Bool,
-        retrievalQuery: String? = nil
+        retrievalQuery: String? = nil,
+        queryAnalysis: QueryAnalysis? = nil
     ) -> DocumentSelectionResult {
         if allDocs.isEmpty {
             return DocumentSelectionResult(
@@ -1292,7 +1389,8 @@ struct NativeChatView: View {
             retrievalQuery: retrievalQuery,
             allDocs: candidateDocs,
             preferredDocumentId: preferredDocumentId,
-            applyLastDocumentBias: applyLastDocumentBias
+            applyLastDocumentBias: applyLastDocumentBias,
+            queryAnalysis: queryAnalysis
         )
         if hits.isEmpty {
             let fallbackScored = fallbackScoredSelection(
@@ -1457,11 +1555,12 @@ struct NativeChatView: View {
         allDocs: [Document],
         preferredDocumentId: UUID?,
         applyLastDocumentBias: Bool,
-        currentSelection: DocumentSelectionResult
+        currentSelection: DocumentSelectionResult,
+        queryAnalysis: QueryAnalysis? = nil
     ) -> DocumentSelectionResult {
         if !currentSelection.selectedHits.isEmpty { return currentSelection }
 
-        let expanded = expandQuery(question)
+        let expanded = expandQueryWithAnalysis(question, analysis: queryAnalysis)
         if cleanLine(expanded).lowercased() == cleanLine(question).lowercased() {
             return currentSelection
         }
@@ -1471,7 +1570,8 @@ struct NativeChatView: View {
             allDocs: allDocs,
             preferredDocumentId: preferredDocumentId,
             applyLastDocumentBias: applyLastDocumentBias,
-            retrievalQuery: expanded
+            retrievalQuery: expanded,
+            queryAnalysis: queryAnalysis
         )
     }
 
@@ -1500,7 +1600,12 @@ struct NativeChatView: View {
         if maxChars <= 0 { return "" }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count <= maxChars { return trimmed }
-        let cutoff = trimmed.index(trimmed.startIndex, offsetBy: maxChars)
+        
+        // Use limitedBy for safe indexing
+        guard let cutoff = trimmed.index(trimmed.startIndex, offsetBy: maxChars, limitedBy: trimmed.endIndex) else {
+            return trimmed
+        }
+        
         let prefix = String(trimmed[..<cutoff])
         if let lastBoundary = prefix.lastIndex(where: { $0 == " " || $0 == "\n" || $0 == "\t" }) {
             return String(prefix[..<lastBoundary]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1798,6 +1903,71 @@ struct NativeChatView: View {
         """
     }
 
+    private func analyzeQueryIntent(edgeAI: EdgeAI, question: String, recentContext: String) async throws -> QueryAnalysis? {
+        let analysisPrompt = """
+        Analyze this user query and return ONLY valid JSON (no markdown, no explanation).
+        
+        Recent context:
+        \(recentContext)
+        
+        Current query: "\(question)"
+        
+        Return JSON with this exact structure:
+        {
+          "intent": "ask_doc_fact" | "followup_clarification" | "challenge_dispute" | "smalltalk" | "new_topic",
+          "focus_terms": ["term1", "term2", ...],
+          "soft_expansions": ["synonym1", "paraphrase1", ...],
+          "language": "en" | "ro" | "...",
+          "needs_previous_doc_bias": true | false,
+          "expected_answer_type": "number" | "date" | "entity" | "paragraph" | "yesno",
+          "must_not_answer": true | false
+        }
+        
+        Rules:
+        - "intent": "challenge_dispute" if questioning previous answer; "followup_clarification" if refining/clarifying; "smalltalk" if greeting/chitchat; "new_topic" if changing subject; else "ask_doc_fact"
+        - "focus_terms": 3-8 key tokens/phrases to emphasize (entities, proper nouns, important words)
+        - "soft_expansions": 2-5 synonyms or paraphrases (e.g., "EU" → "European Union", "countries" → "nations")
+        - "language": detected language code
+        - "needs_previous_doc_bias": true for follow-ups that refer to previous context
+        - "expected_answer_type": what kind of answer is expected
+        - "must_not_answer": true if query is "why did you say that" / "that's wrong" type (need to re-run on previous question)
+        
+        Return ONLY the JSON object, nothing else.
+        """
+        
+        let response = try await callLLM(edgeAI: edgeAI, prompt: analysisPrompt)
+        
+        // Extract JSON from response (handle potential markdown wrapping)
+        let jsonString: String
+        if let jsonStart = response.range(of: "{"),
+           let jsonEnd = response.range(of: "}", options: .backwards),
+           jsonStart.lowerBound < jsonEnd.upperBound {
+            // Use the range objects directly for safety
+            let extractedRange = jsonStart.lowerBound..<jsonEnd.upperBound
+            jsonString = String(response[extractedRange])
+        } else {
+            print("[QueryAnalysis] Failed to extract JSON from response: \(response.prefix(200))")
+            return nil
+        }
+        
+        guard let jsonData = jsonString.data(using: .utf8) else {
+            print("[QueryAnalysis] Failed to convert JSON string to data")
+            return nil
+        }
+        
+        do {
+            let analysis = try JSONDecoder().decode(QueryAnalysis.self, from: jsonData)
+            print("[QueryAnalysis] Intent: \(analysis.intent), Language: \(analysis.language)")
+            print("[QueryAnalysis] Focus: \(analysis.focusTerms.joined(separator: ", "))")
+            print("[QueryAnalysis] Expansions: \(analysis.softExpansions.joined(separator: ", "))")
+            print("[QueryAnalysis] NeedsBias: \(analysis.needsPreviousDocBias), MustNotAnswer: \(analysis.mustNotAnswer)")
+            return analysis
+        } catch {
+            print("[QueryAnalysis] JSON decode failed: \(error)")
+            return nil
+        }
+    }
+
     private func callChatLLM(edgeAI: EdgeAI, question: String) async throws -> ChatLLMResult {
         if let statsAnswer = buildStatsAnswerIfNeeded(for: question) {
             return ChatLLMResult(reply: statsAnswer, primaryDocument: nil)
@@ -1807,11 +1977,24 @@ struct NativeChatView: View {
             ? scopedDocsRaw.count
             : documentManager.conversationEligibleDocuments().count
 
-        var effectiveQuestion = question
-        let challengeQuestion = isChallenge(question) || isMetaDispute(question)
-        if challengeQuestion, let lastQ = lastContentfulUserQuestion(messages) {
-            effectiveQuestion = lastQ
+        // STEP 1: LLM-based query analysis (before heuristics)
+        let recentContext = messages.suffix(3).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
+        let queryAnalysis = try? await analyzeQueryIntent(edgeAI: edgeAI, question: question, recentContext: recentContext)
+        
+        // STEP 2: Handle challenge/dispute with AI-generated clarifying question
+        let isChallengeDispute = queryAnalysis?.intent == "challenge_dispute" || queryAnalysis?.mustNotAnswer == true || isChallenge(question) || isMetaDispute(question)
+        if isChallengeDispute {
+            let clarifyingQuestion = try await generateClarifyingQuestion(
+                edgeAI: edgeAI,
+                userChallenge: question,
+                originalQuestion: sessionState.lastOriginalQuestion,
+                lastResponse: sessionState.lastAssistantResponse
+            )
+            return ChatLLMResult(reply: clarifyingQuestion, primaryDocument: nil)
         }
+        
+        var effectiveQuestion = question
+        
         let hasAssistantHistory = messages.contains { $0.role == "assistant" }
         let hasThreadHistory = hasAssistantHistory && messages.contains { $0.role == "user" }
         let shortFollowUp = hasAssistantHistory &&
@@ -1819,13 +2002,16 @@ struct NativeChatView: View {
         let anchorFollowUp = isAnaphoraFollowUp(question) || shortFollowUp
         let questionAnchors = anchorTokens(from: question)
         let hasStrongQuestionAnchor = !questionAnchors.isEmpty
-        if !challengeQuestion,
-           !hasStrongQuestionAnchor,
+        if !hasStrongQuestionAnchor,
            anchorFollowUp,
            let anchor = makeThreadAnchor(history: self.messages) {
             effectiveQuestion = anchor + question
         }
 
+        // Check for smalltalk via analysis
+        if queryAnalysis?.intent == "smalltalk" {
+            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
+        }
         if docsInScopeCount == 0 && isLowSignalChitChat(question) {
             return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
         }
@@ -1836,21 +2022,29 @@ struct NativeChatView: View {
         let allDocs = !scopedDocumentIds.isEmpty
             ? scopedDocsRaw
             : documentManager.conversationEligibleDocuments()
-        // Apply last-doc bias unless we have multiple strong anchors AND it's not a follow-up
+        
+        // Use analysis to determine bias (prioritize LLM analysis over heuristics)
         let hasMultipleAnchors = questionAnchors.count >= 2
-        let applyLastDocumentBias = !hasMultipleAnchors || anchorFollowUp
+        let applyLastDocumentBias: Bool
+        if let analysis = queryAnalysis {
+            applyLastDocumentBias = analysis.needsPreviousDocBias
+        } else {
+            applyLastDocumentBias = !hasMultipleAnchors || anchorFollowUp
+        }
         let initialSelection = selectDocumentsByChunkRanking(
             question: effectiveQuestion,
             allDocs: allDocs,
             preferredDocumentId: sessionState.lastReferencedDocumentId,
-            applyLastDocumentBias: applyLastDocumentBias
+            applyLastDocumentBias: applyLastDocumentBias,
+            queryAnalysis: queryAnalysis
         )
         let selection = retrySelectionWithExpandedQueryIfNeeded(
             question: effectiveQuestion,
             allDocs: allDocs,
             preferredDocumentId: sessionState.lastReferencedDocumentId,
             applyLastDocumentBias: applyLastDocumentBias,
-            currentSelection: initialSelection
+            currentSelection: initialSelection,
+            queryAnalysis: queryAnalysis
         )
 
         logRetrievalTrace(
@@ -1904,6 +2098,11 @@ struct NativeChatView: View {
             selectedHits: selection.selectedHits
         )
         let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+        
+        // Store for future challenge/dispute handling
+        sessionState.lastOriginalQuestion = question
+        sessionState.lastAssistantResponse = reply
+        
         return ChatLLMResult(reply: reply, primaryDocument: selection.primaryDocument)
     }
 
@@ -1923,14 +2122,18 @@ struct NativeChatView: View {
         for hit in hits.prefix(5) {
             let text = hit.chunk.text.lowercased()
             let pattern = #"(?:(\d+)\s+\#(countTarget)|total:?\s*(\d+)|count:?\s*(\d+))"#
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
-                for i in 1..<match.numberOfRanges {
-                    let range = match.range(at: i)
-                    if range.location != NSNotFound,
-                       let swiftRange = Range(range, in: text),
-                       let number = Int(text[swiftRange]) {
-                        counts.append(number)
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+                if let match = regex.firstMatch(in: text, range: nsRange) {
+                    for i in 1..<match.numberOfRanges {
+                        let range = match.range(at: i)
+                        if range.location != NSNotFound,
+                           let swiftRange = Range(range, in: text),
+                           swiftRange.lowerBound >= text.startIndex,
+                           swiftRange.upperBound <= text.endIndex,
+                           let number = Int(text[swiftRange]) {
+                            counts.append(number)
+                        }
                     }
                 }
             }

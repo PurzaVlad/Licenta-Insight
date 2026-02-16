@@ -3074,22 +3074,22 @@ struct FolderDocumentsView: View {
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button {
-                    newFolderName = ""
-                    showingNewFolderDialog = true
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                }
-
-                Button {
                     startScan()
                 } label: {
                     Label("Scan Document", systemImage: "doc.viewfinder")
                 }
-
+                
                 Button {
                     showingDocumentPicker = true
                 } label: {
                     Label("Import Files", systemImage: "square.and.arrow.down")
+                }
+              
+                Button {
+                    newFolderName = ""
+                    showingNewFolderDialog = true
+                } label: {
+                    Label("New Folder", systemImage: "folder.badge.plus")
                 }
 
                 Button {
