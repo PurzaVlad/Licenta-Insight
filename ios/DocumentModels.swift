@@ -272,6 +272,78 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         
         return chunks.isEmpty ? [text] : chunks
     }
+
+    // MARK: - Update Helpers
+
+    func with(summary: String) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    func with(content: String) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    func with(tags: [String]) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    func with(ocrPages: [OCRPage]?) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    func with(sourceDocumentId: UUID?) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    func with(folderId: UUID?, sortOrder: Int) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    func with(sortOrder: Int) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
 }
 
 struct OCRChunk: Identifiable, Codable, Hashable, Equatable {

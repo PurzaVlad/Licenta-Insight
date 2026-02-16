@@ -134,8 +134,11 @@ class AIService {
 
         // Clean up the text - remove brackets, quotes, special chars
         var cleaned = text
-        cleaned = cleaned.replacingOccurrences(of: "[\\[\\]\\(\\)\"'""`]", with: "", options: .regularExpression)
+        // Remove brackets, parentheses, quotes, backticks
+        cleaned = cleaned.replacingOccurrences(of: "[\\[\\]\\(\\)\\\"\\'\\`]", with: "", options: .regularExpression)
+        // Remove any non-alphanumeric except delimiters and whitespace
         cleaned = cleaned.replacingOccurrences(of: "[^A-Za-z0-9,;|\\n\\s]", with: " ", options: .regularExpression)
+        // Collapse whitespace
         cleaned = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
 
