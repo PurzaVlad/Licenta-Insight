@@ -54,11 +54,13 @@ struct NativeChatView: View {
     You are a document assistant. Answer questions using only the evidence provided.
 
     Rules:
-    - Answer in 1-2 short sentences.
-    - Use only information from EVIDENCE_CHUNKS.
-    - For numbers, use only numbers that appear with the asked subject on the same line.
-    - If not found, say: "Not specified in the documents."
-    - Never include system markers or metadata.
+    - Answer in 1-2 short sentences maximum.
+    - Use ONLY information explicitly stated in EVIDENCE_CHUNKS.
+    - Do NOT repeat the same name, number, or fact multiple times.
+    - For numbers, use ONLY numbers that appear directly with the subject in the same sentence.
+    - If information is not found or unclear, say: "Not specified in the documents."
+    - Never infer, assume, or generate information not present in the evidence.
+    - Never include system markers, metadata, or chunk numbers.
     """
     private let historyLimit = 4
     private let selectionMaxDocs = 2
@@ -621,12 +623,12 @@ struct NativeChatView: View {
             let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
             if t.isEmpty { return false }
             if isShortAcronymToken(t) { return true }
-            if t.count < 5 { return false }
+            if t.count < 8 { return false }
             if Self.anchorStopwords.contains(t.lowercased()) { return false }
             let hasUpper = t.rangeOfCharacter(from: .uppercaseLetters) != nil
             let hasDigit = t.rangeOfCharacter(from: .decimalDigits) != nil
             let hasHyphen = t.contains("-")
-            let isLongDistinctive = t.count >= 6
+            let isLongDistinctive = t.count >= 8
             return hasUpper || hasDigit || hasHyphen || isLongDistinctive
         }
         var seen = Set<String>()
@@ -643,17 +645,25 @@ struct NativeChatView: View {
     private func anchorFilteredDocuments(question: String, docs: [Document]) -> [Document] {
         let anchors = anchorTokens(from: question)
         if anchors.isEmpty { return docs }
+        
+        // More lenient: check expanded content and only filter if we have strong anchors
         let filtered = docs.filter { doc in
-            let contentSample = compact(doc.content, maxChars: 900)
+            let contentSample = compact(doc.content, maxChars: 1500)
             let rawOCRSample = doc.ocrChunks
-                .prefix(2)
+                .prefix(4)
                 .map(\.text)
                 .joined(separator: " ")
-            let ocrSample = compact(rawOCRSample, maxChars: 900)
+            let ocrSample = compact(rawOCRSample, maxChars: 1500)
             let blob = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary) \(contentSample) \(ocrSample)"
             return textContainsAnyAnchor(blob, anchors: anchors)
         }
-        return filtered.isEmpty ? docs : filtered
+        
+        // Return all docs if filtering is too aggressive (removes >80% of docs)
+        let removalRate = docs.isEmpty ? 0 : Double(docs.count - filtered.count) / Double(docs.count)
+        if filtered.isEmpty || removalRate > 0.8 {
+            return docs
+        }
+        return filtered
     }
 
     private func expandQuery(_ question: String) -> String {
@@ -1807,7 +1817,8 @@ struct NativeChatView: View {
         let shortFollowUp = hasAssistantHistory &&
             cleanLine(question).split { !$0.isLetter && !$0.isNumber }.count <= 6
         let anchorFollowUp = isAnaphoraFollowUp(question) || shortFollowUp
-        let hasStrongQuestionAnchor = !anchorTokens(from: question).isEmpty
+        let questionAnchors = anchorTokens(from: question)
+        let hasStrongQuestionAnchor = !questionAnchors.isEmpty
         if !challengeQuestion,
            !hasStrongQuestionAnchor,
            anchorFollowUp,
@@ -1825,7 +1836,9 @@ struct NativeChatView: View {
         let allDocs = !scopedDocumentIds.isEmpty
             ? scopedDocsRaw
             : documentManager.conversationEligibleDocuments()
-        let applyLastDocumentBias = !hasStrongQuestionAnchor
+        // Apply last-doc bias unless we have multiple strong anchors AND it's not a follow-up
+        let hasMultipleAnchors = questionAnchors.count >= 2
+        let applyLastDocumentBias = !hasMultipleAnchors || anchorFollowUp
         let initialSelection = selectDocumentsByChunkRanking(
             question: effectiveQuestion,
             allDocs: allDocs,
