@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 54;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -109,6 +109,11 @@
 		F10A00000000000000000024 /* Identity/Identity.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Identity/Identity.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		AECECCC92F43A92D00D1E8DB /* Services */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Services; sourceTree = "<group>"; };
+		AECECCD62F43A93A00D1E8DB /* Core */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Core; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXFrameworksBuildPhase section */
 		13B07F8C1A680F5B00A75B9A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -184,6 +189,8 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
+				AECECCD62F43A93A00D1E8DB /* Core */,
+				AECECCC92F43A92D00D1E8DB /* Services */,
 				13B07FAE1A68108700A75B9A /* Identity */,
 				F10A00000000000000000040 /* ShareExtension */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
@@ -247,6 +254,10 @@
 			dependencies = (
 				F10A00000000000000000061 /* PBXTargetDependency */,
 			);
+			fileSystemSynchronizedGroups = (
+				AECECCC92F43A92D00D1E8DB /* Services */,
+				AECECCD62F43A93A00D1E8DB /* Core */,
+			);
 			name = Identity;
 			productName = Identity;
 			productReference = 13B07F961A680F5B00A75B9A /* Identity.app */;
@@ -263,6 +274,10 @@
 			buildRules = (
 			);
 			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AECECCC92F43A92D00D1E8DB /* Services */,
+				AECECCD62F43A93A00D1E8DB /* Core */,
 			);
 			name = IdentityShareExtension;
 			productName = IdentityShareExtension;

@@ -132,27 +132,25 @@ class AIService {
     static func parseTags(from text: String, sourceText: String? = nil, limit: Int = 4) -> [String] {
         guard limit > 0 else { return [] }
 
-        // Clean up the text - remove brackets, quotes, special chars
-        var cleaned = text
-        cleaned = cleaned.replacingOccurrences(of: "[\\[\\]\\(\\)\"'""`]", with: "", options: .regularExpression, range: nil)
-        cleaned = cleaned.replacingOccurrences(of: "[^A-Za-z0-9,;|\\n\\s]", with: " ", options: .regularExpression, range: nil)
-        cleaned = cleaned.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression, range: nil)
-        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = text
+            .replacingOccurrences(of: "[\\[\\]\\(\\)\"'""`]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^A-Za-z0-9,;|\\n\\s]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Split and process tags
-        let splitParts = cleaned.split { $0 == "," || $0 == "\n" || $0 == ";" || $0 == "|" }
-        let trimmedParts = splitParts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let normalizedParts = trimmedParts.compactMap { normalizeTagToken($0) }
+        let parts = cleaned
+            .split { $0 == "," || $0 == "\n" || $0 == ";" || $0 == "|" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap { normalizeTagToken($0) }
 
-        let deduplicated = Array(Set(normalizedParts))
-        let finalTags = Array(deduplicated.prefix(limit))
-        let capitalized = finalTags.map { $0.capitalized }
+        let deduplicated = Array(Set(parts))
+        let final = deduplicated.prefix(limit).map { $0.capitalized }
 
-        if capitalized.isEmpty, let sourceText = sourceText {
+        if final.isEmpty, let sourceText = sourceText {
             return extractFallbackTags(from: sourceText, excluding: [], limit: limit)
         }
 
-        return capitalized
+        return Array(final)
     }
 
     /// Extracts fallback tags from source text using frequency analysis
@@ -181,9 +179,10 @@ class AIService {
 
     /// Normalizes and validates a tag token
     private static func normalizeTagToken(_ raw: String) -> String? {
-        var token = raw.lowercased()
-        token = token.replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression, range: nil)
-        token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = raw
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard token.count >= 3 else { return nil }
         guard token.rangeOfCharacter(from: .letters) != nil else { return nil }
@@ -195,12 +194,11 @@ class AIService {
 
     /// Cleans AI-generated summary output
     func cleanSummaryOutput(_ raw: String) -> String {
-        var result = raw
-        result = result.replacingOccurrences(of: "^\\s*Summary:\\s*", with: "", options: [.regularExpression, .caseInsensitive], range: nil)
-        result = result.replacingOccurrences(of: "^\\s*Here is a .* summary.*:\\s*", with: "", options: [.regularExpression, .caseInsensitive], range: nil)
-        result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression, range: nil)
-        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        return result
+        return raw
+            .replacingOccurrences(of: "^\\s*Summary:\\s*", with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "^\\s*Here is a .* summary.*:\\s*", with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Document Context Building

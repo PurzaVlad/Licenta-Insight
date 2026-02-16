@@ -444,17 +444,16 @@ class FileProcessingService {
     }
 
     private func formatExtractedText(_ text: String) -> String {
-        var result = text
-        result = result.replacingOccurrences(of: "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]", with: "", options: .regularExpression, range: nil)
-        result = result.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression, range: nil)
-        result = result.replacingOccurrences(of: "&amp;", with: "&")
-        result = result.replacingOccurrences(of: "&lt;", with: "<")
-        result = result.replacingOccurrences(of: "&gt;", with: ">")
-        result = result.replacingOccurrences(of: "&quot;", with: "\"")
-        result = result.replacingOccurrences(of: "&apos;", with: "'")
-        result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression, range: nil)
-        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        return result
+        return text
+            .replacingOccurrences(of: "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func looksLikeXML(_ s: String) -> Bool {
