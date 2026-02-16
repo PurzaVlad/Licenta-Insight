@@ -178,7 +178,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
                 let joined = blocks.map { $0.text }.joined(separator: " ")
                 let text = normalizeOCRWhitespace(joined)
                 if text.isEmpty { continue }
-                let chunks = splitTextIntoChunks(text, chunkSize: 1200, overlap: 160)
+                let chunks = splitTextIntoChunks(text, chunkSize: 600, overlap: 60)
                 for chunk in chunks {
                     out.append(
                         OCRChunk(
@@ -194,7 +194,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
 
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return [] }
-        let fallbackChunks = splitTextIntoChunks(trimmed, chunkSize: 1200, overlap: 180)
+        let fallbackChunks = splitTextIntoChunks(trimmed, chunkSize: 600, overlap: 60)
         for chunk in fallbackChunks where !chunk.isEmpty {
             out.append(OCRChunk(documentId: documentId, pageNumber: nil, text: chunk))
         }
@@ -234,21 +234,50 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
 
     private static func splitTextIntoChunks(_ text: String, chunkSize: Int, overlap: Int) -> [String] {
         if text.isEmpty { return [] }
+        
+        // First, try splitting on paragraph boundaries (double newlines)
+        let paragraphs = text.components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        
         var chunks: [String] = []
-        var start = text.startIndex
-
-        while start < text.endIndex {
-            let end = text.index(start, offsetBy: chunkSize, limitedBy: text.endIndex) ?? text.endIndex
-            let chunk = String(text[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !chunk.isEmpty {
-                chunks.append(chunk)
+        var currentChunk = ""
+        
+        for paragraph in paragraphs {
+            // If single paragraph exceeds chunk size, split on sentences
+            if paragraph.count > chunkSize {
+                let sentences = paragraph.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                
+                for sentence in sentences {
+                    if currentChunk.count + sentence.count + 2 > chunkSize {
+                        if !currentChunk.isEmpty {
+                            chunks.append(currentChunk)
+                        }
+                        currentChunk = sentence
+                    } else {
+                        currentChunk += (currentChunk.isEmpty ? "" : ". ") + sentence
+                    }
+                }
+            } else {
+                // Add paragraph to current chunk
+                if currentChunk.count + paragraph.count + 2 > chunkSize {
+                    if !currentChunk.isEmpty {
+                        chunks.append(currentChunk)
+                    }
+                    currentChunk = paragraph
+                } else {
+                    currentChunk += (currentChunk.isEmpty ? "" : "\n\n") + paragraph
+                }
             }
-            if end == text.endIndex { break }
-            let rewind = min(overlap, text.distance(from: start, to: end))
-            start = text.index(end, offsetBy: -rewind)
         }
-
-        return chunks
+        
+        if !currentChunk.isEmpty {
+            chunks.append(currentChunk)
+        }
+        
+        return chunks.isEmpty ? [text] : chunks
     }
 }
 

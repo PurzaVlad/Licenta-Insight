@@ -30,7 +30,7 @@ const CHAT_TEMPERATURE = 0.15;
 const DEFAULT_TOP_P = 0.9;
 const DEFAULT_REPEAT_PENALTY = 1.1;
 const CHAT_REPEAT_PENALTY = 1.15;
-const MAX_CHAT_HISTORY_MESSAGES = 6;
+const MAX_CHAT_HISTORY_MESSAGES = 3;
 const MIN_MODEL_FILE_SIZE_BYTES = 200 * 1024 * 1024;
 
 const SUMMARY_PROMPT_COMMON = `
@@ -113,16 +113,14 @@ const TAG_SYSTEM_PROMPT = `
   Do not repeat words.
   `;
 
-const CHAT_SYSTEM_PROMPT = `You are a document assistant.
+const CHAT_SYSTEM_PROMPT = `You are a document assistant. Answer questions using only the evidence provided.
 
 Rules:
-- Answer in maximum 3 sentences.
-- Be concise.
-- For count questions (e.g., "how many", "number of", "count", "total"), bind numbers to the correct entity on the same line/chunk; do not use unrelated numbers.
-- If multiple numbers appear in the evidence, pick the number explicitly associated with the asked subject (same line/row/sentence), and do not invent.
-- No explanations unless asked.
-- Never include system tokens or internal markers.
-- If information is not found, say only: "Not specified in the documents."`;
+- Answer in 1-2 short sentences.
+- Use only information from EVIDENCE_CHUNKS.
+- For numbers, use only numbers that appear with the asked subject on the same line.
+- If not found, say: "Not specified in the documents."
+- Never include system markers or metadata.`;
 
 const CONTINUATION_SYSTEM_PROMPT =
   'Continue the previous answer in 1 short sentence. Do not repeat.';
@@ -196,6 +194,8 @@ function App(): React.JSX.Element {
 
   // Keep conversation in JS so you can pass it to the model
   const conversationRef = useRef<Message[]>(INITIAL_CONVERSATION);
+  // Guard against duplicate initialization
+  const isInitializingRef = useRef(false);
   // Serialize AI requests to avoid "context is busy" errors
   const queueRef = useRef<Array<{ requestId: string; prompt: string }>>([]);
   const isRunningRef = useRef(false);
@@ -208,6 +208,13 @@ function App(): React.JSX.Element {
     let cancelled = false;
 
     const prepareModel = async () => {
+      // USE REF GUARD
+      if (isInitializingRef.current) {
+        console.log('[Model] Already initializing, skipping duplicate call');
+        return;
+      }
+      
+      isInitializingRef.current = true;
       console.log('[Model] Starting model preparation...');
       try {
         EdgeAI?.setModelReady?.(false);
@@ -219,12 +226,14 @@ function App(): React.JSX.Element {
         const validateModelFile = async (): Promise<{valid: boolean; sizeBytes: number}> => {
           const exists = await RNFS.exists(filePath);
           if (!exists) {
+            console.log('[Model] File does not exist at:', filePath);
             return {valid: false, sizeBytes: 0};
           }
           try {
             const stat = await RNFS.stat(filePath);
             const sizeBytes = Number(stat.size ?? 0);
             const valid = Number.isFinite(sizeBytes) && sizeBytes >= MIN_MODEL_FILE_SIZE_BYTES;
+            console.log('[Model] File validation - size:', (sizeBytes / (1024 * 1024)).toFixed(2), 'MB, valid:', valid, 'min required:', (MIN_MODEL_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(2), 'MB');
             return {valid, sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0};
           } catch (err) {
             console.warn('[Model] Failed to read model file metadata:', err);
@@ -233,6 +242,11 @@ function App(): React.JSX.Element {
         };
 
         console.log('[Model] Checking for model at:', filePath);
+        
+        // First validate the existing model file
+        let validation = await validateModelFile();
+        
+        // Check for interrupted download marker
         let interruptedDownloadState: string | null = null;
         try {
           interruptedDownloadState = await AsyncStorage.getItem(MODEL_DOWNLOAD_STATE_KEY);
@@ -240,8 +254,20 @@ function App(): React.JSX.Element {
           console.warn('[Model] Failed to read download state marker:', err);
         }
         const hadInterruptedDownload = interruptedDownloadState === MODEL_DOWNLOAD_IN_PROGRESS;
-        if (hadInterruptedDownload) {
-          console.warn('[Model] Interrupted download detected, removing partial model file');
+        
+        // If model is valid but marker exists, clear the marker (app was closed after successful download)
+        if (validation.valid && hadInterruptedDownload) {
+          console.log('[Model] Model is valid but download marker exists, clearing marker');
+          try {
+            await AsyncStorage.removeItem(MODEL_DOWNLOAD_STATE_KEY);
+          } catch (err) {
+            console.warn('[Model] Failed to clear download state marker:', err);
+          }
+        }
+        
+        // Only remove file if it's invalid OR if it was an interrupted download AND file is incomplete
+        if (hadInterruptedDownload && !validation.valid) {
+          console.warn('[Model] Interrupted download detected with invalid file, removing partial model');
           try {
             const partialExists = await RNFS.exists(filePath);
             if (partialExists) {
@@ -249,14 +275,10 @@ function App(): React.JSX.Element {
             }
           } catch (err) {
             console.warn('[Model] Failed to remove partial model file:', err);
-          } finally {
-            setDownloadProgress(0);
           }
-        }
-
-        let validation = await validateModelFile();
-        console.log('[Model] Existing model validation:', validation.valid, 'size:', validation.sizeBytes);
-        if (!validation.valid && validation.sizeBytes > 0) {
+          setDownloadProgress(0);
+          validation = await validateModelFile();
+        } else if (!validation.valid && validation.sizeBytes > 0) {
           console.warn('[Model] Existing model file looks invalid; deleting before redownload');
           try {
             await RNFS.unlink(filePath);
@@ -285,7 +307,7 @@ function App(): React.JSX.Element {
         }
 
         if (!validation.valid) {
-          console.log('[Model] Downloading model...');
+          console.log('[Model] Model not found or invalid. Starting download...');
           try {
             await AsyncStorage.setItem(MODEL_DOWNLOAD_STATE_KEY, MODEL_DOWNLOAD_IN_PROGRESS);
           } catch (err) {
@@ -296,6 +318,14 @@ function App(): React.JSX.Element {
           let lastDownloadError: unknown = null;
           for (let attempt = 1; attempt <= 2; attempt++) {
             try {
+              // IMPORTANT: Delete any existing partial/corrupted file BEFORE starting download
+              // This handles cases where Metro disconnects mid-download and leaves a partial file
+              const existsBeforeDownload = await RNFS.exists(filePath);
+              if (existsBeforeDownload) {
+                console.log('[Model] Deleting existing file before download attempt', attempt);
+                await RNFS.unlink(filePath);
+              }
+              
               setDownloadProgress(0);
               await downloadModel(MODEL_FILENAME, MODEL_URL, setDownloadProgress);
               validation = await validateModelFile();
@@ -310,9 +340,11 @@ function App(): React.JSX.Element {
             } catch (err) {
               lastDownloadError = err;
               console.warn(`[Model] Download attempt ${attempt} failed:`, err);
+              // Clean up failed download
               try {
                 const partialExists = await RNFS.exists(filePath);
                 if (partialExists) {
+                  console.log('[Model] Removing failed download file');
                   await RNFS.unlink(filePath);
                 }
               } catch (unlinkErr) {
@@ -332,6 +364,8 @@ function App(): React.JSX.Element {
               ? lastDownloadError
               : new Error('Failed to download and validate model file.');
           }
+        } else {
+          console.log('[Model] Using existing model file. Size bytes:', validation.sizeBytes);
         }
 
         if (cancelled) {
@@ -371,7 +405,10 @@ function App(): React.JSX.Element {
           EdgeAI?.setModelReady?.(false);
         } catch {}
       } finally {
-        if (!cancelled) setIsDownloading(false);
+        if (!cancelled) {
+          setIsDownloading(false);
+          isInitializingRef.current = false; // RESET HERE
+        }
       }
     };
 
@@ -379,6 +416,7 @@ function App(): React.JSX.Element {
 
     return () => {
       cancelled = true;
+      isInitializingRef.current = false; // RESET ON CLEANUP
       try {
         releaseAllLlama();
       } catch (e) {

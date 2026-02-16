@@ -34,6 +34,7 @@ struct NativeChatView: View {
     @State private var isThinkingPulseOn: Bool = false
     @State private var activeChatGenerationId: UUID? = nil
     @State private var sessionState = SessionState()
+    @State private var conversationState = ConversationState()
     @EnvironmentObject private var documentManager: DocumentManager
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingSettings = false
@@ -50,52 +51,39 @@ struct NativeChatView: View {
 
     // Preprompt (edit this text to change assistant behavior)
     private let chatPreprompt = """
-    You are a document assistant.
+    You are a document assistant. Answer questions using only the evidence provided.
 
     Rules:
-    - Answer in maximum 3 sentences.
-    - Write normal sentences (no comma-separated keyword lists).
-    - Do not output headings (e.g., "WORK EXPERIENCE") unless the user asked for a heading.
-    - Do not repeat phrases.
-    - Be concise.
-    - For count questions (e.g., "how many", "number of", "count", "total"), bind numbers to the correct entity on the same line/chunk; do not use unrelated numbers.
-    - If multiple numbers appear in the evidence, pick the number explicitly associated with the asked subject (same line/row/sentence), and do not invent.
-    - No explanations unless asked.
-    - Never include system tokens or internal markers.
-    - Use only the provided context.
-    - If information is not found, say only: "Not specified in the documents."
+    - Answer in 1-2 short sentences.
+    - Use only information from EVIDENCE_CHUNKS.
+    - For numbers, use only numbers that appear with the asked subject on the same line.
+    - If not found, say: "Not specified in the documents."
+    - Never include system markers or metadata.
     """
     private let historyLimit = 4
-    private let selectionMaxDocs = 6
-    private let activeContextCharBudget = 4200
+    private let selectionMaxDocs = 2
+    private let activeContextCharBudget = 1200
     private let folderContextCharBudget = 500
     private let minContextReserveChars = 450
     private let maxSummaryCharsPerDoc = 420
     private let maxSnippetChars = 420
     private let maxSnippetsPerDoc = 2
-    private let maxOCRSnippetsPerDoc = 4
+    private let maxOCRSnippetsPerDoc = 3
     private let useNoHistoryForChat = true
     private let defaultOCRDocCount = 3
     private let lowExtractedTextThreshold = 700
-    private let semanticWeight: Double = 0.9
-    private let docTypeBoostWeight: Double = 0.05
-    private let tagBoostWeight: Double = 0.1
-    private let titleBoostWeight: Double = 0.12
-    private let exactTokenBoostWeight: Double = 0.9
-    private let phraseBoostWeight: Double = 0.8
-    private let numericTokenBoostWeight: Double = 1.6
-    private let anchorChunkBoostWeight: Double = 0.35
-    private let anchorChunkPenaltyWeight: Double = 0.15
-    private let shortAcronymAnchorBoostWeight: Double = 0.35
-    private let lastDocumentBiasWeight: Double = 0.08
-    private let bm25Weight: Double = 0.65
-    private let trigramWeight: Double = 0.35
+    
+    // Simplified chunk ranking weights (3 core features)
+    private let bm25Weight: Double = 0.70          // Lexical matching via BM25
+    private let exactMatchWeight: Double = 0.25    // Exact tokens + phrases + numeric matches
+    private let recencyWeight: Double = 0.05       // Recent document boost
+    
     private let evidenceAbsoluteFloor: Double = 0.12
     private let evidenceMedianMargin: Double = 0.08
     private let evidenceGapThreshold: Double = 0.10
-    private let passBTopEvidenceLimit = 12
+    private let passBTopEvidenceLimit = 3
     private let passBGatingKeywordMatchMin = 2
-    private let expandedEvidenceLimit = 18
+    private let expandedEvidenceLimit = 3
 
     var body: some View {
         NavigationView {
@@ -268,6 +256,7 @@ struct NativeChatView: View {
         messages = []
         isGenerating = false
         activeChatGenerationId = nil
+        conversationState.reset()
     }
 
     private func stopGeneration() {
@@ -297,13 +286,35 @@ struct NativeChatView: View {
                 }
 
                 if self.activeChatGenerationId != generationId { return }
-                let result = try await callChatLLM(edgeAI: edgeAI, question: question)
+                
+                // Resolve anaphora using conversation context
+                let resolvedQuestion = conversationState.resolveAnaphora(in: question)
+                
+                let result = try await callChatLLM(edgeAI: edgeAI, question: resolvedQuestion)
                 DispatchQueue.main.async {
                     if self.activeChatGenerationId != generationId { return }
                     self.isGenerating = false
                     let text = result.reply.isEmpty ? "(No response)" : result.reply
                     self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
                     self.updateSessionState(from: result.primaryDocument)
+                    
+                    // Update conversation state with result
+                    let queryType = QueryClassifier.classifyQuery(resolvedQuestion)
+                    let queryTypeString: String = {
+                        switch queryType {
+                        case .countQuestion: return "countQuestion"
+                        case .numericLookup: return "numericLookup"
+                        case .dateLookup: return "dateLookup"
+                        case .entityLookup: return "entityLookup"
+                        case .semantic: return "semantic"
+                        }
+                    }()
+                    self.conversationState.update(
+                        documentId: result.primaryDocument?.id,
+                        documentTitle: result.primaryDocument?.title,
+                        queryType: queryTypeString,
+                        assistantResponse: text
+                    )
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -458,13 +469,9 @@ struct NativeChatView: View {
     private struct ChunkHit {
         let document: Document
         let chunk: OCRChunk
-        let semanticScore: Double
-        let docTypeMatch: Double
-        let tagMatch: Double
-        let titleMatch: Double
-        let exactTokenMatch: Double
-        let phraseMatch: Double
-        let numericMatch: Double
+        let bm25Score: Double
+        let exactMatchScore: Double
+        let recencyScore: Double
         let finalScore: Double
     }
 
@@ -483,17 +490,45 @@ struct NativeChatView: View {
     ]
 
     private func retrievalTokenArray(_ text: String) -> [String] {
-        let lowered = cleanLine(text).lowercased()
-        return lowered
+        let cleaned = cleanLine(text)
+        let lowered = cleaned.lowercased()
+        let originalTokens = cleaned
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
-            .filter { $0.count >= 3 && !Self.retrievalStopwords.contains($0) }
-            .map { token in
-                if token.count >= 5 && token.hasSuffix("s") {
-                    return String(token.dropLast())
+        let tokens = lowered
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+        
+        return zip(tokens, originalTokens).compactMap { (token, original) in
+            // Keep stopwords filter
+            if Self.retrievalStopwords.contains(token) { return nil }
+            
+            // NEW: Keep short tokens if they're all caps, numeric, or alphanumeric IDs
+            if token.count < 3 {
+                let hasDigit = token.contains(where: { $0.isNumber })
+                let hasLetter = token.contains(where: { $0.isLetter })
+                let isAllCaps = original == original.uppercased() && hasLetter
+                if hasDigit || isAllCaps {
+                    return token  // Keep "id", "a1", "q2", etc.
                 }
-                return token
+                return nil
             }
+            
+            // NEW: Don't stem if token has digits or is likely acronym
+            if token.contains(where: { $0.isNumber }) {
+                return token  // Keep "2024", "123abc" intact
+            }
+            if token.count <= 4 && original == original.uppercased() && original.contains(where: { $0.isLetter }) {
+                return token  // Keep "http", "json" intact (from "HTTP", "JSON")
+            }
+            
+            // Improved stemming: only if length >= 6 and ends in 's' (not 'ss')
+            if token.count >= 6 && token.hasSuffix("s") && !token.hasSuffix("ss") {
+                return String(token.dropLast())
+            }
+            
+            return token
+        }
     }
 
     private func retrievalTokens(_ text: String) -> Set<String> {
@@ -946,12 +981,13 @@ struct NativeChatView: View {
     ) -> [ChunkHit] {
         let queryForRetrieval = retrievalQuery ?? expandQuery(question)
         let questionTokens = retrievalTokens(queryForRetrieval)
-        let anchors = anchorTokens(from: question)
-        let shortAcronymAnchors = anchors.filter { isShortAcronymToken($0) }
         let exactTokens = exactQueryTokens(from: question)
         let phrases = exactQueryPhrases(from: question)
-        let predictedField = predictField(for: question)
-        let queryTrigrams = characterTrigrams(for: queryForRetrieval)
+        
+        // Classify query and select appropriate scorer
+        let queryType = QueryClassifier.classifyQuery(question)
+        let scorer = QueryClassifier.makeScorerFor(queryType)
+        
         var rankedCandidates: [(document: Document, chunk: OCRChunk, features: ChunkLexicalFeatures)] = []
         var documentFrequency: [String: Int] = [:]
         var totalTokenCount = 0
@@ -963,7 +999,7 @@ struct NativeChatView: View {
 
             for chunk in chunks {
                 let features = buildChunkLexicalFeatures(for: chunk.text)
-                if features.tokenSet.isEmpty && features.trigrams.isEmpty { continue }
+                if features.tokenSet.isEmpty { continue }
                 rankedCandidates.append((document: doc, chunk: chunk, features: features))
                 totalTokenCount += features.length
                 for token in features.tokenSet {
@@ -994,49 +1030,29 @@ struct NativeChatView: View {
         for candidate in rankedCandidates {
             let doc = candidate.document
             let chunk = candidate.chunk
-            let features = candidate.features
-            let docTypeMatch = doc.category == predictedField ? 1.0 : 0.0
-            let tagMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.tags.joined(separator: " "))
-            let titleMatch = normalizedMatchScore(questionTokens: questionTokens, text: doc.title)
-            let lexicalOverlap = semanticOverlapScore(questionTokens: questionTokens, chunkTokens: features.tokenSet)
+            
+            // Normalize BM25 score
             let normalizedBM25 = maxBM25 > 0 ? ((bm25ByChunkId[chunk.chunkId] ?? 0) / maxBM25) : 0
-            let trigramScore = trigramJaccardScore(queryTrigrams: queryTrigrams, chunkTrigrams: features.trigrams)
-            let semanticScore = (bm25Weight * normalizedBM25) + (trigramWeight * trigramScore)
+            
+            // Calculate exact match score
             let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: chunk.text)
-            let hasAnchorMatch = !anchors.isEmpty && textContainsAnyAnchor(chunk.text, anchors: anchors)
-            let anchorAdjustment = anchors.isEmpty
-                ? 0.0
-                : (hasAnchorMatch ? anchorChunkBoostWeight : -anchorChunkPenaltyWeight)
-            let shortAcronymBonus =
-                shortAcronymAnchors.isEmpty
-                ? 0.0
-                : (textContainsAnyAnchor(chunk.text, anchors: shortAcronymAnchors)
-                    ? shortAcronymAnchorBoostWeight
-                    : 0.0)
-            let lastDocBias =
-                (applyLastDocumentBias && preferredDocumentId == doc.id) ? lastDocumentBiasWeight : 0.0
-            let finalScore =
-                (semanticWeight * semanticScore) +
-                (0.25 * lexicalOverlap) +
-                (docTypeBoostWeight * docTypeMatch) +
-                (tagBoostWeight * tagMatch) +
-                (titleBoostWeight * titleMatch) +
-                (exactTokenBoostWeight * exact.exactToken) +
-                (phraseBoostWeight * exact.phrase) +
-                (numericTokenBoostWeight * exact.numeric) +
-                anchorAdjustment +
-                shortAcronymBonus +
-                lastDocBias
-
-            if semanticScore <= 0 &&
-                lexicalOverlap <= 0 &&
-                tagMatch <= 0 &&
-                titleMatch <= 0 &&
-                exact.exactToken <= 0 &&
-                exact.phrase <= 0 &&
-                exact.numeric <= 0 &&
-                anchorAdjustment <= 0 &&
-                shortAcronymBonus <= 0 {
+            let combinedExactMatch = max(exact.exactToken, exact.phrase, exact.numeric)
+            
+            // Use domain-specific scorer for final score
+            let domainScore = scorer.score(
+                normalizedBM25: normalizedBM25,
+                exactMatchScore: combinedExactMatch,
+                chunkText: chunk.text,
+                question: question
+            )
+            
+            // Add recency boost
+            let isRecentDocument = applyLastDocumentBias && (preferredDocumentId == doc.id)
+            let recencyScore = isRecentDocument ? 1.0 : 0.0
+            let finalScore = domainScore + (recencyWeight * recencyScore)
+            
+            // Skip chunks with no meaningful signal
+            if finalScore <= 0 {
                 continue
             }
 
@@ -1044,13 +1060,9 @@ struct NativeChatView: View {
                 ChunkHit(
                     document: doc,
                     chunk: chunk,
-                    semanticScore: semanticScore,
-                    docTypeMatch: docTypeMatch,
-                    tagMatch: tagMatch,
-                    titleMatch: titleMatch,
-                    exactTokenMatch: exact.exactToken,
-                    phraseMatch: exact.phrase,
-                    numericMatch: exact.numeric,
+                    bm25Score: normalizedBM25,
+                    exactMatchScore: combinedExactMatch,
+                    recencyScore: recencyScore,
                     finalScore: finalScore
                 )
             )
@@ -1058,7 +1070,7 @@ struct NativeChatView: View {
 
         return hits.sorted { lhs, rhs in
             if lhs.finalScore != rhs.finalScore { return lhs.finalScore > rhs.finalScore }
-            if lhs.semanticScore != rhs.semanticScore { return lhs.semanticScore > rhs.semanticScore }
+            if lhs.bm25Score != rhs.bm25Score { return lhs.bm25Score > rhs.bm25Score }
             return lhs.document.dateCreated > rhs.document.dateCreated
         }
     }
@@ -1132,47 +1144,45 @@ struct NativeChatView: View {
 
     private func passBRerankScore(
         for hit: ChunkHit,
-        isCountQuestion: Bool,
+        queryType: QueryType,
+        scorer: QueryScorer,
         subjectToken: String?,
         questionTokens: Set<String>
     ) -> Double {
-        let overlap = hit.semanticScore
-        let numbers = hit.numericMatch
-        let hasDigits = chunkContainsDigits(hit.chunk.text)
+        let baseScore = scorer.score(
+            normalizedBM25: hit.bm25Score,
+            exactMatchScore: hit.exactMatchScore,
+            chunkText: hit.chunk.text,
+            question: ""
+        )
+        
         let features = passBFeatures(
             for: hit,
             subjectToken: subjectToken,
             questionTokens: questionTokens
         )
-        let exactKeywordHits =
-            (0.75 * hit.exactTokenMatch) +
-            (0.55 * hit.phraseMatch) +
-            (0.25 * hit.titleMatch) +
-            (0.2 * hit.tagMatch)
-        let countQuestionBonus = isCountQuestion ? (hasDigits ? 0.85 : 0.0) : 0.0
-        let numericWeight = isCountQuestion ? 1.8 : 1.2
+        
         let subjectBonus = features.subjectMatch ? 0.95 : 0.0
-        return
-            (1.25 * overlap) +
-            (numericWeight * numbers) +
-            (1.1 * exactKeywordHits) +
-            countQuestionBonus +
-            subjectBonus
+        
+        return baseScore + subjectBonus
     }
 
     private func twoPassContextHits(from hits: [ChunkHit], question: String) -> [ChunkHit] {
         let passA = passAChunkCandidates(from: hits)
         if passA.isEmpty { return [] }
 
-        let countQuestion = isCountQuestion(question)
+        let queryType = QueryClassifier.classifyQuery(question)
+        let scorer = QueryClassifier.makeScorerFor(queryType)
         let subjectToken = strongestSubjectAnchorToken(from: question)
         let questionTokens = retrievalTokens(question)
+        
         let reranked = passA.map { hit in
             PassBHitScore(
                 hit: hit,
                 score: passBRerankScore(
                     for: hit,
-                    isCountQuestion: countQuestion,
+                    queryType: queryType,
+                    scorer: scorer,
                     subjectToken: subjectToken,
                     questionTokens: questionTokens
                 )
@@ -1527,11 +1537,8 @@ struct NativeChatView: View {
             chunkTokens: retrievalTokens(text)
         )
         let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: text)
-        return
-            (semanticWeight * semantic) +
-            (exactTokenBoostWeight * exact.exactToken) +
-            (phraseBoostWeight * exact.phrase) +
-            (numericTokenBoostWeight * exact.numeric)
+        let combinedExact = max(exact.exactToken, exact.phrase, exact.numeric)
+        return (0.70 * semantic) + (0.25 * combinedExact)
     }
 
     private func topRankedSnippets(
@@ -1722,11 +1729,8 @@ struct NativeChatView: View {
             let metadata = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary)"
             let lexical = normalizedMatchScore(questionTokens: questionTokens, text: metadata)
             let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: metadata)
-            let score =
-                lexical +
-                (exactTokenBoostWeight * exact.exactToken) +
-                (phraseBoostWeight * exact.phrase) +
-                (numericTokenBoostWeight * exact.numeric)
+            let combinedExact = max(exact.exactToken, exact.phrase, exact.numeric)
+            let score = lexical + (0.25 * combinedExact)
             return (doc, score)
         }
         let sorted = scored.sorted { a, b in
@@ -1734,7 +1738,7 @@ struct NativeChatView: View {
             return a.0.dateCreated > b.0.dateCreated
         }
         let top = sorted.prefix(limit).map { (document: $0.0, score: $0.1) }
-        let maxScore = top.map(\.score).max() ?? 0
+        let maxScore = top.map { $0.score }.max() ?? 0
         if maxScore <= 0 {
             return []
         }
@@ -1747,35 +1751,14 @@ struct NativeChatView: View {
         topScoreByDocumentId: [UUID: Double],
         selectedHits: [ChunkHit]
     ) -> String {
-        let folders = trimToCharBudget(buildFolderIndex(), maxChars: folderContextCharBudget)
         let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
-        let selectedDocList = selectedDocs.isEmpty
-            ? "SelectedDocs: None"
-            : selectedDocs.map { "- \($0.title) [\($0.id.uuidString)] score=\(String(format: "%.2f", topScoreByDocumentId[$0.id] ?? 0))" }.joined(separator: "\n")
-        let activeContextBlock = """
-        FOLDERS:
-        \(folders)
-
-        \(selectedDocList)
-
-        \(evidence)
-        """
-        let lastDocId = sessionState.lastReferencedDocumentId?.uuidString ?? "None"
+        
         return """
         SYSTEM:
         \(chatPreprompt)
-        Internal process (do not expose):
-        1) EXTRACT: find the smallest direct quote from EVIDENCE_CHUNKS that answers the QUESTION. If none exists, set EXTRACT=NONE.
-        2) ANSWER: use only EXTRACT. If EXTRACT=NONE, output exactly: "Not specified in the documents."
-        Use SESSION_POINTER only for follow-up retrieval continuity.
-        Never treat SESSION_POINTER fields as factual evidence.
-        Do not use prior chat/answer text as a factual source.
 
-        SESSION_POINTER:
-        LastReferencedDocumentId: \(lastDocId)
-
-        ACTIVE_CONTEXT:
-        \(activeContextBlock)
+        DOCUMENTS:
+        \(evidence)
 
         QUESTION:
         \(question)
@@ -1787,12 +1770,8 @@ struct NativeChatView: View {
 
         var out: [String] = []
         for (i, hit) in hits.enumerated() {
-            let page = hit.chunk.pageNumber.map { "Page \($0)" } ?? "Page ?"
-            let text = trimToCharBudget(hit.chunk.text, maxChars: 520)
-            out.append("""
-            [\(i + 1)] score=\(String(format: "%.2f", hit.finalScore)) doc="\(hit.document.title)" \(page) chunk=\(hit.chunk.chunkId.uuidString)
-            \(text)
-            """)
+            let text = trimToCharBudget(hit.chunk.text, maxChars: 480)
+            out.append("[\(i + 1)] \(text)")
         }
 
         let joined = out.joined(separator: "\n\n")
@@ -1866,8 +1845,43 @@ struct NativeChatView: View {
             selection: selection
         )
 
+        // Log retrieval for debugging and evaluation
+        let queryType = QueryClassifier.classifyQuery(effectiveQuestion)
+        let queryTypeString: String = {
+            switch queryType {
+            case .countQuestion: return "countQuestion"
+            case .numericLookup: return "numericLookup"
+            case .dateLookup: return "dateLookup"
+            case .entityLookup: return "entityLookup"
+            case .semantic: return "semantic"
+            }
+        }()
+        let hitLogs = selection.allRankedHits.map { hit in
+            ChunkHitLog(
+                documentTitle: hit.document.title,
+                chunkId: hit.chunk.chunkId,
+                finalScore: hit.finalScore,
+                bm25Score: hit.bm25Score,
+                exactMatchScore: hit.exactMatchScore,
+                recencyScore: hit.recencyScore,
+                chunkText: hit.chunk.text,
+                pageNumber: hit.chunk.pageNumber
+            )
+        }
+        RetrievalLogger.shared.log(
+            question: effectiveQuestion,
+            queryType: queryTypeString,
+            hits: hitLogs,
+            selectedDocs: selection.documents.map(\.title),
+            primaryDoc: selection.primaryDocument?.title
+        )
+
         if selection.selectedHits.isEmpty {
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil)
+        }
+
+        if let countAnswer = preprocessCountQuestion(effectiveQuestion, hits: selection.selectedHits) {
+            return ChatLLMResult(reply: countAnswer, primaryDocument: selection.primaryDocument)
         }
 
         let prompt = buildAnswerPrompt(
@@ -1878,6 +1892,42 @@ struct NativeChatView: View {
         )
         let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
         return ChatLLMResult(reply: reply, primaryDocument: selection.primaryDocument)
+    }
+
+    private func preprocessCountQuestion(_ question: String, hits: [ChunkHit]) -> String? {
+        let queryType = QueryClassifier.classifyQuery(question)
+        guard case .countQuestion = queryType else { return nil }
+        
+        let q = question.lowercased()
+        let countTarget = q
+            .replacingOccurrences(of: "how many ", with: "")
+            .replacingOccurrences(of: "number of ", with: "")
+            .replacingOccurrences(of: "total ", with: "")
+            .replacingOccurrences(of: "count ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        var counts: [Int] = []
+        for hit in hits.prefix(5) {
+            let text = hit.chunk.text.lowercased()
+            let pattern = #"(?:(\d+)\s+\#(countTarget)|total:?\s*(\d+)|count:?\s*(\d+))"#
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
+                for i in 1..<match.numberOfRanges {
+                    let range = match.range(at: i)
+                    if range.location != NSNotFound,
+                       let swiftRange = Range(range, in: text),
+                       let number = Int(text[swiftRange]) {
+                        counts.append(number)
+                    }
+                }
+            }
+        }
+        
+        if let maxCount = counts.max() {
+            return "\(maxCount)"
+        }
+        
+        return nil
     }
 
     private func buildStatsAnswerIfNeeded(for question: String) -> String? {

@@ -12,14 +12,6 @@ export const downloadModel = async (
       throw new Error('Invalid model name or URL');
     }
 
-    const fileExists = await RNFS.exists(destPath);
-
-    // If it exists, delete it
-    if (fileExists) {
-      await RNFS.unlink(destPath);
-      console.log(`Deleted existing file at ${destPath}`);
-    }
-
     console.log("Starting download from:", modelUrl);
     const downloadResult = await RNFS.downloadFile({
       fromUrl: modelUrl,
