@@ -1,9 +1,5 @@
 import Foundation
-import PDFKit
 import UIKit
-import Vision
-import SSZipArchive
-import QuickLookThumbnailing
 
 class DocumentManager: ObservableObject {
     enum SummaryContent: String, CaseIterable {

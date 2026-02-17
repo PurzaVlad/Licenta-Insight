@@ -136,25 +136,20 @@
 		13B07FAE1A68108700A75B9A /* Identity */ = {
 			isa = PBXGroup;
 			children = (
-				AEE8C6E52F426D8000F7743F /* ConversationState.swift */,
-				AEE8C6E62F426D8000F7743F /* QueryClassifier.swift */,
-				AEE8C6E72F426D8000F7743F /* RetrievalLogger.swift */,
-				F10A00000000000000000024 /* Identity/Identity.entitlements */,
-				AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
-				A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */,
+				AEE8C6E52F426D8000F7743F /* ConversationState.swift */,
+				AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */,
+				AEE10FEC2F99B2B700D8EFF7 /* ConversionService.swift */,
 				C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */,
 				AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */,
 				AEBD28532F0B119400C3390F /* DocumentManager.swift */,
 				AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */,
 				AEDA82D42F1FBA4100550D74 /* DocumentPreviewViews.swift */,
 				AEDA82D52F1FBA4100550D74 /* DocumentsView.swift */,
-				C1A0C1A0C1A0C1A0C1A0C1A2 /* SearchView.swift */,
-				AEE10FED2F99B2B700D8EFF7 /* ConversionService.m */,
-				AEE10FEC2F99B2B700D8EFF7 /* ConversionService.swift */,
 				AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */,
 				AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */,
 				AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */,
+				F10A00000000000000000024 /* Identity/Identity.entitlements */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */,
@@ -163,9 +158,14 @@
 				AEE10FDE2F0B0A8800D8EFF7 /* NativeChatView.swift */,
 				AEE10FDF2F0B0A8800D8EFF7 /* NativeChatViewManager.swift */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
-				C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */,
+				AEE8C6E62F426D8000F7743F /* QueryClassifier.swift */,
+				AEE8C6E72F426D8000F7743F /* RetrievalLogger.swift */,
+				A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */,
+				C1A0C1A0C1A0C1A0C1A0C1A2 /* SearchView.swift */,
 				AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */,
 				AEDA82D72F1FBA4100550D74 /* TabContainerView.swift */,
+				C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */,
+				AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
 			);
 			name = Identity;
 			sourceTree = "<group>";
@@ -274,10 +274,6 @@
 			buildRules = (
 			);
 			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				AECECCC92F43A92D00D1E8DB /* Services */,
-				AECECCD62F43A93A00D1E8DB /* Core */,
 			);
 			name = IdentityShareExtension;
 			productName = IdentityShareExtension;

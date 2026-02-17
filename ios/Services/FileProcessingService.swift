@@ -1,7 +1,8 @@
 import Foundation
 import UIKit
 import PDFKit
-import QuickLook
+import QuickLookThumbnailing
+import SSZipArchive
 
 struct ProcessedFileResult {
     let content: String
