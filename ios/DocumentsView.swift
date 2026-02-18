@@ -8,6 +8,7 @@ import QuickLookThumbnailing
 import Foundation
 import AVFoundation
 import SSZipArchive
+import OSLog
 
 // MARK: - Drag & Drop modifiers
 extension View {
@@ -1313,7 +1314,7 @@ struct DocumentsView: View {
     private func processScannedText(_ text: String) {
         isProcessing = true
 
-        let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
+        let cappedText = FileProcessingService.truncateText(text, maxChars: 50000)
         let document = Document(
             title: normalizedScannedTitle(titleCaseFromOCR(cappedText)),
             content: cappedText,
@@ -1479,7 +1480,7 @@ struct DocumentsView: View {
         }
 
         let pdfData = createPDF(from: scannedImages)
-        let cappedText = DocumentManager.truncateText(extractedText, maxChars: 50000)
+        let cappedText = FileProcessingService.truncateText(extractedText, maxChars: 50000)
         let cappedPages: [OCRPage]? = {
             if pendingOCRPages.isEmpty { return nil }
             return [OCRPage(pageIndex: 0, blocks: [OCRBlock(text: cappedText, confidence: 1.0, bbox: OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0), order: 0)])]
@@ -1722,8 +1723,16 @@ struct DocumentsView: View {
             let zipURL = tempDir.appendingPathComponent(fileName)
 
             defer {
-                try? FileManager.default.removeItem(at: stagingURL)
-                try? FileManager.default.removeItem(at: zipURL)
+                do {
+                    try FileManager.default.removeItem(at: stagingURL)
+                } catch {
+                    AppLogger.ui.warning("Failed to remove staging directory: \(error.localizedDescription)")
+                }
+                do {
+                    try FileManager.default.removeItem(at: zipURL)
+                } catch {
+                    AppLogger.ui.warning("Failed to remove temporary zip file: \(error.localizedDescription)")
+                }
             }
 
             do {
@@ -1734,13 +1743,18 @@ struct DocumentsView: View {
                     let fileURL = stagingURL.appendingPathComponent(relativePath)
                     let folderURL = fileURL.deletingLastPathComponent()
                     try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
-                    if let data = zipDataForDocument(doc) {
+                    if let data = zipDataForDocument(doc, documentManager: documentManager) {
                         try data.write(to: fileURL, options: [.atomic])
                     }
                 }
 
                 let ok = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: stagingURL.path)
-                guard ok, let zipData = try? Data(contentsOf: zipURL) else {
+                let zipData: Data
+                do {
+                    guard ok else { throw NSError(domain: "ZipExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "SSZipArchive failed"]) }
+                    zipData = try Data(contentsOf: zipURL)
+                } catch {
+                    AppLogger.ui.error("Failed to read zip archive data: \(error.localizedDescription)")
                     DispatchQueue.main.async {
                         isProcessing = false
                         quickZipAlertMessage = "Failed to create ZIP archive."
@@ -1765,7 +1779,7 @@ struct DocumentsView: View {
         }
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
-    
+
     private func deleteDocument(_ document: Document) {
         documentManager.deleteDocument(document)
     }
@@ -1773,7 +1787,7 @@ struct DocumentsView: View {
     private func convertDocument(_ document: Document) {
         // Navigate to conversion view with pre-selected document
         // This will be handled by the dedicated Convert tab
-        print("Convert document: \(document.title)")
+        AppLogger.ui.debug("Convert document: \(document.title)")
         // Note: Users should use the Convert tab for full conversion functionality
     }
 
@@ -1793,10 +1807,10 @@ struct DocumentsView: View {
             \(candidates.map { "- \($0)" }.joined(separator: "\n"))
             """
 
-        print("🏷️ DocumentsView: Generating AI document name from OCR text")
+        AppLogger.ui.debug("Generating AI document name from OCR text")
         // Ensure the JS bridge routes this as a naming request with no chat history.
         EdgeAI.shared?.generate("<<<NO_HISTORY>>><<<NAME_REQUEST>>>" + prompt, resolver: { result in
-            print("🏷️ DocumentsView: Got name suggestion result: \(String(describing: result))")
+            AppLogger.ui.debug("Got name suggestion result: \(String(describing: result))")
             DispatchQueue.main.async {
                 if let result = result as? String, !result.isEmpty {
                     let clean = result.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1810,7 +1824,7 @@ struct DocumentsView: View {
                 self.showingNamingDialog = true
             }
         }, rejecter: { code, message, error in
-            print("❌ DocumentsView: Name generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
+            AppLogger.ui.error("Name generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
                 self.suggestedName = fallback
                 self.customName = self.suggestedName
@@ -1988,7 +2002,7 @@ struct DocumentsView: View {
     
     private func openDocumentPreview(document: Document) {
         documentManager.updateLastAccessed(id: document.id)
-        if isProtectedPDFPreview(document) {
+        if isProtectedPDFPreview(document, documentManager: documentManager) {
             protectedUnlockError = ""
             protectedUnlockPassword = ""
             protectedUnlockTarget = document
@@ -2026,9 +2040,9 @@ struct DocumentsView: View {
         }
         
         // Prefer original file, then PDF, then first image fallback
-        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
+        if let data = documentManager.anyFileData(for: document.id) {
             do {
-                if isProtectedPDFPreview(document) {
+                if isProtectedPDFPreview(document, documentManager: documentManager) {
                     guard let pdf = PDFDocument(data: data), pdf.isEncrypted else {
                         throw NSError(domain: "ProtectedPreview", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to read encrypted PDF."])
                     }
@@ -2044,8 +2058,8 @@ struct DocumentsView: View {
                 }
                 present(url: tempURL)
             } catch {
-                print("Error creating temp file: \(error)")
-                if isProtectedPDFPreview(document) {
+                AppLogger.ui.error("Error creating temp file: \(error.localizedDescription)")
+                if isProtectedPDFPreview(document, documentManager: documentManager) {
                     protectedUnlockError = "Wrong password. Try again."
                 }
                 isOpeningPreview = false
@@ -2103,13 +2117,23 @@ struct DocumentsView: View {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(filename)
 
-        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
-            try? data.write(to: tempURL)
+        if let data = documentManager.anyFileData(for: document.id) {
+            do {
+                try data.write(to: tempURL)
+            } catch {
+                AppLogger.ui.error("Failed to write share file data: \(error.localizedDescription)")
+                return nil
+            }
             return tempURL
         }
 
         if !document.content.isEmpty, let data = document.content.data(using: .utf8) {
-            try? data.write(to: tempURL)
+            do {
+                try data.write(to: tempURL)
+            } catch {
+                AppLogger.ui.error("Failed to write share content data: \(error.localizedDescription)")
+                return nil
+            }
             return tempURL
         }
 
@@ -2136,6 +2160,7 @@ struct DocumentRowView: View {
     let isSelectionMode: Bool
     let usesNativeSelection: Bool
     let onSelectToggle: () -> Void
+    @EnvironmentObject private var documentManager: DocumentManager
 
     let onOpen: () -> Void
     let onRename: () -> Void
@@ -2161,7 +2186,7 @@ struct DocumentRowView: View {
                                 .foregroundColor(.white)
                                 .font(.system(size: 20))
                         }
-                    } else if isProtectedPDFPreview(document) {
+                    } else if isProtectedPDFPreview(document, documentManager: documentManager) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(Color("Primary"))
@@ -2231,6 +2256,7 @@ struct DocumentGridItemView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let onSelectToggle: () -> Void
+    @EnvironmentObject private var documentManager: DocumentManager
     let onOpen: () -> Void
     let onRename: () -> Void
     let onMoveToFolder: () -> Void
@@ -2252,7 +2278,7 @@ struct DocumentGridItemView: View {
                         Image(systemName: zipSymbolName())
                             .font(.system(size: 28))
                             .foregroundColor(.white)
-                    } else if isProtectedPDFPreview(document) {
+                    } else if isProtectedPDFPreview(document, documentManager: documentManager) {
                         RoundedRectangle(cornerRadius: 10)
                             .fill(Color("Primary"))
                         Image(systemName: "lock.fill")
@@ -3645,8 +3671,16 @@ struct FolderDocumentsView: View {
             let zipURL = tempDir.appendingPathComponent(fileName)
 
             defer {
-                try? FileManager.default.removeItem(at: stagingURL)
-                try? FileManager.default.removeItem(at: zipURL)
+                do {
+                    try FileManager.default.removeItem(at: stagingURL)
+                } catch {
+                    AppLogger.ui.warning("Failed to remove staging directory: \(error.localizedDescription)")
+                }
+                do {
+                    try FileManager.default.removeItem(at: zipURL)
+                } catch {
+                    AppLogger.ui.warning("Failed to remove temporary zip file: \(error.localizedDescription)")
+                }
             }
 
             do {
@@ -3657,13 +3691,18 @@ struct FolderDocumentsView: View {
                     let fileURL = stagingURL.appendingPathComponent(relativePath)
                     let folderURL = fileURL.deletingLastPathComponent()
                     try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
-                    if let data = zipDataForDocument(doc) {
+                    if let data = zipDataForDocument(doc, documentManager: documentManager) {
                         try data.write(to: fileURL, options: [.atomic])
                     }
                 }
 
                 let ok = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: stagingURL.path)
-                guard ok, let zipData = try? Data(contentsOf: zipURL) else {
+                let zipData: Data
+                do {
+                    guard ok else { throw NSError(domain: "ZipExport", code: 1, userInfo: [NSLocalizedDescriptionKey: "SSZipArchive failed"]) }
+                    zipData = try Data(contentsOf: zipURL)
+                } catch {
+                    AppLogger.ui.error("Failed to read zip archive data: \(error.localizedDescription)")
                     DispatchQueue.main.async {
                         isProcessing = false
                         quickZipAlertMessage = "Failed to create ZIP archive."
@@ -3709,13 +3748,23 @@ struct FolderDocumentsView: View {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(filename)
 
-        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
-            try? data.write(to: tempURL)
+        if let data = documentManager.anyFileData(for: document.id) {
+            do {
+                try data.write(to: tempURL)
+            } catch {
+                AppLogger.ui.error("Failed to write share file data: \(error.localizedDescription)")
+                return nil
+            }
             return tempURL
         }
 
         if !document.content.isEmpty, let data = document.content.data(using: .utf8) {
-            try? data.write(to: tempURL)
+            do {
+                try data.write(to: tempURL)
+            } catch {
+                AppLogger.ui.error("Failed to write share content data: \(error.localizedDescription)")
+                return nil
+            }
             return tempURL
         }
 
@@ -3848,7 +3897,7 @@ struct FolderDocumentsView: View {
     private func processScannedText(_ text: String) {
         isProcessing = true
 
-        let cappedText = DocumentManager.truncateText(text, maxChars: 50000)
+        let cappedText = FileProcessingService.truncateText(text, maxChars: 50000)
         let document = Document(
             title: normalizedScannedTitle(titleCaseFromOCR(cappedText)),
             content: cappedText,
@@ -3925,7 +3974,7 @@ struct FolderDocumentsView: View {
         }
 
         let pdfData = createPDF(from: scannedImages)
-        let cappedText = DocumentManager.truncateText(extractedText, maxChars: 50000)
+        let cappedText = FileProcessingService.truncateText(extractedText, maxChars: 50000)
         let cappedPages: [OCRPage]? = {
             if pendingOCRPages.isEmpty { return nil }
             return [OCRPage(pageIndex: 0, blocks: [OCRBlock(text: cappedText, confidence: 1.0, bbox: OCRBoundingBox(x: 0.0, y: 0.0, width: 1.0, height: 1.0), order: 0)])]
@@ -4642,10 +4691,8 @@ private func zipSanitizedFileName(_ name: String) -> String {
     return name.components(separatedBy: invalid).joined(separator: "-")
 }
 
-private func zipDataForDocument(_ document: Document) -> Data? {
-    if let original = document.originalFileData { return original }
-    if let pdf = document.pdfData { return pdf }
-    if let img = document.imageData?.first { return img }
+private func zipDataForDocument(_ document: Document, documentManager: DocumentManager) -> Data? {
+    if let data = documentManager.anyFileData(for: document.id) { return data }
     return document.content.data(using: .utf8)
 }
 
@@ -4655,9 +4702,9 @@ private func zipShortDateString() -> String {
     return formatter.string(from: Date())
 }
 
-private func isProtectedPDFPreview(_ document: Document) -> Bool {
+private func isProtectedPDFPreview(_ document: Document, documentManager: DocumentManager) -> Bool {
     guard document.type == .pdf || document.type == .scanned else { return false }
-    guard let data = document.pdfData ?? document.originalFileData,
+    guard let data = documentManager.pdfData(for: document.id) ?? documentManager.originalFileData(for: document.id),
           let pdf = PDFDocument(data: data) else { return false }
     return pdf.isEncrypted
 }
@@ -4774,6 +4821,7 @@ struct PDFThumbnailView: UIViewRepresentable {
 struct DocumentThumbnailView: UIViewRepresentable {
     let document: Document
     let size: CGSize
+    @EnvironmentObject private var documentManager: DocumentManager
 
     func makeUIView(context: Context) -> UIImageView {
         let imageView = UIImageView()
@@ -4783,17 +4831,17 @@ struct DocumentThumbnailView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIImageView, context: Context) {
-        if document.type == .scanned, let imageData = document.imageData?.first, let uiImage = UIImage(data: imageData) {
+        if document.type == .scanned, let imageData = documentManager.imageData(for: document.id)?.first, let uiImage = UIImage(data: imageData) {
             uiView.image = renderThumbnail(from: uiImage, size: size)
             return
         }
 
-        if let imageData = document.imageData?.first, let uiImage = UIImage(data: imageData) {
+        if let imageData = documentManager.imageData(for: document.id)?.first, let uiImage = UIImage(data: imageData) {
             uiView.image = renderThumbnail(from: uiImage, size: size)
             return
         }
 
-        if let pdfData = document.pdfData, let image = thumbnailFromPDF(data: pdfData, size: size) {
+        if let pdfData = documentManager.pdfData(for: document.id), let image = thumbnailFromPDF(data: pdfData, size: size) {
             uiView.image = image
             return
         }
@@ -4802,12 +4850,12 @@ struct DocumentThumbnailView: UIViewRepresentable {
         var data: Data?
 
         if document.type == .scanned,
-           document.pdfData == nil,
-           document.imageData?.first == nil {
+           documentManager.pdfData(for: document.id) == nil,
+           documentManager.imageData(for: document.id)?.first == nil {
             data = document.content.data(using: .utf8)
             ext = "txt"
         } else {
-            data = document.originalFileData ?? document.pdfData ?? document.imageData?.first ?? document.content.data(using: .utf8)
+            data = documentManager.anyFileData(for: document.id) ?? document.content.data(using: .utf8)
             if ext.isEmpty {
                 ext = fileExtension(for: document.type)
             }
@@ -4821,7 +4869,11 @@ struct DocumentThumbnailView: UIViewRepresentable {
         let fileURL = temporaryFileURL(id: document.id, ext: ext.isEmpty ? "dat" : ext)
 
         if !FileManager.default.fileExists(atPath: fileURL.path) {
-            try? data.write(to: fileURL, options: [.atomic])
+            do {
+                try data.write(to: fileURL, options: [.atomic])
+            } catch {
+                AppLogger.ui.error("Failed to write thumbnail data to temp file: \(error.localizedDescription)")
+            }
         }
 
         let request = QLThumbnailGenerator.Request(
@@ -4948,7 +5000,7 @@ struct DocumentScannerView: UIViewControllerRepresentable {
         }
         
         func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) {
-            print("Document scanning failed: \(error.localizedDescription)")
+            AppLogger.ui.error("Document scanning failed: \(error.localizedDescription)")
             controller.dismiss(animated: true)
         }
     }

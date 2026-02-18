@@ -3,6 +3,7 @@ import UIKit
 import PDFKit
 import QuickLookThumbnailing
 import SSZipArchive
+import OSLog
 
 struct ProcessedFileResult {
     let content: String
@@ -25,7 +26,7 @@ class FileProcessingService {
 
     /// Processes a file at the given URL and returns extracted content and metadata
     func processFile(at url: URL) throws -> ProcessedFileResult {
-        print("📄 FileProcessingService: Processing \(url.lastPathComponent)")
+        AppLogger.fileProcessing.info("Processing \(url.lastPathComponent)")
 
         // Try to start accessing security scoped resource
         let didStartAccess = url.startAccessingSecurityScopedResource()
@@ -36,7 +37,7 @@ class FileProcessingService {
         }
 
         let fileExtension = url.pathExtension.lowercased()
-        print("📄 FileProcessingService: File type: \(fileExtension)")
+        AppLogger.fileProcessing.info("File type: \(fileExtension)")
 
         var content = ""
         var ocrPages: [OCRPage]? = nil
@@ -92,7 +93,7 @@ class FileProcessingService {
             throw FileProcessingError.unsupportedFormat(fileExtension)
         }
 
-        print("📄 FileProcessingService: Content extracted (\(content.count) chars)")
+        AppLogger.fileProcessing.info("Content extracted (\(content.count) chars)")
 
         // Truncate if too long
         if content.count > maxOCRChars {
@@ -111,7 +112,7 @@ class FileProcessingService {
 
         do {
             let fileData = try Data(contentsOf: url)
-            print("📄 FileProcessingService: Read \(fileData.count) bytes")
+            AppLogger.fileProcessing.info("Read \(fileData.count) bytes")
 
             // Always store original file data for QuickLook preview
             originalFileData = fileData
@@ -125,7 +126,7 @@ class FileProcessingService {
                 break
             }
         } catch {
-            print("⚠️ FileProcessingService: Could not read file data: \(error.localizedDescription)")
+            AppLogger.fileProcessing.error("Could not read file data: \(error.localizedDescription)")
         }
 
         return ProcessedFileResult(
@@ -166,7 +167,7 @@ class FileProcessingService {
     }
 
     private func extractTextFromWordDocument(url: URL) -> String {
-        print("📄 FileProcessingService: Extracting Word document")
+        AppLogger.fileProcessing.info("Extracting Word document")
         let ext = url.pathExtension.lowercased()
 
         // Preferred: Parse DOCX XML and extract <w:t> text nodes
@@ -174,19 +175,19 @@ class FileProcessingService {
             let parsed = extractTextFromDOCXArchive(url: url)
             let cleaned = formatExtractedText(parsed)
             if !cleaned.isEmpty && !looksLikeXML(cleaned) {
-                print("📄 FileProcessingService: Using DOCX parsed text (\(cleaned.count) chars)")
+                AppLogger.fileProcessing.info("Using DOCX parsed text (\(cleaned.count) chars)")
                 return cleaned
             }
         }
 
         // Fallback: OCR a rendered thumbnail
         if let ocrText = extractTextFromDOCXViaOCR(url: url), !ocrText.isEmpty, !ocrText.contains("OCR failed") {
-            print("📄 FileProcessingService: Using OCR text (\(ocrText.count) chars)")
+            AppLogger.fileProcessing.info("Using OCR text (\(ocrText.count) chars)")
             return formatExtractedText(ocrText)
         }
 
         // Last resort placeholder
-        print("📄 FileProcessingService: No readable text extracted")
+        AppLogger.fileProcessing.info("No readable text extracted")
         return "Imported Word document. Text extraction is limited on this file."
     }
 
@@ -194,7 +195,7 @@ class FileProcessingService {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("docx_extract_\(UUID().uuidString)", isDirectory: true)
         do { try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true) } catch {
-            print("⚠️ FileProcessingService: Failed to create temp dir")
+            AppLogger.fileProcessing.error("Failed to create temp directory for DOCX extraction")
             return ""
         }
 
@@ -208,16 +209,24 @@ class FileProcessingService {
                                        delegate: nil)
         if !ok {
             if let unzipError = unzipError {
-                print("⚠️ FileProcessingService: Unzip failed: \(unzipError.localizedDescription)")
+                AppLogger.fileProcessing.error("DOCX unzip failed: \(unzipError.localizedDescription)")
             }
-            try? FileManager.default.removeItem(at: tempDir)
+            cleanupTempDir(tempDir)
             return ""
         }
 
         let docXML = tempDir.appendingPathComponent("word/document.xml")
-        guard let xmlData = try? Data(contentsOf: docXML), let xml = String(data: xmlData, encoding: .utf8) else {
-            print("⚠️ FileProcessingService: document.xml missing")
-            try? FileManager.default.removeItem(at: tempDir)
+        let xmlData: Data
+        do {
+            xmlData = try Data(contentsOf: docXML)
+        } catch {
+            AppLogger.fileProcessing.error("DOCX document.xml missing or unreadable: \(error.localizedDescription)")
+            cleanupTempDir(tempDir)
+            return ""
+        }
+        guard let xml = String(data: xmlData, encoding: .utf8) else {
+            AppLogger.fileProcessing.error("DOCX document.xml not valid UTF-8")
+            cleanupTempDir(tempDir)
             return ""
         }
 
@@ -238,7 +247,7 @@ class FileProcessingService {
                 }
             }
         } catch {
-            print("⚠️ FileProcessingService: Regex failed")
+            AppLogger.fileProcessing.error("DOCX regex extraction failed: \(error.localizedDescription)")
         }
 
         if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -246,7 +255,7 @@ class FileProcessingService {
             if !cleaned.isEmpty { body = cleaned }
         }
 
-        try? FileManager.default.removeItem(at: tempDir)
+        cleanupTempDir(tempDir)
         return formatExtractedText(body)
     }
 
@@ -266,14 +275,18 @@ class FileProcessingService {
                                        error: &unzipError,
                                        delegate: nil)
         if !ok {
-            try? FileManager.default.removeItem(at: tempDir)
+            cleanupTempDir(tempDir)
             return ""
         }
 
         let slidesDir = tempDir.appendingPathComponent("ppt/slides", isDirectory: true)
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: slidesDir, includingPropertiesForKeys: nil) else {
-            try? FileManager.default.removeItem(at: tempDir)
+        let files: [URL]
+        do {
+            files = try fm.contentsOfDirectory(at: slidesDir, includingPropertiesForKeys: nil)
+        } catch {
+            AppLogger.fileProcessing.error("PPTX slides directory listing failed: \(error.localizedDescription)")
+            cleanupTempDir(tempDir)
             return ""
         }
 
@@ -282,14 +295,20 @@ class FileProcessingService {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
 
         if slideFiles.isEmpty {
-            try? FileManager.default.removeItem(at: tempDir)
+            cleanupTempDir(tempDir)
             return ""
         }
 
         var collected: [String] = []
         for slideURL in slideFiles {
-            guard let xmlData = try? Data(contentsOf: slideURL),
-                  let xml = String(data: xmlData, encoding: .utf8) else { continue }
+            let xmlData: Data
+            do {
+                xmlData = try Data(contentsOf: slideURL)
+            } catch {
+                AppLogger.fileProcessing.warning("Failed to read PPTX slide \(slideURL.lastPathComponent): \(error.localizedDescription)")
+                continue
+            }
+            guard let xml = String(data: xmlData, encoding: .utf8) else { continue }
 
             var body = ""
             do {
@@ -308,7 +327,7 @@ class FileProcessingService {
                     }
                 }
             } catch {
-                print("⚠️ FileProcessingService: PPTX regex failed")
+                AppLogger.fileProcessing.error("PPTX slide regex failed: \(error.localizedDescription)")
             }
 
             let cleaned = formatExtractedText(body)
@@ -317,7 +336,7 @@ class FileProcessingService {
             }
         }
 
-        try? FileManager.default.removeItem(at: tempDir)
+        cleanupTempDir(tempDir)
         return collected.joined(separator: "\n\n")
     }
 
@@ -390,7 +409,7 @@ class FileProcessingService {
             if let rep = rep {
                 image = rep.uiImage
             } else if let error = error {
-                print("⚠️ FileProcessingService: Thumbnail error: \(error.localizedDescription)")
+                AppLogger.fileProcessing.error("Thumbnail generation error: \(error.localizedDescription)")
             }
             semaphore.signal()
         }
@@ -480,5 +499,13 @@ class FileProcessingService {
     static func truncateText(_ text: String, maxChars: Int) -> String {
         if text.count <= maxChars { return text }
         return String(text.prefix(maxChars))
+    }
+
+    private func cleanupTempDir(_ dir: URL) {
+        do {
+            try FileManager.default.removeItem(at: dir)
+        } catch {
+            AppLogger.fileProcessing.warning("Failed to clean up temp directory: \(error.localizedDescription)")
+        }
     }
 }

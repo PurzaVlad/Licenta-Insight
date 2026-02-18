@@ -1,6 +1,7 @@
 import SwiftUI
 import PDFKit
 import UIKit
+import OSLog
 
 struct ToolsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -675,7 +676,7 @@ struct CompressPDFView: View {
 
     private func compressSelected() {
         guard let document = selectedDocument,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else {
             alertMessage = "Please choose a PDF first."
             showingAlert = true
@@ -846,7 +847,7 @@ struct ProtectPDFView: View {
 
     private func protectSelected() {
         guard let document = selectedDocument,
-              let sourceData = pdfData(from: document) else {
+              let sourceData = pdfData(from: document, documentManager: documentManager) else {
             alertMessage = "Please choose a PDF first."
             showingAlert = true
             return
@@ -884,7 +885,12 @@ struct ProtectPDFView: View {
             ]
 
             let writeOK = pdf.write(to: tempURL, withOptions: options)
-            guard writeOK, let outData = try? Data(contentsOf: tempURL) else {
+            let outData: Data
+            do {
+                guard writeOK else { throw NSError(domain: "ToolsView", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDF write failed"]) }
+                outData = try Data(contentsOf: tempURL)
+            } catch {
+                AppLogger.ui.error("Failed to read encrypted PDF data: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     isSaving = false
                     alertMessage = "Failed to encrypt PDF."
@@ -892,7 +898,7 @@ struct ProtectPDFView: View {
                 }
                 return
             }
-            try? FileManager.default.removeItem(at: tempURL)
+            do { try FileManager.default.removeItem(at: tempURL) } catch { AppLogger.ui.warning("Failed to remove temp PDF file: \(error.localizedDescription)") }
 
             guard let verifyPDF = PDFDocument(data: outData), verifyPDF.isEncrypted else {
                 DispatchQueue.main.async {
@@ -1104,7 +1110,7 @@ struct SignPDFView: View {
 
     private func loadPDF(for document: Document?) {
         guard let document,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else {
             pdfController.load(document: nil)
             return
@@ -1998,7 +2004,7 @@ struct MergePDFsView: View {
             var pageIndex = 0
 
             for doc in selectedDocuments {
-                guard let data = pdfData(from: doc),
+                guard let data = pdfData(from: doc, documentManager: documentManager),
                       let pdf = PDFDocument(data: data) else { continue }
                 for i in 0..<pdf.pageCount {
                     if let page = pdf.page(at: i) {
@@ -2076,7 +2082,7 @@ struct SplitPDFView: View {
 
     private var pageCount: Int {
         guard let doc = selectedDocument,
-              let data = pdfData(from: doc),
+              let data = pdfData(from: doc, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else { return 0 }
         return pdf.pageCount
     }
@@ -2172,7 +2178,7 @@ struct SplitPDFView: View {
 
     private func splitSelected() {
         guard let document = selectedDocument,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else { return }
 
         let totalPages = pdf.pageCount
@@ -2361,7 +2367,7 @@ struct RearrangePDFView: View {
     private func loadPages(for document: Document?) {
         pageItems.removeAll()
         guard let document,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else { return }
 
         var items: [PDFPageItem] = []
@@ -2376,7 +2382,7 @@ struct RearrangePDFView: View {
 
     private func saveRearranged() {
         guard let document = selectedDocument,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else { return }
 
         isSaving = true
@@ -2627,7 +2633,7 @@ struct CropPDFView: View {
         cropValuesByPage.removeAll()
         currentPageIndex = 0
         guard let document,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else {
             workingPDF = nil
             return
@@ -2652,7 +2658,7 @@ struct CropPDFView: View {
 
     private func saveCroppedPDF() {
         guard let document = selectedDocument,
-              let sourceData = pdfData(from: document),
+              let sourceData = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: sourceData) else {
             alertMessage = "Please choose a valid PDF first."
             showingAlert = true
@@ -2987,7 +2993,7 @@ struct RotatePDFView: View {
     private func loadPages(for document: Document?) {
         pageItems.removeAll()
         guard let document,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else { return }
 
         var items: [RotatePageItem] = []
@@ -3024,7 +3030,7 @@ struct RotatePDFView: View {
 
     private func saveRotations() {
         guard let document = selectedDocument,
-              let data = pdfData(from: document),
+              let data = pdfData(from: document, documentManager: documentManager),
               let pdf = PDFDocument(data: data) else { return }
 
         isSaving = true
@@ -3190,9 +3196,9 @@ private func isPDFDocument(_ document: Document) -> Bool {
     document.type == .pdf || document.type == .scanned
 }
 
-private func pdfData(from document: Document) -> Data? {
-    if let pdfData = document.pdfData { return pdfData }
-    if let original = document.originalFileData { return original }
+private func pdfData(from document: Document, documentManager: DocumentManager) -> Data? {
+    if let pdfData = documentManager.pdfData(for: document.id) { return pdfData }
+    if let original = documentManager.originalFileData(for: document.id) { return original }
     return nil
 }
 

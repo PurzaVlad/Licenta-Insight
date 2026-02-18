@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import OSLog
 
 class DocumentManager: ObservableObject {
     enum SummaryContent: String, CaseIterable {
@@ -13,6 +14,7 @@ class DocumentManager: ObservableObject {
 
     // Services (injected for testability)
     private let persistenceService: PersistenceService
+    private let fileStorageService: FileStorageService
     private let fileProcessingService: FileProcessingService
     private let ocrService: OCRService
     private let aiService: AIService
@@ -30,12 +32,14 @@ class DocumentManager: ObservableObject {
 
     init(
         persistenceService: PersistenceService = .shared,
+        fileStorageService: FileStorageService = .shared,
         fileProcessingService: FileProcessingService = .shared,
         ocrService: OCRService = .shared,
         aiService: AIService = .shared,
         validationService: ValidationService = .shared
     ) {
         self.persistenceService = persistenceService
+        self.fileStorageService = fileStorageService
         self.fileProcessingService = fileProcessingService
         self.ocrService = ocrService
         self.aiService = aiService
@@ -55,11 +59,18 @@ class DocumentManager: ObservableObject {
             guard let self else { return }
 
             let fm = FileManager.default
-            let urls = (try? fm.contentsOfDirectory(
-                at: inboxURL,
-                includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )) ?? []
+            let urls: [URL]
+            do {
+                urls = try fm.contentsOfDirectory(
+                    at: inboxURL,
+                    includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                AppLogger.documents.error("Failed to list shared inbox: \(error.localizedDescription)")
+                DispatchQueue.main.async { self.isImportingSharedInbox = false }
+                return
+            }
 
             let fileURLs = urls.filter { url in
                 let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
@@ -87,7 +98,7 @@ class DocumentManager: ObservableObject {
                 do {
                     try ValidationService.shared.validateFile(url)
                 } catch {
-                    print("⚠️ DocumentManager: Skipping invalid file '\(url.lastPathComponent)': \(error.localizedDescription)")
+                    AppLogger.documents.warning("Skipping invalid file '\(url.lastPathComponent)': \(error.localizedDescription)")
                     invalidURLs.append(url)
                     continue
                 }
@@ -103,11 +114,15 @@ class DocumentManager: ObservableObject {
                     self.addDocument(document)
                 }
                 for url in consumedURLs {
-                    try? fm.removeItem(at: url)
+                    do { try fm.removeItem(at: url) } catch {
+                        AppLogger.documents.warning("Failed to remove imported file \(url.lastPathComponent): \(error.localizedDescription)")
+                    }
                 }
                 // Also clean up invalid files
                 for url in invalidURLs {
-                    try? fm.removeItem(at: url)
+                    do { try fm.removeItem(at: url) } catch {
+                        AppLogger.documents.warning("Failed to remove invalid file \(url.lastPathComponent): \(error.localizedDescription)")
+                    }
                 }
                 self.isImportingSharedInbox = false
             }
@@ -128,7 +143,7 @@ class DocumentManager: ObservableObject {
         do {
             return try persistenceService.loadLastAccessedMap()
         } catch {
-            print("⚠️ DocumentManager: Failed to load last accessed map: \(error.localizedDescription)")
+            AppLogger.documents.error("Failed to load last accessed map: \(error.localizedDescription)")
             return [:]
         }
     }
@@ -137,7 +152,7 @@ class DocumentManager: ObservableObject {
         do {
             try persistenceService.saveLastAccessedMap(lastAccessedMap)
         } catch {
-            print("❌ DocumentManager: Failed to save last accessed map: \(error.localizedDescription)")
+            AppLogger.documents.error("Failed to save last accessed map: \(error.localizedDescription)")
         }
     }
 
@@ -175,7 +190,7 @@ class DocumentManager: ObservableObject {
     // MARK: - Document Management
     
     func addDocument(_ document: Document) {
-        print("💾 DocumentManager: Adding document '\\(document.title)' (\\(document.type.rawValue))")
+        AppLogger.documents.info("Adding document '\(document.title)' (\(document.type.rawValue))")
         var updated = Self.withInferredMetadataIfNeeded(document)
 
         // Replace placeholder summary
@@ -206,10 +221,25 @@ class DocumentManager: ObservableObject {
             updated = updated.with(sortOrder: maxOrder + 1)
         }
 
+        // Save binary data to disk via FileStorageService
+        do {
+            try fileStorageService.saveFileData(
+                imageData: updated.imageData,
+                pdfData: updated.pdfData,
+                originalFileData: updated.originalFileData,
+                for: updated.id
+            )
+        } catch {
+            AppLogger.documents.error("Failed to save file data: \(error.localizedDescription)")
+        }
+
+        // Strip binary data from in-memory document (data lives on disk)
+        updated = updated.withoutFileData()
+
         documents.append(updated)
-        print("💾 DocumentManager: Document array now has \\(documents.count) items")
+        AppLogger.documents.info("Document array now has \(self.documents.count) items")
         saveState()
-        print("💾 DocumentManager: Document saved successfully")
+        AppLogger.documents.info("Document saved successfully")
 
         generateSummary(for: updated)
         generateTags(for: updated)
@@ -217,6 +247,7 @@ class DocumentManager: ObservableObject {
     
     func deleteDocument(_ document: Document) {
         documents.removeAll { $0.id == document.id }
+        fileStorageService.deleteAllData(for: document.id)
         handleSourceDeletion(sourceId: document.id)
         saveState()
     }
@@ -281,7 +312,7 @@ class DocumentManager: ObservableObject {
                 self.updateTags(for: document.id, to: finalTags)
             }
         }, rejecter: { code, message, _ in
-            print("❌ DocumentManager: Tag generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
+            AppLogger.ai.error("Tag generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
         })
     }
 
@@ -334,6 +365,11 @@ class DocumentManager: ObservableObject {
         case .deleteAllItems:
             // Delete folder, all descendants, and all documents inside.
             let idsToDelete = descendantFolderIds(includingSelf: folderId)
+
+            // Clean up file storage for deleted documents
+            for doc in documents where doc.folderId != nil && idsToDelete.contains(doc.folderId!) {
+                fileStorageService.deleteAllData(for: doc.id)
+            }
 
             documents.removeAll { doc in
                 guard let fid = doc.folderId else { return false }
@@ -486,6 +522,25 @@ class DocumentManager: ObservableObject {
         return documents.first(where: { $0.id == id })
     }
 
+    // MARK: - Lazy File Data Accessors
+
+    func imageData(for documentId: UUID) -> [Data]? {
+        return fileStorageService.loadImageData(for: documentId)
+    }
+
+    func pdfData(for documentId: UUID) -> Data? {
+        return fileStorageService.loadPdfData(for: documentId)
+    }
+
+    func originalFileData(for documentId: UUID) -> Data? {
+        return fileStorageService.loadOriginalFileData(for: documentId)
+    }
+
+    /// Common fallback chain: originalFileData → pdfData → imageData[0]
+    func anyFileData(for documentId: UUID) -> Data? {
+        return fileStorageService.loadAnyFileData(for: documentId)
+    }
+
     func refreshContentIfNeeded(for documentId: UUID) {
         guard let doc = getDocument(by: documentId) else { return }
         guard doc.type == .docx else { return }
@@ -498,12 +553,14 @@ class DocumentManager: ObservableObject {
                           content.contains("PK!") ||
                           (content.filter { $0 == "<" }.count > 20 && content.count > 200)
 
-        if looksLikeXML, let data = doc.originalFileData {
+        if looksLikeXML, let data = fileStorageService.loadOriginalFileData(for: documentId) {
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("repair_\(doc.id).docx")
             do {
                 try data.write(to: tempURL)
                 let result = try fileProcessingService.processFile(at: tempURL)
-                try? FileManager.default.removeItem(at: tempURL)
+                do { try FileManager.default.removeItem(at: tempURL) } catch {
+                    AppLogger.documents.warning("Failed to remove temp file: \(error.localizedDescription)")
+                }
 
                 // Check if the new extraction is better
                 let newLooksLikeXML = result.content.contains("<?xml") ||
@@ -514,7 +571,7 @@ class DocumentManager: ObservableObject {
                     updateContent(for: documentId, to: result.content)
                 }
             } catch {
-                print("📄 DocumentManager: refresh failed: \(error.localizedDescription)")
+                AppLogger.documents.error("Content refresh failed: \(error.localizedDescription)")
             }
         }
     }
@@ -528,7 +585,7 @@ class DocumentManager: ObservableObject {
         if document.type == .zip { return }
         _ = content
 
-        print("🤖 DocumentManager: Generating summary for '\(document.title)'")
+        AppLogger.ai.info("Generating summary for '\(document.title)'")
 
         // Use AIService to build the summary prompt
         let prompt = aiService.buildSummaryPrompt(for: document, length: length)
@@ -546,24 +603,24 @@ class DocumentManager: ObservableObject {
     }
     
     func getAllDocumentContent() -> String {
-        print("🤖 DocumentManager: Getting all document content, document count: \(documents.count)")
+        AppLogger.documents.info("Getting all document content, document count: \(self.documents.count)")
         return aiService.getAllDocumentContent(from: documents)
     }
 
     func getDocumentSummaries() -> String {
-        print("🤖 DocumentManager: Getting document summaries, document count: \(documents.count)")
+        AppLogger.documents.info("Getting document summaries, document count: \(self.documents.count)")
         return aiService.getDocumentSummaries(from: documents)
     }
 
     func getSmartDocumentContext() -> String {
-        print("🤖 DocumentManager: Getting smart document context, document count: \(documents.count)")
+        AppLogger.documents.info("Getting smart document context, document count: \(self.documents.count)")
         return aiService.getSmartDocumentContext(from: documents)
     }
     
     // MARK: - File Processing
 
     func processFile(at url: URL) -> Document? {
-        print("📄 DocumentManager: Processing file at \(url.lastPathComponent)")
+        AppLogger.documents.info("Processing file at \(url.lastPathComponent)")
 
         // Try to start accessing security scoped resource
         let didStartAccess = url.startAccessingSecurityScopedResource()
@@ -608,14 +665,11 @@ class DocumentManager: ObservableObject {
                 originalFileData: result.originalFileData
             )
 
-            print("📄 DocumentManager: ✅ Document created successfully:")
-            print("📄 DocumentManager:   - Title: \(baseDocument.title)")
-            print("📄 DocumentManager:   - Type: \(baseDocument.type.rawValue)")
-            print("📄 DocumentManager:   - Content length: \(baseDocument.content.count)")
+            AppLogger.documents.info("Document created: '\(baseDocument.title)' (\(baseDocument.type.rawValue), \(baseDocument.content.count) chars)")
 
             return baseDocument
         } catch {
-            print("❌ DocumentManager: Failed to process file: \(error.localizedDescription)")
+            AppLogger.documents.error("Failed to process file: \(error.localizedDescription)")
             return nil
         }
     }
@@ -635,9 +689,9 @@ class DocumentManager: ObservableObject {
     private func saveState() {
         do {
             try persistenceService.saveDocuments(documents, folders: folders, prefersGridLayout: prefersGridLayout)
-            print("💾 DocumentManager: Successfully saved \(documents.count) documents + \(folders.count) folders")
+            AppLogger.documents.info("Successfully saved \(self.documents.count) documents + \(self.folders.count) folders")
         } catch {
-            print("❌ DocumentManager: Failed to save documents: \(error.localizedDescription)")
+            AppLogger.documents.error("Failed to save documents: \(error.localizedDescription)")
         }
     }
     
@@ -645,21 +699,45 @@ class DocumentManager: ObservableObject {
         do {
             let loaded = try persistenceService.loadDocuments()
             let backfilled = loaded.documents.map { Self.withBackfilledMetadata($0) }
-            self.documents = backfilled
+
+            // Migrate inline binary data to FileStorageService
+            var needsResave = false
+            let migrated = backfilled.map { doc -> Document in
+                let hasInlineData = doc.imageData != nil || doc.pdfData != nil || doc.originalFileData != nil
+                if hasInlineData {
+                    do {
+                        try fileStorageService.saveFileData(
+                            imageData: doc.imageData,
+                            pdfData: doc.pdfData,
+                            originalFileData: doc.originalFileData,
+                            for: doc.id
+                        )
+                        AppLogger.documents.info("Migrated file data for '\(doc.title)' to disk")
+                    } catch {
+                        AppLogger.documents.error("Failed to migrate file data for '\(doc.title)': \(error.localizedDescription)")
+                    }
+                    needsResave = true
+                    return doc.withoutFileData()
+                }
+                return doc
+            }
+
+            self.documents = migrated
             self.folders = loaded.folders
             self.prefersGridLayout = loaded.prefersGridLayout
 
             backfillSortOrdersIfNeeded()
             backfillFolderSortOrdersIfNeeded()
 
-            print("💾 DocumentManager: Successfully loaded \(documents.count) documents + \(folders.count) folders")
+            AppLogger.documents.info("Successfully loaded \(self.documents.count) documents + \(self.folders.count) folders")
 
-            // Persist backfilled metadata/order if needed
-            if zip(loaded.documents, backfilled).contains(where: { $0.keywordsResume != $1.keywordsResume || $0.category != $1.category }) {
+            // Re-save if migration occurred or metadata was backfilled
+            let metadataChanged = zip(loaded.documents, backfilled).contains(where: { $0.keywordsResume != $1.keywordsResume || $0.category != $1.category })
+            if needsResave || metadataChanged {
                 saveState()
             }
         } catch {
-            print("❌ DocumentManager: Failed to load documents: \(error.localizedDescription)")
+            AppLogger.documents.error("Failed to load documents: \(error.localizedDescription)")
             self.documents = []
             self.folders = []
             self.prefersGridLayout = false

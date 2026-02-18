@@ -112,6 +112,8 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AECECCC92F43A92D00D1E8DB /* Services */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Services; sourceTree = "<group>"; };
 		AECECCD62F43A93A00D1E8DB /* Core */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Core; sourceTree = "<group>"; };
+		D1A0D1A0D1A0D1A0D1A00021 /* Coordinators */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Coordinators; sourceTree = "<group>"; };
+		D1A0D1A0D1A0D1A0D1A00022 /* Views */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Views; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -189,6 +191,8 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
+				D1A0D1A0D1A0D1A0D1A00021 /* Coordinators */,
+				D1A0D1A0D1A0D1A0D1A00022 /* Views */,
 				AECECCD62F43A93A00D1E8DB /* Core */,
 				AECECCC92F43A92D00D1E8DB /* Services */,
 				13B07FAE1A68108700A75B9A /* Identity */,
@@ -257,6 +261,8 @@
 			fileSystemSynchronizedGroups = (
 				AECECCC92F43A92D00D1E8DB /* Services */,
 				AECECCD62F43A93A00D1E8DB /* Core */,
+				D1A0D1A0D1A0D1A0D1A00021 /* Coordinators */,
+				D1A0D1A0D1A0D1A0D1A00022 /* Views */,
 			);
 			name = Identity;
 			productName = Identity;

@@ -345,7 +345,7 @@ struct SearchView: View {
                                     .foregroundColor(.white)
                                     .font(.system(size: 20))
                             }
-                        } else if isProtectedPDFPreviewInSearch(document) {
+                        } else if isProtectedPDFPreviewInSearch(document, documentManager: documentManager) {
                             ZStack {
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(Color("Primary"))
@@ -433,7 +433,7 @@ struct SearchView: View {
             }
         }
 
-        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
+        if let data = documentManager.anyFileData(for: document.id) {
             do {
                 try data.write(to: tempURL)
                 present(url: tempURL)
@@ -487,9 +487,9 @@ struct SearchView: View {
     }
 }
 
-private func isProtectedPDFPreviewInSearch(_ document: Document) -> Bool {
+private func isProtectedPDFPreviewInSearch(_ document: Document, documentManager: DocumentManager) -> Bool {
     guard document.type == .pdf || document.type == .scanned else { return false }
-    guard let data = document.pdfData ?? document.originalFileData,
+    guard let data = documentManager.pdfData(for: document.id) ?? documentManager.originalFileData(for: document.id),
           let pdf = PDFDocument(data: data) else { return false }
     return pdf.isEncrypted
 }

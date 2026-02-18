@@ -142,9 +142,7 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         try container.encodeIfPresent(folderId, forKey: .folderId)
         try container.encode(sortOrder, forKey: .sortOrder)
         try container.encode(type, forKey: .type)
-        try container.encodeIfPresent(imageData, forKey: .imageData)
-        try container.encodeIfPresent(pdfData, forKey: .pdfData)
-        try container.encodeIfPresent(originalFileData, forKey: .originalFileData)
+        // Binary data is stored on disk via FileStorageService, not in JSON
     }
 
     private static func buildOCRChunks(
@@ -227,50 +225,77 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
 
     private static func splitTextIntoChunks(_ text: String, chunkSize: Int, overlap: Int) -> [String] {
         if text.isEmpty { return [] }
-        
-        // First, try splitting on paragraph boundaries (double newlines)
+
+        // Split into sentences first (preserving sentence terminators)
+        let sentences = splitIntoSentences(text)
+        if sentences.isEmpty { return [text] }
+
+        var chunks: [String] = []
+        var currentChunk = ""
+        var currentSentences: [String] = []
+
+        for sentence in sentences {
+            let wouldExceed = currentChunk.count + sentence.count + 1 > chunkSize
+
+            if wouldExceed && !currentChunk.isEmpty {
+                chunks.append(currentChunk.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                // Build overlap from trailing sentences of previous chunk
+                var overlapText = ""
+                for s in currentSentences.reversed() {
+                    let candidate = s + " " + overlapText
+                    if candidate.count > overlap { break }
+                    overlapText = candidate
+                }
+                overlapText = overlapText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                currentChunk = overlapText.isEmpty ? sentence : overlapText + " " + sentence
+                currentSentences = overlapText.isEmpty ? [sentence] : [overlapText, sentence]
+            } else {
+                currentChunk += (currentChunk.isEmpty ? "" : " ") + sentence
+                currentSentences.append(sentence)
+            }
+        }
+
+        if !currentChunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            chunks.append(currentChunk.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        return chunks.isEmpty ? [text] : chunks
+    }
+
+    /// Split text into sentences, preserving terminators and paragraph structure.
+    private static func splitIntoSentences(_ text: String) -> [String] {
+        // Split on paragraph boundaries first, then on sentence boundaries within paragraphs
         let paragraphs = text.components(separatedBy: "\n\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        
-        var chunks: [String] = []
-        var currentChunk = ""
-        
+
+        var sentences: [String] = []
+        let sentencePattern = #"[^.!?\n]+[.!?]*"#
+
         for paragraph in paragraphs {
-            // If single paragraph exceeds chunk size, split on sentences
-            if paragraph.count > chunkSize {
-                let sentences = paragraph.components(separatedBy: CharacterSet(charactersIn: ".!?"))
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                
-                for sentence in sentences {
-                    if currentChunk.count + sentence.count + 2 > chunkSize {
-                        if !currentChunk.isEmpty {
-                            chunks.append(currentChunk)
+            // Try regex-based sentence splitting
+            if let regex = try? NSRegularExpression(pattern: sentencePattern) {
+                let nsRange = NSRange(paragraph.startIndex..<paragraph.endIndex, in: paragraph)
+                let matches = regex.matches(in: paragraph, range: nsRange)
+                for match in matches {
+                    if let range = Range(match.range, in: paragraph) {
+                        let sentence = String(paragraph[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !sentence.isEmpty {
+                            sentences.append(sentence)
                         }
-                        currentChunk = sentence
-                    } else {
-                        currentChunk += (currentChunk.isEmpty ? "" : ". ") + sentence
                     }
-                }
-            } else {
-                // Add paragraph to current chunk
-                if currentChunk.count + paragraph.count + 2 > chunkSize {
-                    if !currentChunk.isEmpty {
-                        chunks.append(currentChunk)
-                    }
-                    currentChunk = paragraph
-                } else {
-                    currentChunk += (currentChunk.isEmpty ? "" : "\n\n") + paragraph
                 }
             }
+
+            // If regex didn't produce results, use the paragraph as-is
+            if sentences.isEmpty || sentences.last == nil {
+                sentences.append(paragraph)
+            }
         }
-        
-        if !currentChunk.isEmpty {
-            chunks.append(currentChunk)
-        }
-        
-        return chunks.isEmpty ? [text] : chunks
+
+        return sentences
     }
 
     // MARK: - Update Helpers
@@ -342,6 +367,17 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
             tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
             folderId: folderId, sortOrder: sortOrder, type: type,
             imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
+    /// Returns a copy with binary data stripped (data lives on disk via FileStorageService)
+    func withoutFileData() -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: nil, pdfData: nil, originalFileData: nil
         )
     }
 }

@@ -71,10 +71,11 @@ class DocumentDatabase: ObservableObject {
         entity.dateCreated = document.dateCreated
         entity.documentType = document.type.rawValue
         
-        // Store file data (PDF, image, etc.)
-        if let pdfData = document.pdfData {
+        // Store file data (PDF, image, etc.) from FileStorageService
+        let fileStorage = FileStorageService.shared
+        if let pdfData = fileStorage.loadPdfData(for: document.id) {
             entity.fileData = pdfData
-        } else if let imageDataArray = document.imageData, let firstImage = imageDataArray.first {
+        } else if let firstImage = fileStorage.loadImageData(for: document.id)?.first {
             entity.fileData = firstImage
         }
         

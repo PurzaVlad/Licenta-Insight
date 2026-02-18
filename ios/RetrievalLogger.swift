@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let retrievalLog = Logger(subsystem: "com.purzavlad.identity", category: "retrieval")
 
 // Simplified types for logging (to avoid circular dependencies)
 struct ChunkHitLog {
@@ -78,9 +81,13 @@ class RetrievalLogger {
             maxScore: scores.first ?? 0
         )
         
-        if let data = try? JSONEncoder().encode(log),
-           let json = String(data: data, encoding: .utf8) {
-            try? (json + "\n").appendToFile(at: logFileURL)
+        do {
+            let data = try JSONEncoder().encode(log)
+            if let json = String(data: data, encoding: .utf8) {
+                try (json + "\n").appendToFile(at: logFileURL)
+            }
+        } catch {
+            retrievalLog.error("Failed to encode or write retrieval log: \(error.localizedDescription)")
         }
     }
     
@@ -89,7 +96,11 @@ class RetrievalLogger {
     }
     
     func clearLogs() {
-        try? FileManager.default.removeItem(at: logFileURL)
+        do {
+            try FileManager.default.removeItem(at: logFileURL)
+        } catch {
+            retrievalLog.warning("Failed to clear retrieval logs: \(error.localizedDescription)")
+        }
     }
 }
 

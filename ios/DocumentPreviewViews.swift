@@ -3,9 +3,11 @@ import UIKit
 import PDFKit
 import QuickLook
 import Foundation
+import OSLog
 
 struct DocumentDetailView: View {
     let document: Document
+    @EnvironmentObject private var documentManager: DocumentManager
     @State private var currentPage = 0
     @State private var showingTextView = false
     @State private var isGeneratingSummary = false
@@ -15,12 +17,12 @@ struct DocumentDetailView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Show PDF if available, otherwise show images
-            if let pdfData = document.pdfData {
+            if let pdfData = documentManager.pdfData(for: document.id) {
                 // PDF viewer
                 PDFViewRepresentable(data: pdfData)
                     .background(Color(.systemBackground))
-                    
-            } else if let imageDataArray = document.imageData, !imageDataArray.isEmpty {
+
+            } else if let imageDataArray = documentManager.imageData(for: document.id), !imageDataArray.isEmpty {
                 // Image viewer with proper scaling
                 TabView(selection: $currentPage) {
                     ForEach(0..<imageDataArray.count, id: \.self) { index in
@@ -245,14 +247,14 @@ struct DocumentDetailView: View {
     }
     
     private func generateAISummary() {
-        print("🧠 DocumentRowView: Generating AI summary for '\(document.title)'")
+        AppLogger.ui.debug("Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
         let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document in English only. Focus on the main topics, key points, and important details:\n\n\(document.content)"
         
-        print("🧠 DocumentRowView: Sending summary request, content length: \(document.content.count)")
+        AppLogger.ui.debug("Sending summary request, content length: \(document.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
-            print("🧠 DocumentRowView: Got summary result: \(String(describing: result))")
+            AppLogger.ui.debug("Got summary result: \(String(describing: result))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
@@ -276,7 +278,7 @@ struct DocumentDetailView: View {
                         presentingController.present(alert, animated: true)
                     }
                 } else {
-                    print("❌ DocumentRowView: Empty or nil result")
+                    AppLogger.ui.warning("DocumentRowView: Empty or nil summary result")
                     let alert = UIAlertController(
                         title: "Error",
                         message: "Empty response from AI. Please try again.",
@@ -296,7 +298,7 @@ struct DocumentDetailView: View {
                 }
             }
         }, rejecter: { code, message, error in
-            print("❌ DocumentRowView: Summary generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
+            AppLogger.ui.error("Summary generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
@@ -334,38 +336,24 @@ struct DocumentDetailView: View {
                 try originalData.write(to: tempURL)
                 documentURL = tempURL
                 showingDocumentPreview = true
-                print("📄 DocumentDetailView: Prepared document for preview at \(tempURL)")
+                AppLogger.ui.debug("Prepared document for preview at \(tempURL)")
             } catch {
-                print("📄 DocumentDetailView: Failed to prepare document for preview: \(error)")
+                AppLogger.ui.error("Failed to prepare document for preview: \(error.localizedDescription)")
                 // Fallback to text view
                 showingTextView = true
             }
         } else {
-            print("📄 DocumentDetailView: No document data available, showing text view")
+            AppLogger.ui.debug("No document data available, showing text view")
             showingTextView = true
         }
     }
     
     private func getDocumentData() -> Data? {
-        // Return the stored original file data for QuickLook preview
-        if let originalData = document.originalFileData {
-            print("📄 DocumentDetailView: Retrieved \\(originalData.count) bytes of original file data")
-            return originalData
+        if let data = documentManager.anyFileData(for: document.id) {
+            AppLogger.ui.debug("Retrieved \(data.count) bytes of file data")
+            return data
         }
-        
-        // Fallback to PDF data if available
-        if let pdfData = document.pdfData {
-            print("📄 DocumentDetailView: Using PDF data as fallback (\\(pdfData.count) bytes)")
-            return pdfData
-        }
-        
-        // Fallback to image data if available
-        if let imageData = document.imageData?.first {
-            print("📄 DocumentDetailView: Using image data as fallback (\\(imageData.count) bytes)")
-            return imageData
-        }
-        
-        print("📄 DocumentDetailView: No document data available for preview")
+        AppLogger.ui.debug("No document data available for preview")
         return nil
     }
     
@@ -398,6 +386,7 @@ struct DocumentDetailView: View {
 // MARK: - Document Preview View
 struct OldDocumentPreviewView: View {
     let document: Document
+    @EnvironmentObject private var documentManager: DocumentManager
     @Binding var showingDocumentInfo: Bool
     @State private var isGeneratingSummary = false
     
@@ -405,12 +394,12 @@ struct OldDocumentPreviewView: View {
         VStack(spacing: 0) {
             // Document Preview
             Group {
-                if let pdfData = document.pdfData {
+                if let pdfData = documentManager.pdfData(for: document.id) {
                     // PDF first page preview
                     PDFFirstPageView(data: pdfData)
                         .background(Color(.systemBackground))
-                        
-                } else if let imageDataArray = document.imageData, 
+
+                } else if let imageDataArray = documentManager.imageData(for: document.id),
                           !imageDataArray.isEmpty,
                           let firstImageData = imageDataArray.first,
                           let uiImage = UIImage(data: firstImageData) {
@@ -457,7 +446,7 @@ struct OldDocumentPreviewView: View {
                         }
                     }
                     
-                    if document.imageData != nil || document.pdfData != nil {
+                    if documentManager.imageData(for: document.id) != nil || documentManager.pdfData(for: document.id) != nil {
                         Button("Full View") {
                             // Navigate to full document view - would need NavigationLink here
                         }
@@ -482,7 +471,7 @@ struct OldDocumentPreviewView: View {
                         InfoRow(label: "Type", value: document.type.rawValue)
                         InfoRow(label: "Tags", value: tagsText)
                         
-                        if let imageData = document.imageData {
+                        if let imageData = documentManager.imageData(for: document.id) {
                             InfoRow(label: "Pages", value: "\(imageData.count)")
                         }
                         
@@ -554,14 +543,14 @@ struct OldDocumentPreviewView: View {
     }
     
     private func generateAISummary() {
-        print("🧠 OldDocumentPreviewView: Generating AI summary for '\(document.title)'")
+        AppLogger.ui.debug("OldDocumentPreviewView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
         
         let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document in English only. Focus on the main topics, key points, and important details:\n\n\(document.content)"
         
-        print("🧠 OldDocumentPreviewView: Sending summary request, content length: \(document.content.count)")
+        AppLogger.ui.debug("OldDocumentPreviewView: Sending summary request, content length: \(document.content.count)")
         EdgeAI.shared?.generate(prompt, resolver: { result in
-            print("🧠 OldDocumentPreviewView: Got summary result: \(String(describing: result))")
+            AppLogger.ui.debug("OldDocumentPreviewView: Got summary result: \(String(describing: result))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
@@ -581,11 +570,11 @@ struct OldDocumentPreviewView: View {
                         rootViewController.present(alert, animated: true)
                     }
                 } else {
-                    print("🧠 OldDocumentPreviewView: Invalid or empty summary result")
+                    AppLogger.ui.warning("OldDocumentPreviewView: Invalid or empty summary result")
                 }
             }
         }, rejecter: { code, message, error in
-            print("🧠 OldDocumentPreviewView: Summary generation failed - Code: \(String(describing: code)), Message: \(String(describing: message)), Error: \(String(describing: error))")
+            AppLogger.ui.error("OldDocumentPreviewView: Summary generation failed - Code: \(String(describing: code)), Message: \(String(describing: message)), Error: \(String(describing: error))")
             DispatchQueue.main.async {
                 self.isGeneratingSummary = false
                 
@@ -731,8 +720,15 @@ struct SearchablePDFView: UIViewRepresentable {
 
         if let document = PDFDocument(url: url) {
             pdfView.document = document
-        } else if let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) {
-            pdfView.document = document
+        } else {
+            do {
+                let data = try Data(contentsOf: url)
+                if let document = PDFDocument(data: data) {
+                    pdfView.document = document
+                }
+            } catch {
+                AppLogger.ui.error("Failed to read PDF data from URL: \(error.localizedDescription)")
+            }
         }
 
         DispatchQueue.main.async {
@@ -863,8 +859,15 @@ struct SearchablePDFPreviewView: UIViewRepresentable {
 
         if let document = PDFDocument(url: url) {
             pdfView.document = document
-        } else if let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) {
-            pdfView.document = document
+        } else {
+            do {
+                let data = try Data(contentsOf: url)
+                if let document = PDFDocument(data: data) {
+                    pdfView.document = document
+                }
+            } catch {
+                AppLogger.ui.error("Failed to read PDF data from URL for preview: \(error.localizedDescription)")
+            }
         }
 
         DispatchQueue.main.async {
@@ -1157,8 +1160,9 @@ struct DocumentPreviewContainerView: View {
         .interactiveDismissDisabled(true)
         .simultaneousGesture(edgeSwipeToDismiss)
         .sheet(isPresented: $showingInfo) {
-            if let doc = document {
+            if let doc = document, let manager = documentManager {
                 DocumentInfoView(document: doc, fileURL: url)
+                    .environmentObject(manager)
             }
         }
         .sheet(isPresented: $showingSummary) {
@@ -1233,19 +1237,30 @@ struct DocumentPreviewContainerView: View {
         let filename = parts.ext.isEmpty ? "\(base).\(ext)" : "\(base).\(parts.ext)"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
 
-        if let data = document.originalFileData ?? document.pdfData ?? document.imageData?.first {
-            try? data.write(to: tempURL)
-            return tempURL
+        if let data = documentManager?.anyFileData(for: document.id) {
+            do {
+                try data.write(to: tempURL)
+                return tempURL
+            } catch {
+                AppLogger.ui.error("Failed to write share file data: \(error.localizedDescription)")
+            }
         }
 
-        if let data = try? Data(contentsOf: url) {
-            try? data.write(to: tempURL)
+        do {
+            let data = try Data(contentsOf: url)
+            try data.write(to: tempURL)
             return tempURL
+        } catch {
+            AppLogger.ui.warning("Failed to read/write share data from URL: \(error.localizedDescription)")
         }
 
         if !document.content.isEmpty, let data = document.content.data(using: .utf8) {
-            try? data.write(to: tempURL)
-            return tempURL
+            do {
+                try data.write(to: tempURL)
+                return tempURL
+            } catch {
+                AppLogger.ui.error("Failed to write share content data: \(error.localizedDescription)")
+            }
         }
 
         return nil
@@ -1595,6 +1610,7 @@ private extension View {
 struct DocumentInfoView: View {
     let document: Document
     let fileURL: URL
+    @EnvironmentObject private var documentManager: DocumentManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -1667,9 +1683,9 @@ struct DocumentInfoView: View {
 
     private var formattedSize: String {
         let bytes: Int = {
-            if let d = document.originalFileData { return d.count }
-            if let d = document.pdfData { return d.count }
-            if let imgs = document.imageData { return imgs.reduce(0) { $0 + $1.count } }
+            if let d = documentManager.originalFileData(for: document.id) { return d.count }
+            if let d = documentManager.pdfData(for: document.id) { return d.count }
+            if let imgs = documentManager.imageData(for: document.id) { return imgs.reduce(0) { $0 + $1.count } }
             return document.content.utf8.count
         }()
 
@@ -1749,7 +1765,7 @@ struct DocumentSummaryView: View {
     @State private var summary: String = ""
     @State private var isGeneratingSummary = false
     @State private var hasCanceledCurrent = false
-    @State private var selectedSummaryLength: DocumentManager.SummaryLength = .medium
+    @State private var selectedSummaryLength: SummaryLength = .medium
     @State private var selectedSummaryContent: DocumentManager.SummaryContent = .general
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var documentManager: DocumentManager
@@ -1773,9 +1789,9 @@ struct DocumentSummaryView: View {
                                 Menu {
                                     Section("Length") {
                                         Picker("Length", selection: $selectedSummaryLength) {
-                                            Text("Short").tag(DocumentManager.SummaryLength.short)
-                                            Text("Medium").tag(DocumentManager.SummaryLength.medium)
-                                            Text("Long").tag(DocumentManager.SummaryLength.long)
+                                            Text("Short").tag(SummaryLength.short)
+                                            Text("Medium").tag(SummaryLength.medium)
+                                            Text("Long").tag(SummaryLength.long)
                                         }
                                     }
                                     Section("Content") {
@@ -1885,7 +1901,7 @@ struct DocumentSummaryView: View {
         "\(label(for: selectedSummaryLength)) • \(label(for: selectedSummaryContent))"
     }
 
-    private func label(for length: DocumentManager.SummaryLength) -> String {
+    private func label(for length: SummaryLength) -> String {
         switch length {
         case .short: return "Short"
         case .medium: return "Medium"
@@ -1896,10 +1912,6 @@ struct DocumentSummaryView: View {
     private func label(for content: DocumentManager.SummaryContent) -> String {
         switch content {
         case .general: return "General"
-        case .finance: return "Finance"
-        case .legal: return "Legal"
-        case .academic: return "Academic"
-        case .medical: return "Medical"
         }
     }
 
@@ -1909,7 +1921,7 @@ struct DocumentSummaryView: View {
     }
     
     private func generateAISummary(force: Bool) {
-        print("🧠 DocumentSummaryView: Requesting AI summary for '\(document.title)'")
+        AppLogger.ui.debug("DocumentSummaryView: Requesting AI summary for '\(document.title)'")
         isGeneratingSummary = true
         documentManager.generateSummary(
             for: currentDoc,

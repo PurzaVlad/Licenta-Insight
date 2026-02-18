@@ -4,6 +4,7 @@ import UIKit
 import AVFoundation
 import PDFKit
 import SSZipArchive
+import OSLog
 
 struct ConvertView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -691,17 +692,17 @@ func convertDocument(
 
         switch (sourceFormat, targetFormat) {
         case (.docx, .pdf):
-            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            let result = convertViaServer(document: latestDocument, to: targetFormat, documentManager: documentManager)
             outputData = result.data
             serverError = result.error
 
         case (.pptx, .pdf), (.xlsx, .pdf):
-            let result = convertViaServer(document: latestDocument, to: targetFormat)
+            let result = convertViaServer(document: latestDocument, to: targetFormat, documentManager: documentManager)
             outputData = result.data
             serverError = result.error
 
         case (.image, .pdf):
-            if let imageData = latestDocument.imageData {
+            if let imageData = documentManager.imageData(for: latestDocument.id) {
                 let images = imageData.compactMap { UIImage(data: $0) }
                 outputData = conversionConvertImagesToPDF(images)
             } else {
@@ -711,17 +712,17 @@ func convertDocument(
         case (.pdf, .docx):
             switch pdfToOfficeMode {
             case .ocrEditable:
-                let result = convertViaServer(document: latestDocument, to: targetFormat, mode: .ocrEditable)
+                let result = convertViaServer(document: latestDocument, to: targetFormat, mode: .ocrEditable, documentManager: documentManager)
                 outputData = result.data
                 serverError = result.error
             case .visualImage:
-                outputData = conversionConvertPDFToImageDOCX(document: latestDocument, baseName: baseName)
+                outputData = conversionConvertPDFToImageDOCX(document: latestDocument, baseName: baseName, documentManager: documentManager)
                 serverError = outputData == nil ? "Failed to build image DOCX." : nil
             }
 
         case (.pdf, .xlsx), (.pdf, .pptx):
             let serverMode: ServerConversionMode = (pdfToOfficeMode == .visualImage) ? .visualImage : .ocrEditable
-            let result = convertViaServer(document: latestDocument, to: targetFormat, mode: serverMode)
+            let result = convertViaServer(document: latestDocument, to: targetFormat, mode: serverMode, documentManager: documentManager)
             outputData = result.data
             serverError = result.error
 
@@ -996,9 +997,10 @@ private enum ServerConversionMode: String {
 private func convertViaServer(
     document: Document,
     to targetFormat: ConversionView.DocumentFormat,
-    mode: ServerConversionMode? = nil
+    mode: ServerConversionMode? = nil,
+    documentManager: DocumentManager
 ) -> (data: Data?, error: String?, filename: String?) {
-    guard let inputData = document.originalFileData ?? document.pdfData ?? document.imageData?.first else {
+    guard let inputData = documentManager.anyFileData(for: document.id) else {
         return (nil, "Missing input data.", nil)
     }
 
@@ -1068,8 +1070,8 @@ private func convertViaServer(
     return (resultData, errorMessage, responseFilename)
 }
 
-private func conversionConvertPDFToImageDOCX(document: Document, baseName: String) -> Data? {
-    guard let inputData = document.originalFileData ?? document.pdfData,
+private func conversionConvertPDFToImageDOCX(document: Document, baseName: String, documentManager: DocumentManager) -> Data? {
+    guard let inputData = documentManager.originalFileData(for: document.id) ?? documentManager.pdfData(for: document.id),
           let pdf = PDFDocument(data: inputData),
           pdf.pageCount > 0 else {
         return nil
@@ -1132,7 +1134,7 @@ private func conversionConvertPDFToImageDOCX(document: Document, baseName: Strin
     }
 
     guard !imageRefs.isEmpty else {
-        try? FileManager.default.removeItem(at: tempRoot)
+        do { try FileManager.default.removeItem(at: tempRoot) } catch { AppLogger.conversion.warning("Failed to remove temp root: \(error.localizedDescription)") }
         return nil
     }
 
@@ -1244,18 +1246,23 @@ private func conversionConvertPDFToImageDOCX(document: Document, baseName: Strin
         try docRels.write(to: docRelsURL, atomically: true, encoding: .utf8)
         try documentXML.write(to: docXMLURL, atomically: true, encoding: .utf8)
     } catch {
-        try? FileManager.default.removeItem(at: tempRoot)
+        do { try FileManager.default.removeItem(at: tempRoot) } catch { AppLogger.conversion.warning("Failed to remove temp root after error: \(error.localizedDescription)") }
         return nil
     }
 
     let zipURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("\(baseName)_image.docx")
-    try? FileManager.default.removeItem(at: zipURL)
+    do { try FileManager.default.removeItem(at: zipURL) } catch { AppLogger.conversion.warning("Failed to remove pre-existing zip file: \(error.localizedDescription)") }
     let success = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: tempRoot.path)
     defer {
-        try? FileManager.default.removeItem(at: tempRoot)
-        try? FileManager.default.removeItem(at: zipURL)
+        do { try FileManager.default.removeItem(at: tempRoot) } catch { AppLogger.conversion.warning("Failed to remove temp root in defer: \(error.localizedDescription)") }
+        do { try FileManager.default.removeItem(at: zipURL) } catch { AppLogger.conversion.warning("Failed to remove zip file in defer: \(error.localizedDescription)") }
     }
     guard success else { return nil }
-    return try? Data(contentsOf: zipURL)
+    do {
+        return try Data(contentsOf: zipURL)
+    } catch {
+        AppLogger.conversion.error("Failed to read DOCX zip data: \(error.localizedDescription)")
+        return nil
+    }
 }

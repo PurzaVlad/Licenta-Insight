@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import CryptoKit
+import CommonCrypto
 
 enum KeychainService {
     private static let service = "com.identity.app"

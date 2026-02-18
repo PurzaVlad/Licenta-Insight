@@ -1,6 +1,7 @@
 import SwiftUI
 import Foundation
 import UIKit
+import OSLog
 
 struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
@@ -19,6 +20,7 @@ struct NativeChatView: View {
     private struct ChatLLMResult {
         let reply: String
         let primaryDocument: Document?
+        let rewrittenQuery: String?
     }
 
     private struct DocumentSelectionResult {
@@ -48,15 +50,17 @@ struct NativeChatView: View {
 
     private struct QueryAnalysis: Codable {
         let intent: String
+        let rewrittenQuery: String
         let focusTerms: [String]
         let softExpansions: [String]
         let language: String
         let needsPreviousDocBias: Bool
         let expectedAnswerType: String
         let mustNotAnswer: Bool
-        
+
         enum CodingKeys: String, CodingKey {
             case intent
+            case rewrittenQuery = "rewritten_query"
             case focusTerms = "focus_terms"
             case softExpansions = "soft_expansions"
             case language
@@ -89,20 +93,18 @@ struct NativeChatView: View {
 
     // Preprompt (edit this text to change assistant behavior)
     private let chatPreprompt = """
-    You are a document assistant. Answer questions using only the evidence provided.
+    You answer questions by reading the EVIDENCE provided. Read ALL evidence chunks carefully before answering.
 
     Rules:
-    - Answer in 1-2 short sentences maximum.
-    - Use ONLY information explicitly stated in EVIDENCE_CHUNKS.
-    - Do NOT repeat the same name, number, or fact multiple times.
-    - For numbers, use ONLY numbers that appear directly with the subject in the same sentence.
-    - If information is not found or unclear, say: "Not specified in the documents."
-    - Never infer, assume, or generate information not present in the evidence.
-    - Never include system markers, metadata, or chunk numbers.
+    1. The answer is usually in one of the evidence chunks. Read every chunk.
+    2. Copy the relevant fact directly from the evidence into your answer.
+    3. Keep answers short: 1-3 sentences.
+    4. If the answer is not in any chunk, say "Not specified in the documents."
+    5. Answer in the same language as the question.
     """
     private let historyLimit = 4
     private let selectionMaxDocs = 2
-    private let activeContextCharBudget = 1200
+    private let activeContextCharBudget = 1600
     private let folderContextCharBudget = 500
     private let minContextReserveChars = 450
     private let maxSummaryCharsPerDoc = 420
@@ -123,7 +125,7 @@ struct NativeChatView: View {
     private let evidenceGapThreshold: Double = 0.10
     private let passBTopEvidenceLimit = 3
     private let passBGatingKeywordMatchMin = 2
-    private let expandedEvidenceLimit = 3
+    private let expandedEvidenceLimit = 5
 
     var body: some View {
         NavigationView {
@@ -326,20 +328,18 @@ struct NativeChatView: View {
                 }
 
                 if self.activeChatGenerationId != generationId { return }
-                
-                // Resolve anaphora using conversation context
-                let resolvedQuestion = conversationState.resolveAnaphora(in: question)
-                
-                let result = try await callChatLLM(edgeAI: edgeAI, question: resolvedQuestion)
+
+                // Query rewriting is now handled inside callChatLLM via analyzeQueryIntent
+                let result = try await callChatLLM(edgeAI: edgeAI, question: question)
                 DispatchQueue.main.async {
                     if self.activeChatGenerationId != generationId { return }
                     self.isGenerating = false
                     let text = result.reply.isEmpty ? "(No response)" : result.reply
                     self.messages.append(ChatMessage(role: "assistant", text: text, date: Date()))
                     self.updateSessionState(from: result.primaryDocument)
-                    
+
                     // Update conversation state with result
-                    let queryType = QueryClassifier.classifyQuery(resolvedQuestion)
+                    let queryType = QueryClassifier.classifyQuery(question)
                     let queryTypeString: String = {
                         switch queryType {
                         case .countQuestion: return "countQuestion"
@@ -355,6 +355,7 @@ struct NativeChatView: View {
                         queryType: queryTypeString,
                         assistantResponse: text
                     )
+                    self.conversationState.lastRewrittenQuery = result.rewrittenQuery
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -606,6 +607,17 @@ struct NativeChatView: View {
         return Double(intersection) / Double(max(1, union))
     }
 
+    /// Build a short contextual header from document metadata for BM25 enrichment.
+    /// This is Anthropic's "Contextual Retrieval" technique — injecting document-level
+    /// tokens into each chunk so keyword matching can associate chunks with their source.
+    private func contextualChunkHeader(for doc: Document) -> String {
+        var parts: [String] = [doc.title]
+        if !doc.tags.isEmpty {
+            parts.append(doc.tags.joined(separator: " "))
+        }
+        return parts.joined(separator: " | ") + " — "
+    }
+
     private struct ChunkLexicalFeatures {
         let tokens: [String]
         let tokenSet: Set<String>
@@ -664,30 +676,40 @@ struct NativeChatView: View {
             let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
             if t.isEmpty { return false }
             if isShortAcronymToken(t) { return true }
-            if t.count < 8 { return false }
+            if t.count < 5 { return false }
             if Self.anchorStopwords.contains(t.lowercased()) { return false }
             let hasUpper = t.rangeOfCharacter(from: .uppercaseLetters) != nil
             let hasDigit = t.rangeOfCharacter(from: .decimalDigits) != nil
             let hasHyphen = t.contains("-")
-            let isLongDistinctive = t.count >= 8
-            return hasUpper || hasDigit || hasHyphen || isLongDistinctive
+            let isDistinctive = t.count >= 5
+            return hasUpper || hasDigit || hasHyphen || isDistinctive
         }
         var seen = Set<String>()
         return anchors.filter { seen.insert($0.lowercased()).inserted }
     }
 
+    /// Check if text contains an anchor via exact substring or trigram fuzzy match
     private func textContainsAnyAnchor(_ text: String, anchors: [String]) -> Bool {
         let lower = text.lowercased()
         return anchors.contains { anchor in
-            lower.contains(anchor.lowercased())
+            let anchorLower = anchor.lowercased()
+            // Exact substring match (fast path)
+            if lower.contains(anchorLower) { return true }
+            // Fuzzy match: trigram overlap for tokens >= 6 chars
+            if anchorLower.count >= 6 {
+                let anchorTrigrams = characterTrigrams(for: anchorLower)
+                let textTrigrams = characterTrigrams(for: lower)
+                let score = trigramJaccardScore(queryTrigrams: anchorTrigrams, chunkTrigrams: textTrigrams)
+                return score >= 0.25
+            }
+            return false
         }
     }
 
     private func anchorFilteredDocuments(question: String, docs: [Document]) -> [Document] {
         let anchors = anchorTokens(from: question)
         if anchors.isEmpty { return docs }
-        
-        // More lenient: check expanded content and only filter if we have strong anchors
+
         let filtered = docs.filter { doc in
             let contentSample = compact(doc.content, maxChars: 1500)
             let rawOCRSample = doc.ocrChunks
@@ -698,7 +720,7 @@ struct NativeChatView: View {
             let blob = "\(doc.title) \(doc.tags.joined(separator: " ")) \(doc.summary) \(contentSample) \(ocrSample)"
             return textContainsAnyAnchor(blob, anchors: anchors)
         }
-        
+
         // Return all docs if filtering is too aggressive (removes >80% of docs)
         let removalRate = docs.isEmpty ? 0 : Double(docs.count - filtered.count) / Double(docs.count)
         if filtered.isEmpty || removalRate > 0.8 {
@@ -1049,33 +1071,7 @@ struct NativeChatView: View {
         sessionState.lastReferencedDocumentId = primaryDocument?.id
     }
 
-    private func generateClarifyingQuestion(edgeAI: EdgeAI, userChallenge: String, originalQuestion: String?, lastResponse: String?) async throws -> String {
-        let context = """
-        Original question: \(originalQuestion ?? "Unknown")
-        My previous answer: \(lastResponse ?? "Unknown")
-        User's feedback: \(userChallenge)
-        """
-        
-        let prompt = """
-        The user is disputing or questioning my previous answer.
-        
-        Context:
-        \(context)
-        
-        Generate a single, concise clarifying question (1-2 sentences) to understand:
-        - What specifically was wrong or unclear
-        - What information they were actually looking for
-        - How to better answer their original question
-        
-        Be natural, helpful, and show you're trying to correct the mistake.
-        Do NOT apologize excessively. Just ask what they need.
-        
-        Output ONLY the clarifying question, nothing else.
-        """
-        
-        let clarification = try await callLLM(edgeAI: edgeAI, prompt: prompt)
-        return clarification.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+
 
     private func rankedChunkHits(
         question: String,
@@ -1261,16 +1257,23 @@ struct NativeChatView: View {
             chunkText: hit.chunk.text,
             question: ""
         )
-        
+
         let features = passBFeatures(
             for: hit,
             subjectToken: subjectToken,
             questionTokens: questionTokens
         )
-        
-        let subjectBonus = features.subjectMatch ? 0.95 : 0.0
-        
-        return baseScore + subjectBonus
+
+        // Gradient subject bonus instead of binary cliff:
+        // - Exact subject match: +0.50
+        // - Keyword coverage bonus: scales with how many query tokens appear (up to +0.40)
+        // - Original Pass A score (finalScore) preserved as tiebreaker via baseScore
+        let subjectBonus = features.subjectMatch ? 0.50 : 0.0
+        let keywordCoverage = questionTokens.isEmpty ? 0.0
+            : min(1.0, Double(features.queryKeywordMatches) / Double(max(1, questionTokens.count)))
+        let keywordBonus = 0.40 * keywordCoverage
+
+        return baseScore + subjectBonus + keywordBonus
     }
 
     private func twoPassContextHits(from hits: [ChunkHit], question: String) -> [ChunkHit] {
@@ -1298,17 +1301,29 @@ struct NativeChatView: View {
             if lhs.hit.finalScore != rhs.hit.finalScore { return lhs.hit.finalScore > rhs.hit.finalScore }
             return lhs.hit.document.dateCreated > rhs.hit.document.dateCreated
         }
-        let topEvidence = Array(reranked.prefix(passBTopEvidenceLimit).map(\.hit))
+        // Merge Pass B top-3 with Pass A top-3 so strong BM25 signals
+        // can't be silently dropped by subject-bonus re-ranking.
+        let passBTop = Array(reranked.prefix(passBTopEvidenceLimit).map(\.hit))
+        let passATop3 = Array(hits.prefix(3))
 
-        let gated = topEvidence.filter { hit in
+        var merged: [ChunkHit] = passBTop
+        var seenIds = Set(passBTop.map { $0.chunk.chunkId })
+        for hit in passATop3 {
+            if seenIds.insert(hit.chunk.chunkId).inserted {
+                merged.append(hit)
+            }
+        }
+
+        // Soft gating: accept chunks that have ANY signal
+        let gated = merged.filter { hit in
             let features = passBFeatures(
                 for: hit,
                 subjectToken: subjectToken,
                 questionTokens: questionTokens
             )
-            return features.subjectMatch || features.queryKeywordMatches >= passBGatingKeywordMatchMin
+            return features.subjectMatch || features.queryKeywordMatches >= 1
         }
-        return gated.isEmpty ? topEvidence : gated
+        return gated.isEmpty ? merged : gated
     }
 
     private func expandedHitsWithNeighbors(from hits: [ChunkHit], allHits: [ChunkHit]) -> [ChunkHit] {
@@ -1324,29 +1339,36 @@ struct NativeChatView: View {
         var output: [ChunkHit] = []
         var seen = Set<UUID>()
 
+        // Phase 1: Guarantee ALL seeds get a slot first
         for seed in hits {
-            let chunks = seed.document.ocrChunks.isEmpty ? [seed.chunk] : seed.document.ocrChunks
-            guard let centerIndex = chunks.firstIndex(where: { $0.chunkId == seed.chunk.chunkId }) else {
-                if seen.insert(seed.chunk.chunkId).inserted {
-                    output.append(seed)
-                    if output.count >= expandedEvidenceLimit { break }
-                }
-                continue
+            if seen.insert(seed.chunk.chunkId).inserted {
+                output.append(seed)
             }
+        }
 
-            let candidateIndices = [centerIndex - 1, centerIndex, centerIndex + 1]
-            for idx in candidateIndices where idx >= 0 && idx < chunks.count {
-                let candidateChunk = chunks[idx]
-                if let seedPage = seed.chunk.pageNumber, let candidatePage = candidateChunk.pageNumber, seedPage != candidatePage {
+        // Phase 2: Add neighbors with remaining budget
+        if output.count < expandedEvidenceLimit {
+            for seed in hits {
+                let chunks = seed.document.ocrChunks.isEmpty ? [seed.chunk] : seed.document.ocrChunks
+                guard let centerIndex = chunks.firstIndex(where: { $0.chunkId == seed.chunk.chunkId }) else {
                     continue
                 }
-                let resolved = byChunkId[candidateChunk.chunkId] ?? seed
-                if seen.insert(resolved.chunk.chunkId).inserted {
-                    output.append(resolved)
-                    if output.count >= expandedEvidenceLimit { break }
+
+                for offset in [-1, 1] {
+                    let idx = centerIndex + offset
+                    guard idx >= 0, idx < chunks.count else { continue }
+                    let candidateChunk = chunks[idx]
+                    if let seedPage = seed.chunk.pageNumber, let candidatePage = candidateChunk.pageNumber, seedPage != candidatePage {
+                        continue
+                    }
+                    let resolved = byChunkId[candidateChunk.chunkId] ?? seed
+                    if seen.insert(resolved.chunk.chunkId).inserted {
+                        output.append(resolved)
+                        if output.count >= expandedEvidenceLimit { break }
+                    }
                 }
+                if output.count >= expandedEvidenceLimit { break }
             }
-            if output.count >= expandedEvidenceLimit { break }
         }
 
         return output.isEmpty ? hits : output
@@ -1867,12 +1889,15 @@ struct NativeChatView: View {
         selectedHits: [ChunkHit]
     ) -> String {
         let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
-        
+
+        // Flat structure optimized for small models:
+        // System message is extracted by buildNoHistoryMessages via SYSTEM: prefix.
+        // User message starts at EVIDENCE: — keep it simple and direct.
         return """
         SYSTEM:
         \(chatPreprompt)
 
-        DOCUMENTS:
+        EVIDENCE:
         \(evidence)
 
         QUESTION:
@@ -1881,16 +1906,64 @@ struct NativeChatView: View {
     }
 
     private func buildEvidenceFromSelectedHits(_ hits: [ChunkHit], maxChars: Int) -> String {
-        if hits.isEmpty { return "EVIDENCE_CHUNKS: None" }
+        if hits.isEmpty { return "None" }
 
+        // Deduplicate overlapping chunks (neighbor expansion can create near-duplicates)
+        let dedupedHits = deduplicateChunkHits(hits)
+
+        // Group by document for clearer context
+        var grouped: [(title: String, chunks: [String])] = []
+        var docOrder: [UUID] = []
+        var byDoc: [UUID: [String]] = [:]
+
+        var index = 1
+        for hit in dedupedHits {
+            let docId = hit.document.id
+            if byDoc[docId] == nil {
+                docOrder.append(docId)
+                byDoc[docId] = []
+            }
+            let text = trimToCharBudget(hit.chunk.text, maxChars: 560)
+            byDoc[docId]?.append("(\(index)) \(text)")
+            index += 1
+        }
+
+        for docId in docOrder {
+            let title = dedupedHits.first(where: { $0.document.id == docId })?.document.title ?? "Unknown"
+            grouped.append((title: title, chunks: byDoc[docId] ?? []))
+        }
+
+        // Build output with document grouping
         var out: [String] = []
-        for (i, hit) in hits.enumerated() {
-            let text = trimToCharBudget(hit.chunk.text, maxChars: 480)
-            out.append("[\(i + 1)] \(text)")
+        for group in grouped {
+            let header = "[\(group.title)]"
+            let body = group.chunks.joined(separator: "\n")
+            out.append("\(header)\n\(body)")
         }
 
         let joined = out.joined(separator: "\n\n")
-        return trimToCharBudget("EVIDENCE_CHUNKS:\n\(joined)", maxChars: maxChars)
+        return trimToCharBudget(joined, maxChars: maxChars)
+    }
+
+    /// Remove near-duplicate chunks based on token overlap (Jaccard > 0.75)
+    private func deduplicateChunkHits(_ hits: [ChunkHit]) -> [ChunkHit] {
+        if hits.count <= 1 { return hits }
+        var result: [ChunkHit] = []
+        var seenTokenSets: [Set<String>] = []
+
+        for hit in hits {
+            let tokens = retrievalTokens(hit.chunk.text)
+            let isDuplicate = seenTokenSets.contains { existing in
+                let intersection = tokens.intersection(existing).count
+                let union = tokens.union(existing).count
+                return union > 0 && Double(intersection) / Double(union) > 0.75
+            }
+            if !isDuplicate {
+                result.append(hit)
+                seenTokenSets.append(tokens)
+            }
+        }
+        return result
     }
 
     private func buildPrompt(for question: String) -> String {
@@ -1903,64 +1976,145 @@ struct NativeChatView: View {
         """
     }
 
+    /// Exploratory prompt: used when the user challenges a previous answer or when
+    /// the standard prompt failed. Asks the LLM to write a short intro, then we
+    /// append the raw chunk quotes so the user can see the evidence directly.
+    private func buildExploratoryPrompt(
+        question: String,
+        originalQuestion: String?,
+        lastResponse: String?,
+        selectedHits: [ChunkHit]
+    ) -> String {
+        let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
+
+        let contextBlock: String
+        if let orig = originalQuestion, let last = lastResponse {
+            contextBlock = """
+            Previous question: \(compact(orig, maxChars: 200))
+            Previous answer: \(compact(last, maxChars: 200))
+            User's follow-up: \(question)
+            """
+        } else {
+            contextBlock = "Question: \(question)"
+        }
+
+        return """
+        SYSTEM:
+        The user is looking for specific information. You found some relevant sections in their documents. Write a SHORT intro (1 sentence) like "I found these relevant sections:" or "I'm not sure about the exact answer, but here are the closest matches:" — then write STOP.
+
+        Do NOT try to answer the question yourself. Just write the intro sentence and STOP. The evidence will be shown separately.
+
+        EVIDENCE:
+        \(evidence)
+
+        CONTEXT:
+        \(contextBlock)
+        """
+    }
+
+    /// Build a direct-quote response: short LLM intro + raw chunk text in quotes.
+    /// This bypasses LLM extraction entirely — the user sees the actual evidence.
+    private func buildDirectQuoteResponse(
+        introReply: String,
+        selectedHits: [ChunkHit]
+    ) -> String {
+        let dedupedHits = deduplicateChunkHits(selectedHits)
+        let count = min(3, dedupedHits.count)
+
+        // Hardcoded intro — no LLM text to avoid rambling
+        var parts: [String] = ["I found \(count) relevant section\(count == 1 ? "" : "s"):\n"]
+        for (i, hit) in dedupedHits.prefix(3).enumerated() {
+            let chunkText = trimToCharBudget(hit.chunk.text, maxChars: 500)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            parts.append("\(i + 1).\n>>>\n\(chunkText)\n<<<\n")
+        }
+
+        return parts.joined(separator: "\n")
+    }
+
+    private func extractFirstSentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Find first sentence ending
+        if let range = trimmed.range(of: #"[.!?]"#, options: .regularExpression) {
+            return String(trimmed[...range.lowerBound]) + "."
+        }
+        // No sentence ending found — take first 120 chars
+        return String(trimmed.prefix(120))
+    }
+
+    /// Check if the LLM response is a "not found" variant
+    private func isNotFoundResponse(_ reply: String) -> Bool {
+        let lower = reply.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let notFoundPhrases = [
+            "not specified in the documents",
+            "not found in the documents",
+            "not mentioned in the",
+            "no relevant information",
+            "i couldn't find",
+            "i could not find",
+            "does not contain",
+            "no information about",
+            "not available in the"
+        ]
+        return notFoundPhrases.contains { lower.contains($0) }
+    }
+
     private func analyzeQueryIntent(edgeAI: EdgeAI, question: String, recentContext: String) async throws -> QueryAnalysis? {
         let analysisPrompt = """
         Analyze this user query and return ONLY valid JSON (no markdown, no explanation).
-        
-        Recent context:
+
+        Recent conversation:
         \(recentContext)
-        
+
         Current query: "\(question)"
-        
+
         Return JSON with this exact structure:
         {
           "intent": "ask_doc_fact" | "followup_clarification" | "challenge_dispute" | "smalltalk" | "new_topic",
-          "focus_terms": ["term1", "term2", ...],
-          "soft_expansions": ["synonym1", "paraphrase1", ...],
-          "language": "en" | "ro" | "...",
-          "needs_previous_doc_bias": true | false,
-          "expected_answer_type": "number" | "date" | "entity" | "paragraph" | "yesno",
-          "must_not_answer": true | false
+          "rewritten_query": "standalone version of the query",
+          "focus_terms": ["term1", "term2"],
+          "soft_expansions": ["synonym1", "paraphrase1"],
+          "language": "en",
+          "needs_previous_doc_bias": false,
+          "expected_answer_type": "paragraph",
+          "must_not_answer": false
         }
-        
+
         Rules:
-        - "intent": "challenge_dispute" if questioning previous answer; "followup_clarification" if refining/clarifying; "smalltalk" if greeting/chitchat; "new_topic" if changing subject; else "ask_doc_fact"
-        - "focus_terms": 3-8 key tokens/phrases to emphasize (entities, proper nouns, important words)
-        - "soft_expansions": 2-5 synonyms or paraphrases (e.g., "EU" → "European Union", "countries" → "nations")
-        - "language": detected language code
-        - "needs_previous_doc_bias": true for follow-ups that refer to previous context
-        - "expected_answer_type": what kind of answer is expected
-        - "must_not_answer": true if query is "why did you say that" / "that's wrong" type (need to re-run on previous question)
-        
-        Return ONLY the JSON object, nothing else.
+        - "rewritten_query": Rewrite the current query as a STANDALONE search query that includes all necessary context from the conversation. If the user says "and the due date?" after asking about invoice 2024-001, rewrite as "What is the due date on invoice 2024-001?". If the query is already standalone, copy it as-is.
+        - "intent": "challenge_dispute" if questioning previous answer; "followup_clarification" if refining previous question; "smalltalk" if greeting; "new_topic" if unrelated to conversation; else "ask_doc_fact"
+        - "focus_terms": 2-6 key search tokens (entities, proper nouns, numbers)
+        - "soft_expansions": 1-4 synonyms (e.g., "EU" → "European Union")
+        - "needs_previous_doc_bias": true only for direct follow-ups about the same document
+        - "must_not_answer": true only for "that's wrong" / "check again" type challenges
+
+        Return ONLY the JSON object.
         """
-        
+
         let response = try await callLLM(edgeAI: edgeAI, prompt: analysisPrompt)
-        
+
         // Extract JSON from response (handle potential markdown wrapping)
         let jsonString: String
         if let jsonStart = response.range(of: "{"),
            let jsonEnd = response.range(of: "}", options: .backwards),
            jsonStart.lowerBound < jsonEnd.upperBound {
-            // Use the range objects directly for safety
             let extractedRange = jsonStart.lowerBound..<jsonEnd.upperBound
             jsonString = String(response[extractedRange])
         } else {
             print("[QueryAnalysis] Failed to extract JSON from response: \(response.prefix(200))")
             return nil
         }
-        
+
         guard let jsonData = jsonString.data(using: .utf8) else {
             print("[QueryAnalysis] Failed to convert JSON string to data")
             return nil
         }
-        
+
         do {
             let analysis = try JSONDecoder().decode(QueryAnalysis.self, from: jsonData)
-            print("[QueryAnalysis] Intent: \(analysis.intent), Language: \(analysis.language)")
+            print("[QueryAnalysis] Intent: \(analysis.intent), Rewritten: \(analysis.rewrittenQuery)")
             print("[QueryAnalysis] Focus: \(analysis.focusTerms.joined(separator: ", "))")
             print("[QueryAnalysis] Expansions: \(analysis.softExpansions.joined(separator: ", "))")
-            print("[QueryAnalysis] NeedsBias: \(analysis.needsPreviousDocBias), MustNotAnswer: \(analysis.mustNotAnswer)")
             return analysis
         } catch {
             print("[QueryAnalysis] JSON decode failed: \(error)")
@@ -1970,7 +2124,7 @@ struct NativeChatView: View {
 
     private func callChatLLM(edgeAI: EdgeAI, question: String) async throws -> ChatLLMResult {
         if let statsAnswer = buildStatsAnswerIfNeeded(for: question) {
-            return ChatLLMResult(reply: statsAnswer, primaryDocument: nil)
+            return ChatLLMResult(reply: statsAnswer, primaryDocument: nil, rewrittenQuery: nil)
         }
         let scopedDocsRaw = !scopedDocumentIds.isEmpty ? scopedDocumentsForSelection() : []
         let docsInScopeCount = !scopedDocumentIds.isEmpty
@@ -1979,57 +2133,65 @@ struct NativeChatView: View {
 
         // STEP 1: LLM-based query analysis (before heuristics)
         let recentContext = messages.suffix(3).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
-        let queryAnalysis = try? await analyzeQueryIntent(edgeAI: edgeAI, question: question, recentContext: recentContext)
-        
-        // STEP 2: Handle challenge/dispute with AI-generated clarifying question
-        let isChallengeDispute = queryAnalysis?.intent == "challenge_dispute" || queryAnalysis?.mustNotAnswer == true || isChallenge(question) || isMetaDispute(question)
-        if isChallengeDispute {
-            let clarifyingQuestion = try await generateClarifyingQuestion(
-                edgeAI: edgeAI,
-                userChallenge: question,
-                originalQuestion: sessionState.lastOriginalQuestion,
-                lastResponse: sessionState.lastAssistantResponse
-            )
-            return ChatLLMResult(reply: clarifyingQuestion, primaryDocument: nil)
+        let queryAnalysis: QueryAnalysis?
+        do {
+            queryAnalysis = try await analyzeQueryIntent(edgeAI: edgeAI, question: question, recentContext: recentContext)
+        } catch {
+            AppLogger.ui.warning("Query intent analysis failed: \(error.localizedDescription)")
+            queryAnalysis = nil
         }
         
-        var effectiveQuestion = question
-        
-        let hasAssistantHistory = messages.contains { $0.role == "assistant" }
-        let hasThreadHistory = hasAssistantHistory && messages.contains { $0.role == "user" }
-        let shortFollowUp = hasAssistantHistory &&
-            cleanLine(question).split { !$0.isLetter && !$0.isNumber }.count <= 6
-        let anchorFollowUp = isAnaphoraFollowUp(question) || shortFollowUp
-        let questionAnchors = anchorTokens(from: question)
-        let hasStrongQuestionAnchor = !questionAnchors.isEmpty
-        if !hasStrongQuestionAnchor,
-           anchorFollowUp,
-           let anchor = makeThreadAnchor(history: self.messages) {
-            effectiveQuestion = anchor + question
+        // STEP 2: Detect challenge/dispute — but don't skip retrieval.
+        // Instead, proceed with retrieval using the rewritten query and use
+        // an exploratory prompt that shows what was found.
+        let isChallengeDispute = queryAnalysis?.intent == "challenge_dispute" || queryAnalysis?.mustNotAnswer == true || isChallenge(question) || isMetaDispute(question)
+
+        // STEP 3: Use LLM-rewritten query for retrieval (replaces old anaphora/thread-anchor heuristics)
+        let hasThreadHistory = messages.contains { $0.role == "assistant" } && messages.contains { $0.role == "user" }
+
+        // The rewritten query is the standalone search query from the LLM analysis.
+        // Fall back to heuristic thread-anchor approach only when LLM analysis fails.
+        let effectiveQuestion: String
+        if let rewritten = queryAnalysis?.rewrittenQuery, !rewritten.isEmpty {
+            effectiveQuestion = rewritten
+            print("[QueryRewrite] Using LLM rewrite: \(rewritten)")
+        } else {
+            // Heuristic fallback: thread anchor for short follow-ups
+            let anchorFollowUp = isAnaphoraFollowUp(question) ||
+                (hasThreadHistory && cleanLine(question).split { !$0.isLetter && !$0.isNumber }.count <= 6)
+            let questionAnchors = anchorTokens(from: question)
+            if questionAnchors.isEmpty, anchorFollowUp, let anchor = makeThreadAnchor(history: self.messages) {
+                effectiveQuestion = anchor + question
+            } else {
+                effectiveQuestion = question
+            }
+            print("[QueryRewrite] Using heuristic fallback: \(effectiveQuestion.prefix(120))")
         }
 
         // Check for smalltalk via analysis
         if queryAnalysis?.intent == "smalltalk" {
-            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
+            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil, rewrittenQuery: nil)
         }
         if docsInScopeCount == 0 && isLowSignalChitChat(question) {
-            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
+            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil, rewrittenQuery: nil)
         }
         if docsInScopeCount > 0 && !hasThreadHistory && isExplicitSmallTalkPrompt(question) {
-            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil)
+            return ChatLLMResult(reply: smallTalkReply(question), primaryDocument: nil, rewrittenQuery: nil)
         }
 
         let allDocs = !scopedDocumentIds.isEmpty
             ? scopedDocsRaw
             : documentManager.conversationEligibleDocuments()
-        
+
         // Use analysis to determine bias (prioritize LLM analysis over heuristics)
-        let hasMultipleAnchors = questionAnchors.count >= 2
         let applyLastDocumentBias: Bool
         if let analysis = queryAnalysis {
             applyLastDocumentBias = analysis.needsPreviousDocBias
         } else {
-            applyLastDocumentBias = !hasMultipleAnchors || anchorFollowUp
+            let questionAnchors = anchorTokens(from: question)
+            let anchorFollowUp = isAnaphoraFollowUp(question) ||
+                (hasThreadHistory && cleanLine(question).split { !$0.isLetter && !$0.isNumber }.count <= 6)
+            applyLastDocumentBias = questionAnchors.count < 2 || anchorFollowUp
         }
         let initialSelection = selectDocumentsByChunkRanking(
             question: effectiveQuestion,
@@ -2084,26 +2246,63 @@ struct NativeChatView: View {
         )
 
         if selection.selectedHits.isEmpty {
-            return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil)
+            return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil, rewrittenQuery: queryAnalysis?.rewrittenQuery)
         }
 
         if let countAnswer = preprocessCountQuestion(effectiveQuestion, hits: selection.selectedHits) {
-            return ChatLLMResult(reply: countAnswer, primaryDocument: selection.primaryDocument)
+            return ChatLLMResult(reply: countAnswer, primaryDocument: selection.primaryDocument, rewrittenQuery: queryAnalysis?.rewrittenQuery)
         }
 
-        let prompt = buildAnswerPrompt(
-            question: effectiveQuestion,
-            selectedDocs: selection.documents,
-            topScoreByDocumentId: selection.topScoreByDocumentId,
-            selectedHits: selection.selectedHits
-        )
-        let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
-        
+        // For challenges/disputes/clarifications: use direct quote response
+        // (LLM writes short intro, then we append raw chunk text in quotes)
+        let useDirectQuotes = isChallengeDispute || queryAnalysis?.intent == "followup_clarification"
+
+        let finalReply: String
+        if useDirectQuotes {
+            let introPrompt = buildExploratoryPrompt(
+                question: effectiveQuestion,
+                originalQuestion: sessionState.lastOriginalQuestion,
+                lastResponse: sessionState.lastAssistantResponse,
+                selectedHits: selection.selectedHits
+            )
+            let introReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(introPrompt))
+            finalReply = buildDirectQuoteResponse(
+                introReply: introReply,
+                selectedHits: selection.selectedHits
+            )
+        } else {
+            let prompt = buildAnswerPrompt(
+                question: effectiveQuestion,
+                selectedDocs: selection.documents,
+                topScoreByDocumentId: selection.topScoreByDocumentId,
+                selectedHits: selection.selectedHits
+            )
+            let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
+
+            // If the LLM said "not found" but we have good chunks, fall back to
+            // direct quotes so the user can see the raw evidence.
+            if isNotFoundResponse(reply) && !selection.selectedHits.isEmpty {
+                let introPrompt = buildExploratoryPrompt(
+                    question: effectiveQuestion,
+                    originalQuestion: sessionState.lastOriginalQuestion,
+                    lastResponse: nil,
+                    selectedHits: selection.selectedHits
+                )
+                let introReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(introPrompt))
+                finalReply = buildDirectQuoteResponse(
+                    introReply: introReply,
+                    selectedHits: selection.selectedHits
+                )
+            } else {
+                finalReply = reply
+            }
+        }
+
         // Store for future challenge/dispute handling
         sessionState.lastOriginalQuestion = question
-        sessionState.lastAssistantResponse = reply
-        
-        return ChatLLMResult(reply: reply, primaryDocument: selection.primaryDocument)
+        sessionState.lastAssistantResponse = finalReply
+
+        return ChatLLMResult(reply: finalReply, primaryDocument: selection.primaryDocument, rewrittenQuery: queryAnalysis?.rewrittenQuery)
     }
 
     private func preprocessCountQuestion(_ question: String, hits: [ChunkHit]) -> String? {
@@ -2503,16 +2702,52 @@ private struct MessageRow: View {
     }
 
     private var bubble: some View {
-        Text(formatMarkdownText(msg.text))
-            .font(.system(size: 18))
-            .foregroundStyle(msg.role == "user" ? Color.white : Color.primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(msg.role == "user" ? Color("Primary") : Color(.systemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(msg.role == "user" ? Color.clear : Color(.systemGray4).opacity(0.35), lineWidth: 1)
-            )
+        let blocks = parseMessageBlocks(msg.text)
+        let hasQuotedBlocks = blocks.contains(where: \.isQuoted)
+
+        return Group {
+            if hasQuotedBlocks {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                        if block.isQuoted {
+                            Text(renderMarkdownLines(block.text))
+                                .font(.system(size: 15))
+                                .foregroundStyle(Color.primary)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(.systemGray6))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        } else {
+                            let trimmed = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty {
+                                Text(renderMarkdownLines(trimmed))
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(Color.primary)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.systemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color(.systemGray4).opacity(0.35), lineWidth: 1)
+                )
+            } else {
+                Text(formatMarkdownText(msg.text))
+                    .font(.system(size: 18))
+                    .foregroundStyle(msg.role == "user" ? Color.white : Color.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(msg.role == "user" ? Color("Primary") : Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(msg.role == "user" ? Color.clear : Color(.systemGray4).opacity(0.35), lineWidth: 1)
+                    )
+            }
+        }
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import SSZipArchive
+import OSLog
 
 struct ZipExportView: View {
     @EnvironmentObject private var documentManager: DocumentManager
@@ -263,7 +264,14 @@ struct ZipExportView: View {
 
                 let ok = SSZipArchive.createZipFile(atPath: zipURL.path, withContentsOfDirectory: stagingURL.path)
 
-                if ok, let zipData = try? Data(contentsOf: zipURL) {
+                let zipData: Data? = {
+                    guard ok else { return nil }
+                    do { return try Data(contentsOf: zipURL) } catch {
+                        AppLogger.sharing.error("Failed to read zip archive data: \(error.localizedDescription)")
+                        return nil
+                    }
+                }()
+                if let zipData {
                     let doc = makeZipDocument(title: fileName, data: zipData, folderId: targetFolderId)
                     DispatchQueue.main.async {
                         documentManager.addDocument(doc)
@@ -288,8 +296,8 @@ struct ZipExportView: View {
                 }
             }
 
-            try? FileManager.default.removeItem(at: stagingURL)
-            try? FileManager.default.removeItem(at: zipURL)
+            do { try FileManager.default.removeItem(at: stagingURL) } catch { AppLogger.sharing.warning("Failed to remove staging directory: \(error.localizedDescription)") }
+            do { try FileManager.default.removeItem(at: zipURL) } catch { AppLogger.sharing.warning("Failed to remove temporary zip file: \(error.localizedDescription)") }
         }
 
         DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
@@ -332,9 +340,7 @@ struct ZipExportView: View {
     }
 
     private func dataForDocument(_ document: Document) -> Data? {
-        if let original = document.originalFileData { return original }
-        if let pdf = document.pdfData { return pdf }
-        if let img = document.imageData?.first { return img }
+        if let data = documentManager.anyFileData(for: document.id) { return data }
         return document.content.data(using: .utf8)
     }
 }

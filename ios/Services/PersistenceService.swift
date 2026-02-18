@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 struct PersistedState: Codable {
     var documents: [Document]
@@ -29,7 +30,7 @@ class PersistenceService {
             let encoded = try JSONEncoder().encode(state)
             let url = try getDocumentsFileURL()
             try encoded.write(to: url, options: [.atomic])
-            print("💾 PersistenceService: Saved \(documents.count) documents + \(folders.count) folders")
+            AppLogger.persistence.info("Saved \(documents.count) documents + \(folders.count) folders")
         } catch let error as PersistenceError {
             throw error
         } catch {
@@ -42,31 +43,46 @@ class PersistenceService {
         let url = try getDocumentsFileURL()
 
         // Try loading from file (current format)
-        if let data = try? Data(contentsOf: url) {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            if (error as NSError).domain == NSCocoaErrorDomain,
+               (error as NSError).code == NSFileReadNoSuchFileError {
+                // File doesn't exist yet — fall through to migration/empty state
+                data = Data()
+            } else {
+                AppLogger.persistence.error("Failed to read documents file: \(error.localizedDescription)")
+                throw PersistenceError.loadFailedIO(error)
+            }
+        }
+
+        if !data.isEmpty {
             // Try new PersistedState format
-            if let state = try? JSONDecoder().decode(PersistedState.self, from: data) {
-                print("💾 PersistenceService: Loaded \(state.documents.count) documents + \(state.folders.count) folders")
+            do {
+                let state = try JSONDecoder().decode(PersistedState.self, from: data)
+                AppLogger.persistence.info("Loaded \(state.documents.count) documents + \(state.folders.count) folders")
                 return (state.documents, state.folders, state.prefersGridLayout)
+            } catch {
+                AppLogger.persistence.debug("Not PersistedState format, trying legacy: \(error.localizedDescription)")
             }
 
             // Try legacy documents-only format
-            if let documents = try? JSONDecoder().decode([Document].self, from: data) {
-                print("💾 PersistenceService: Migrated legacy documents-only file (\(documents.count) docs)")
+            do {
+                let documents = try JSONDecoder().decode([Document].self, from: data)
+                AppLogger.persistence.info("Migrated legacy documents-only file (\(documents.count) docs)")
                 return (documents, [], false)
+            } catch {
+                AppLogger.persistence.error("Failed to decode documents file in any format: \(error.localizedDescription)")
+                throw PersistenceError.loadFailedDecoding(error)
             }
-
-            throw PersistenceError.loadFailedDecoding(
-                NSError(domain: "PersistenceService", code: -1, userInfo: [
-                    NSLocalizedDescriptionKey: "Could not decode documents file"
-                ])
-            )
         }
 
         // Migration: Check UserDefaults (very old format)
         if let data = UserDefaults.standard.data(forKey: legacyUserDefaultsKey) {
             do {
                 let documents = try JSONDecoder().decode([Document].self, from: data)
-                print("💾 PersistenceService: Migrated \(documents.count) documents from UserDefaults")
+                AppLogger.persistence.info("Migrated \(documents.count) documents from UserDefaults")
                 // Clean up old storage after successful migration
                 UserDefaults.standard.removeObject(forKey: legacyUserDefaultsKey)
                 return (documents, [], false)
@@ -76,7 +92,7 @@ class PersistenceService {
         }
 
         // No saved data found - return empty state
-        print("💾 PersistenceService: No saved documents found, starting fresh")
+        AppLogger.persistence.info("No saved documents found, starting fresh")
         return ([], [], false)
     }
 
@@ -151,7 +167,11 @@ class PersistenceService {
         let inbox = container.appendingPathComponent(AppConstants.AppGroup.sharedInboxFolder, isDirectory: true)
 
         if createIfMissing && !fileManager.fileExists(atPath: inbox.path) {
-            try? fileManager.createDirectory(at: inbox, withIntermediateDirectories: true)
+            do {
+                try fileManager.createDirectory(at: inbox, withIntermediateDirectories: true)
+            } catch {
+                AppLogger.persistence.error("Failed to create shared inbox directory: \(error.localizedDescription)")
+            }
         }
 
         return inbox

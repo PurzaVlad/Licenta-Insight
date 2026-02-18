@@ -6,6 +6,7 @@ enum AppError: LocalizedError {
     case ocr(OCRError)
     case ai(AIError)
     case validation(ValidationError)
+    case fileStorage(FileStorageError)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum AppError: LocalizedError {
         case .ai(let error):
             return error.errorDescription
         case .validation(let error):
+            return error.errorDescription
+        case .fileStorage(let error):
             return error.errorDescription
         }
     }
@@ -91,6 +94,23 @@ enum OCRError: LocalizedError {
             return "No text recognized in image"
         case .invalidImage:
             return "Invalid or corrupted image"
+        }
+    }
+}
+
+enum FileStorageError: LocalizedError {
+    case saveFailed(Error)
+    case loadFailed(Error)
+    case directoryCreationFailed(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .saveFailed(let error):
+            return "Failed to save file data: \(error.localizedDescription)"
+        case .loadFailed(let error):
+            return "Failed to load file data: \(error.localizedDescription)"
+        case .directoryCreationFailed(let error):
+            return "Failed to create storage directory: \(error.localizedDescription)"
         }
     }
 }
