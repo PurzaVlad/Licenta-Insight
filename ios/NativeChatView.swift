@@ -390,8 +390,34 @@ struct NativeChatView: View {
         updateConversationMessages(updateTimestamp: false)
     }
 
+    /// Returns true if the message is a greeting or filler with no real content.
+    /// Title generation is deferred until the first non-small-talk turn.
+    private func isSmallTalk(_ text: String) -> Bool {
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9 ']", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if normalized.count > 50 { return false }
+        let phrases: Set<String> = [
+            "hi", "hello", "hey", "yo", "sup", "what's up", "whats up", "wassup",
+            "good morning", "good afternoon", "good evening", "good night",
+            "how are you", "how are you doing", "how's it going", "hows it going", "how do you do",
+            "i'm good", "im good", "i'm fine", "im fine", "i'm great", "im great",
+            "i'm okay", "im okay", "i'm ok", "im ok",
+            "fine", "great", "not bad", "pretty good", "doing good", "doing well",
+            "thanks", "thank you", "thank you so much", "thanks a lot", "ty", "thx",
+            "ok", "okay", "got it", "sure", "alright", "sounds good",
+            "yes", "no", "yeah", "nope", "yep", "nah",
+            "lol", "haha", "hehe", "wow", "nice", "cool", "awesome", "neat",
+            "bye", "goodbye", "see you", "see ya", "cya", "later", "ttyl",
+            "you there", "are you there", "hello there", "hey there",
+        ]
+        return phrases.contains(normalized)
+    }
+
     private func initializeConversation(firstMessage: ChatMessage) {
-        let tempTitle = String(firstMessage.text.prefix(50))
+        let tempTitle = "New Chat"
         let now = Date()
         let conversation = PersistedConversation(
             id: UUID(),
@@ -515,9 +541,11 @@ struct NativeChatView: View {
                     )
                     self.conversationState.lastRewrittenQuery = result.rewrittenQuery
 
-                    // Save conversation and optionally generate a title
+                    // Save conversation and optionally generate a title.
+                    // Only lock in a title once the user asks something substantive;
+                    // pure small talk keeps the placeholder across multiple turns.
                     self.updateConversationMessages()
-                    if self.isTitlePending {
+                    if self.isTitlePending && !self.isSmallTalk(question) {
                         self.isTitlePending = false
                         self.generateConversationTitle(userMessage: question, assistantResponse: text)
                     }
@@ -2650,7 +2678,7 @@ struct NativeChatView: View {
                             case .folder(let folder):
                                 FolderRowView(
                                     folder: folder,
-                                    docCount: documentManager.documents(in: folder.id).count,
+                                    docCount: documentManager.itemCount(in: folder.id),
                                     isSelected: selectedIds.contains(folder.id),
                                     isSelectionMode: true,
                                     usesNativeSelection: true,

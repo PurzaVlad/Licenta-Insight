@@ -964,8 +964,6 @@ struct DocumentPreviewContainerView: View {
     @State private var showingSearchSheet = false
     @State private var previewController: CustomQLPreviewController?
     @State private var pdfSearchCoordinator: SearchablePDFView.Coordinator?
-    @State private var documentInteractionController: UIDocumentInteractionController?
-    @State private var officeOpenErrorMessage: String?
 
     init(
         url: URL,
@@ -995,78 +993,6 @@ struct DocumentPreviewContainerView: View {
         document.map { splitDisplayTitle($0.title).base } ?? "Preview"
     }
 
-    private enum OfficeAppTarget {
-        case word
-        case powerPoint
-        case excel
-
-        var displayName: String {
-            switch self {
-            case .word: return "Word"
-            case .powerPoint: return "PowerPoint"
-            case .excel: return "Excel"
-            }
-        }
-
-        var urlSchemePrefix: String {
-            switch self {
-            case .word: return "ms-word:ofe|u|"
-            case .powerPoint: return "ms-powerpoint:ofe|u|"
-            case .excel: return "ms-excel:ofe|u|"
-            }
-        }
-
-        /// URL scheme root used for canOpenURL checks (no path component needed)
-        var urlSchemeCheck: String {
-            switch self {
-            case .word: return "ms-word://"
-            case .powerPoint: return "ms-powerpoint://"
-            case .excel: return "ms-excel://"
-            }
-        }
-
-        var uniformTypeIdentifier: String {
-            switch self {
-            case .word: return "org.openxmlformats.wordprocessingml.document"
-            case .powerPoint: return "org.openxmlformats.presentationml.presentation"
-            case .excel: return "org.openxmlformats.spreadsheetml.sheet"
-            }
-        }
-
-        var sfSymbol: String {
-            switch self {
-            case .word: return "doc.text.fill"
-            case .powerPoint: return "play.rectangle.fill"
-            case .excel: return "tablecells.fill"
-            }
-        }
-
-        var brandColor: Color {
-            switch self {
-            case .word: return Color(red: 0.16, green: 0.42, blue: 0.80)
-            case .powerPoint: return Color(red: 0.88, green: 0.38, blue: 0.18)
-            case .excel: return Color(red: 0.16, green: 0.62, blue: 0.38)
-            }
-        }
-    }
-
-    private var officeAppTarget: OfficeAppTarget? {
-        if let type = document?.type {
-            switch type {
-            case .docx: return .word
-            case .pptx: return .powerPoint
-            case .xlsx: return .excel
-            default: break
-            }
-        }
-
-        switch url.pathExtension.lowercased() {
-        case "docx": return .word
-        case "pptx": return .powerPoint
-        case "xlsx": return .excel
-        default: return nil
-        }
-    }
 
     // Match navigation-style dismissal: edge swipe from left to right only.
     private var edgeSwipeToDismiss: some Gesture {
@@ -1107,21 +1033,6 @@ struct DocumentPreviewContainerView: View {
                 Label("Search", systemImage: "text.magnifyingglass")
             }
 
-            Spacer()
-
-            if onAISummary != nil {
-                Button {
-                    if document != nil, documentManager != nil {
-                        showingSummary = true
-                    } else {
-                        onAISummary?()
-                    }
-                } label: {
-                    Label("AI Summary", systemImage: "brain.head.profile")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color("Primary"))
-            }
         }
     }
 
@@ -1141,16 +1052,19 @@ struct DocumentPreviewContainerView: View {
                 .lineLimit(1)
                 .foregroundStyle(.primary)
         }
-        if let target = officeAppTarget {
+        if onAISummary != nil {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    openInOfficeApp(target)
+                    if document != nil, documentManager != nil {
+                        showingSummary = true
+                    } else {
+                        onAISummary?()
+                    }
                 } label: {
-                    Image(systemName: target.sfSymbol)
-                        .foregroundStyle(target.brandColor)
-                        .font(.title3)
+                    Label("AI Summary", systemImage: "brain.head.profile")
                 }
-                .help("Open in \(target.displayName)")
+                .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
             }
         }
     }
@@ -1205,16 +1119,6 @@ struct DocumentPreviewContainerView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-        }
-        .alert("Unable to Open", isPresented: Binding(
-            get: { officeOpenErrorMessage != nil },
-            set: { if !$0 { officeOpenErrorMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) {
-                officeOpenErrorMessage = nil
-            }
-        } message: {
-            Text(officeOpenErrorMessage ?? "Please try again.")
         }
     }
     
@@ -1294,66 +1198,6 @@ struct DocumentPreviewContainerView: View {
         return nil
     }
 
-    private func openInOfficeApp(_ target: OfficeAppTarget) {
-        let sourceURL = shareURLForCurrent() ?? url
-
-        // For local files, try opening directly in the Office app via URL scheme first.
-        // The ms-word/ms-powerpoint/ms-excel schemes support file:// URLs for local docs,
-        // bypassing the picker entirely. Fall back to the picker if the app isn't installed.
-        if sourceURL.isFileURL {
-            if let checkURL = URL(string: target.urlSchemeCheck),
-               UIApplication.shared.canOpenURL(checkURL),
-               let officeURL = URL(string: target.urlSchemePrefix + sourceURL.absoluteString) {
-                UIApplication.shared.open(officeURL, options: [:]) { success in
-                    if !success {
-                        DispatchQueue.main.async {
-                            // App installed but couldn't open — fall back to picker
-                            presentOpenInMenu(for: sourceURL, target: target)
-                        }
-                    }
-                }
-            } else {
-                presentOpenInMenu(for: sourceURL, target: target)
-            }
-            return
-        }
-
-        // Remote URL — use scheme directly (existing behaviour)
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~:/"))
-        let encodedURL = sourceURL.absoluteString.addingPercentEncoding(withAllowedCharacters: allowed)
-            ?? sourceURL.absoluteString
-
-        guard let officeURL = URL(string: target.urlSchemePrefix + encodedURL) else {
-            officeOpenErrorMessage = "Could not prepare the file URL for \(target.displayName)."
-            return
-        }
-
-        UIApplication.shared.open(officeURL, options: [:]) { success in
-            if !success {
-                DispatchQueue.main.async {
-                    officeOpenErrorMessage = "\(target.displayName) is not installed or could not open this file."
-                }
-            }
-        }
-    }
-
-    private func presentOpenInMenu(for fileURL: URL, target: OfficeAppTarget) {
-        guard let root = topMostViewController() else {
-            officeOpenErrorMessage = "Could not present app chooser."
-            return
-        }
-
-        let controller = UIDocumentInteractionController(url: fileURL)
-        controller.uti = target.uniformTypeIdentifier
-        controller.name = fileURL.lastPathComponent
-        documentInteractionController = controller
-
-        let sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1)
-        let presented = controller.presentOpenInMenu(from: sourceRect, in: root.view, animated: true)
-        if !presented {
-            officeOpenErrorMessage = "\(target.displayName) is not available to open this file."
-        }
-    }
 
     private func fallbackExtension(for document: Document) -> String {
         switch document.type {
@@ -1685,8 +1529,12 @@ struct DocumentInfoView: View {
             .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Label("Back", systemImage: "chevron.backward")
+                    }
                 }
             }
         }
@@ -1861,8 +1709,17 @@ struct DocumentSummaryView: View {
             .navigationTitle("Document Summary")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Label("Back", systemImage: "chevron.backward")
+                    }
+                }
+              
                 if supportsAISummary {
-                    ToolbarItem(placement: .navigationBarLeading) {
+                    ToolbarItem(placement: .navigationBarTrailing) {
                         Menu {
                             Picker("Length", selection: $selectedSummaryLength) {
                                 Text("Short").tag(SummaryLength.short)
@@ -1878,14 +1735,9 @@ struct DocumentSummaryView: View {
                                 Button("Generate") { generateAISummary(force: false) }
                             }
                         } label: {
-                            Image(systemName: "gear")
+                            Image(systemName: "text.viewfinder")
                                 .imageScale(.large)
                         }
-                    }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
                     }
                 }
             }

@@ -360,7 +360,7 @@ struct DocumentsView: View {
         case .folder(let folder):
             FolderRowView(
                 folder: folder,
-                docCount: documentManager.documents(in: folder.id).count,
+                docCount: documentManager.itemCount(in: folder.id),
                 isSelected: selectedFolderIds.contains(folder.id),
                 isSelectionMode: isSelectionMode,
                 usesNativeSelection: false,
@@ -421,7 +421,7 @@ struct DocumentsView: View {
         case .folder(let folder):
             FolderRowView(
                 folder: folder,
-                docCount: documentManager.documents(in: folder.id).count,
+                docCount: documentManager.itemCount(in: folder.id),
                 isSelected: selectedFolderIds.contains(folder.id),
                 isSelectionMode: isSelectionMode,
                 usesNativeSelection: true,
@@ -480,7 +480,7 @@ struct DocumentsView: View {
                     case .folder(let folder):
                         FolderGridItemView(
                             folder: folder,
-                            docCount: documentManager.documents(in: folder.id).count,
+                            docCount: documentManager.itemCount(in: folder.id),
                             isSelected: selectedFolderIds.contains(folder.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleFolderSelection(folder.id) },
@@ -2850,7 +2850,7 @@ struct FolderDocumentsView: View {
         case .folder(let sub):
             FolderRowView(
                 folder: sub,
-                docCount: documentManager.documents(in: sub.id).count,
+                docCount: documentManager.itemCount(in: sub.id),
                 isSelected: selectedFolderIds.contains(sub.id),
                 isSelectionMode: isSelectionMode,
                 usesNativeSelection: true,
@@ -2907,7 +2907,7 @@ struct FolderDocumentsView: View {
         case .folder(let sub):
             FolderRowView(
                 folder: sub,
-                docCount: documentManager.documents(in: sub.id).count,
+                docCount: documentManager.itemCount(in: sub.id),
                 isSelected: selectedFolderIds.contains(sub.id),
                 isSelectionMode: isSelectionMode,
                 usesNativeSelection: false,
@@ -2971,7 +2971,7 @@ struct FolderDocumentsView: View {
                     case .folder(let sub):
                         FolderGridItemView(
                             folder: sub,
-                            docCount: documentManager.documents(in: sub.id).count,
+                            docCount: documentManager.itemCount(in: sub.id),
                             isSelected: selectedFolderIds.contains(sub.id),
                             isSelectionMode: isSelectionMode,
                             onSelectToggle: { toggleFolderSelection(sub.id) },

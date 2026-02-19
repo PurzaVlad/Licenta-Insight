@@ -405,7 +405,7 @@ struct SearchView: View {
     private func searchFolderRow(_ folder: DocumentFolder) -> some View {
         FolderRowView(
             folder: folder,
-            docCount: documentManager.documents(in: folder.id).count,
+            docCount: documentManager.itemCount(in: folder.id),
             isSelected: false,
             isSelectionMode: false,
             usesNativeSelection: false,

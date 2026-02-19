@@ -26,12 +26,6 @@
 	<string>MAX_CONCURRENT_CONVERSIONS</string>
 	<key>CONVERT_BASE_URL</key>
 	<string>https://conver-server-6k7g4ts3rq-ew.a.run.app</string>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>ms-word</string>
-		<string>ms-powerpoint</string>
-		<string>ms-excel</string>
-	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

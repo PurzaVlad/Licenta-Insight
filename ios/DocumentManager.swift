@@ -526,6 +526,11 @@ class DocumentManager: ObservableObject {
             }
     }
 
+    /// Total items in a folder: documents + subfolders.
+    func itemCount(in folderId: UUID) -> Int {
+        documents(in: folderId).count + folders(in: folderId).count
+    }
+
     func folderName(for folderId: UUID?) -> String? {
         guard let folderId else { return nil }
         return folders.first(where: { $0.id == folderId })?.name

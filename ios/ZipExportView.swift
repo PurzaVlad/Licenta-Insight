@@ -42,7 +42,7 @@ struct ZipExportView: View {
                                 case .folder(let folder):
                                     FolderRowView(
                                         folder: folder,
-                                        docCount: documentManager.documents(in: folder.id).count,
+                                        docCount: documentManager.itemCount(in: folder.id),
                                         isSelected: selectedFolderIds.contains(folder.id),
                                         isSelectionMode: true,
                                         usesNativeSelection: true,
