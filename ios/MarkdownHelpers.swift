@@ -13,8 +13,9 @@ func formatMarkdownText(_ text: String) -> AttributedString {
     processedText = processedText.replacingOccurrences(of: ">>>", with: "")
     processedText = processedText.replacingOccurrences(of: "<<<", with: "")
 
-    // Convert markdown lists to bullet points
-    processedText = processedText.replacingOccurrences(of: "* ", with: "• ")
+    // Convert markdown list markers to bullet points (line-start only)
+    processedText = processedText.replacingOccurrences(of: "(?m)^\\* ", with: "• ", options: .regularExpression)
+    processedText = processedText.replacingOccurrences(of: "(?m)^- ", with: "• ", options: .regularExpression)
 
     // Fix malformed bold markdown: **text* → **text**
     let malformedBoldRegex = try! NSRegularExpression(pattern: "\\*\\*([^*]+)\\*(?!\\*)", options: [])
@@ -28,28 +29,79 @@ func parseMessageBlocks(_ text: String) -> [MessageBlock] {
     return splitQuotedBlocks(text)
 }
 
-/// Render plain markdown (no quote delimiters) into AttributedString
+/// Render plain markdown (no quote delimiters) into AttributedString.
+/// Handles: # h1–h4, **bold**, *italic*, `code`, - bullets, 1. lists, > blockquotes,
+/// ``` code blocks, and --- horizontal rules.
 func renderMarkdownLines(_ text: String) -> AttributedString {
-    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }
     var output = AttributedString()
 
-    for (idx, line) in lines.enumerated() {
-        let lineText = String(line)
-        if lineText.hasPrefix("## ") {
-            let title = String(lineText.dropFirst(3))
-            var heading = AttributedString(title)
-            heading.font = .system(size: 17, weight: .semibold)
-            output.append(heading)
+    var mdOptions = AttributedString.MarkdownParsingOptions()
+    mdOptions.interpretedSyntax = .inlineOnlyPreservingWhitespace
+
+    var inCodeBlock = false
+
+    for (idx, lineText) in lines.enumerated() {
+        let attributed: AttributedString
+
+        // Code fence toggle — skip the fence line itself
+        if lineText.hasPrefix("```") {
+            inCodeBlock.toggle()
+            if idx < lines.count - 1 { output.append(AttributedString("\n")) }
+            continue
+        }
+
+        if inCodeBlock {
+            var code = AttributedString(lineText)
+            code.font = .system(size: 13, weight: .regular, design: .monospaced)
+            attributed = code
         } else {
-            do {
-                var options = AttributedString.MarkdownParsingOptions()
-                options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-                let attributedLine = try AttributedString(markdown: lineText, options: options)
-                output.append(attributedLine)
-            } catch {
-                output.append(AttributedString(lineText))
+            let trimmed = lineText.trimmingCharacters(in: .whitespaces)
+
+            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                // Horizontal rule → blank separator line
+                attributed = AttributedString("")
+
+            } else if lineText.hasPrefix("#### ") {
+                var h = AttributedString(String(lineText.dropFirst(5)))
+                h.font = .system(size: 13, weight: .semibold)
+                attributed = h
+
+            } else if lineText.hasPrefix("### ") {
+                var h = AttributedString(String(lineText.dropFirst(4)))
+                h.font = .system(size: 15, weight: .semibold)
+                attributed = h
+
+            } else if lineText.hasPrefix("## ") {
+                var h = AttributedString(String(lineText.dropFirst(3)))
+                h.font = .system(size: 17, weight: .semibold)
+                attributed = h
+
+            } else if lineText.hasPrefix("# ") {
+                var h = AttributedString(String(lineText.dropFirst(2)))
+                h.font = .system(size: 20, weight: .bold)
+                attributed = h
+
+            } else if lineText.hasPrefix("> ") {
+                // Blockquote — indent and parse inline markdown
+                let quote = String(lineText.dropFirst(2))
+                do {
+                    attributed = try AttributedString(markdown: "  " + quote, options: mdOptions)
+                } catch {
+                    attributed = AttributedString("  " + quote)
+                }
+
+            } else {
+                // Default: inline markdown (bold, italic, code, numbered lists, plain text)
+                do {
+                    attributed = try AttributedString(markdown: lineText, options: mdOptions)
+                } catch {
+                    attributed = AttributedString(lineText)
+                }
             }
         }
+
+        output.append(attributed)
         if idx < lines.count - 1 {
             output.append(AttributedString("\n"))
         }

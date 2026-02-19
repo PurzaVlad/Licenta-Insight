@@ -5,6 +5,23 @@ struct PersistedState: Codable {
     var documents: [Document]
     var folders: [DocumentFolder]
     var prefersGridLayout: Bool
+    var conversations: [PersistedConversation]
+
+    // Custom decoder for backward compatibility with files that lack conversations
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        documents = try container.decode([Document].self, forKey: .documents)
+        folders = try container.decodeIfPresent([DocumentFolder].self, forKey: .folders) ?? []
+        prefersGridLayout = try container.decodeIfPresent(Bool.self, forKey: .prefersGridLayout) ?? false
+        conversations = try container.decodeIfPresent([PersistedConversation].self, forKey: .conversations) ?? []
+    }
+
+    init(documents: [Document], folders: [DocumentFolder], prefersGridLayout: Bool, conversations: [PersistedConversation] = []) {
+        self.documents = documents
+        self.folders = folders
+        self.prefersGridLayout = prefersGridLayout
+        self.conversations = conversations
+    }
 }
 
 class PersistenceService {
@@ -19,13 +36,15 @@ class PersistenceService {
 
     // MARK: - Document Persistence
 
-    /// Saves documents and folders to disk
+    /// Saves documents and folders to disk (preserves existing conversations)
     func saveDocuments(_ documents: [Document], folders: [DocumentFolder], prefersGridLayout: Bool) throws {
         do {
+            let existingConversations = (try? loadConversations()) ?? []
             let state = PersistedState(
                 documents: documents,
                 folders: folders,
-                prefersGridLayout: prefersGridLayout
+                prefersGridLayout: prefersGridLayout,
+                conversations: existingConversations
             )
             let encoded = try JSONEncoder().encode(state)
             let url = try getDocumentsFileURL()
@@ -36,6 +55,38 @@ class PersistenceService {
         } catch {
             throw PersistenceError.saveFailedIO(error)
         }
+    }
+
+    // MARK: - Conversation Persistence
+
+    /// Saves conversations to disk (preserves existing documents and folders)
+    func saveConversations(_ conversations: [PersistedConversation]) throws {
+        do {
+            let url = try getDocumentsFileURL()
+            var state: PersistedState
+            if let data = try? Data(contentsOf: url), !data.isEmpty,
+               let existing = try? JSONDecoder().decode(PersistedState.self, from: data) {
+                state = existing
+            } else {
+                state = PersistedState(documents: [], folders: [], prefersGridLayout: false)
+            }
+            state.conversations = conversations
+            let encoded = try JSONEncoder().encode(state)
+            try encoded.write(to: url, options: [.atomic])
+            AppLogger.persistence.debug("Saved \(conversations.count) conversations")
+        } catch let error as PersistenceError {
+            throw error
+        } catch {
+            throw PersistenceError.saveFailedIO(error)
+        }
+    }
+
+    /// Loads conversations from disk
+    func loadConversations() throws -> [PersistedConversation] {
+        let url = try getDocumentsFileURL()
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return [] }
+        let state = try JSONDecoder().decode(PersistedState.self, from: data)
+        return state.conversations
     }
 
     /// Loads documents and folders from disk, with migration support

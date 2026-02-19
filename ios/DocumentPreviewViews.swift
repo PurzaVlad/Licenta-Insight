@@ -96,7 +96,7 @@ struct DocumentDetailView: View {
                                             .font(.headline)
                                     }
                                     
-                                    Text(document.summary)
+                                    Text(formatMarkdownText(document.summary))
                                         .font(.body)
                                         .foregroundColor(.primary)
                                         .padding()
@@ -155,7 +155,7 @@ struct DocumentDetailView: View {
                             Text("Summary")
                                 .font(.headline)
                             
-                            Text(document.summary)
+                            Text(formatMarkdownText(document.summary))
                                 .font(.body)
                                 .foregroundColor(.secondary)
                                 .padding()
@@ -469,8 +469,7 @@ struct OldDocumentPreviewView: View {
                         InfoRow(label: "Date Added", value: DateFormatter.shortDate.string(from: document.dateCreated))
                         InfoRow(label: "Source", value: document.type == .scanned ? "Scanned" : "Manually Added")
                         InfoRow(label: "Type", value: document.type.rawValue)
-                        InfoRow(label: "Tags", value: tagsText)
-                        
+
                         if let imageData = documentManager.imageData(for: document.id) {
                             InfoRow(label: "Pages", value: "\(imageData.count)")
                         }
@@ -1017,11 +1016,36 @@ struct DocumentPreviewContainerView: View {
             }
         }
 
+        /// URL scheme root used for canOpenURL checks (no path component needed)
+        var urlSchemeCheck: String {
+            switch self {
+            case .word: return "ms-word://"
+            case .powerPoint: return "ms-powerpoint://"
+            case .excel: return "ms-excel://"
+            }
+        }
+
         var uniformTypeIdentifier: String {
             switch self {
             case .word: return "org.openxmlformats.wordprocessingml.document"
             case .powerPoint: return "org.openxmlformats.presentationml.presentation"
             case .excel: return "org.openxmlformats.spreadsheetml.sheet"
+            }
+        }
+
+        var sfSymbol: String {
+            switch self {
+            case .word: return "doc.text.fill"
+            case .powerPoint: return "play.rectangle.fill"
+            case .excel: return "tablecells.fill"
+            }
+        }
+
+        var brandColor: Color {
+            switch self {
+            case .word: return Color(red: 0.16, green: 0.42, blue: 0.80)
+            case .powerPoint: return Color(red: 0.88, green: 0.38, blue: 0.18)
+            case .excel: return Color(red: 0.16, green: 0.62, blue: 0.38)
             }
         }
     }
@@ -1119,10 +1143,14 @@ struct DocumentPreviewContainerView: View {
         }
         if let target = officeAppTarget {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Open in \(target.displayName)") {
+                Button {
                     openInOfficeApp(target)
+                } label: {
+                    Image(systemName: target.sfSymbol)
+                        .foregroundStyle(target.brandColor)
+                        .font(.title3)
                 }
-                .font(.subheadline.weight(.semibold))
+                .help("Open in \(target.displayName)")
             }
         }
     }
@@ -1269,11 +1297,28 @@ struct DocumentPreviewContainerView: View {
     private func openInOfficeApp(_ target: OfficeAppTarget) {
         let sourceURL = shareURLForCurrent() ?? url
 
+        // For local files, try opening directly in the Office app via URL scheme first.
+        // The ms-word/ms-powerpoint/ms-excel schemes support file:// URLs for local docs,
+        // bypassing the picker entirely. Fall back to the picker if the app isn't installed.
         if sourceURL.isFileURL {
-            presentOpenInMenu(for: sourceURL, target: target)
+            if let checkURL = URL(string: target.urlSchemeCheck),
+               UIApplication.shared.canOpenURL(checkURL),
+               let officeURL = URL(string: target.urlSchemePrefix + sourceURL.absoluteString) {
+                UIApplication.shared.open(officeURL, options: [:]) { success in
+                    if !success {
+                        DispatchQueue.main.async {
+                            // App installed but couldn't open — fall back to picker
+                            presentOpenInMenu(for: sourceURL, target: target)
+                        }
+                    }
+                }
+            } else {
+                presentOpenInMenu(for: sourceURL, target: target)
+            }
             return
         }
 
+        // Remote URL — use scheme directly (existing behaviour)
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~:/"))
         let encodedURL = sourceURL.absoluteString.addingPercentEncoding(withAllowedCharacters: allowed)
             ?? sourceURL.absoluteString
@@ -1622,7 +1667,6 @@ struct DocumentInfoView: View {
                     infoRow("Source", sourceLabel)
                     infoRow("Extension", fileExtension)
                     infoRow("Date Added", dateAdded)
-                    infoRow("Tags", tagsText)
                 }
 
                 Section("Extracted OCR") {
@@ -1766,7 +1810,6 @@ struct DocumentSummaryView: View {
     @State private var isGeneratingSummary = false
     @State private var hasCanceledCurrent = false
     @State private var selectedSummaryLength: SummaryLength = .medium
-    @State private var selectedSummaryContent: DocumentManager.SummaryContent = .general
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var documentManager: DocumentManager
 
@@ -1784,37 +1827,6 @@ struct DocumentSummaryView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     // Summary section
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack(spacing: 8) {
-                            if supportsAISummary {
-                                Menu {
-                                    Section("Length") {
-                                        Picker("Length", selection: $selectedSummaryLength) {
-                                            Text("Short").tag(SummaryLength.short)
-                                            Text("Medium").tag(SummaryLength.medium)
-                                            Text("Long").tag(SummaryLength.long)
-                                        }
-                                    }
-                                    Section("Content") {
-                                        Text("General")
-                                            .foregroundColor(.secondary)
-                                    }
-                                } label: {
-                                    Label(summaryStyleLabel, systemImage: "slider.horizontal.3")
-                                        .labelStyle(.titleAndIcon)
-                                }
-                            }
-                            Spacer()
-                            if supportsAISummary {
-                                if isGeneratingSummary {
-                                    Button("Cancel") { cancelSummary() }
-                                } else if hasUsableSummary {
-                                    Button("Regenerate") { generateAISummary(force: true) }
-                                } else {
-                                    Button("Generate") { generateAISummary(force: false) }
-                                }
-                            }
-                        }
-                        
                         if !supportsAISummary {
                             Text("Summaries are unavailable for ZIP files.")
                                 .foregroundColor(.secondary)
@@ -1849,6 +1861,28 @@ struct DocumentSummaryView: View {
             .navigationTitle("Document Summary")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if supportsAISummary {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Menu {
+                            Picker("Length", selection: $selectedSummaryLength) {
+                                Text("Short").tag(SummaryLength.short)
+                                Text("Medium").tag(SummaryLength.medium)
+                                Text("Long").tag(SummaryLength.long)
+                            }
+                            Divider()
+                            if isGeneratingSummary {
+                                Button("Cancel Generating", role: .destructive) { cancelSummary() }
+                            } else if hasUsableSummary {
+                                Button("Regenerate") { generateAISummary(force: true) }
+                            } else {
+                                Button("Generate") { generateAISummary(force: false) }
+                            }
+                        } label: {
+                            Image(systemName: "gear")
+                                .imageScale(.large)
+                        }
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
                         dismiss()
@@ -1897,24 +1931,6 @@ struct DocumentSummaryView: View {
         !isSummaryPlaceholder(summary)
     }
 
-    private var summaryStyleLabel: String {
-        "\(label(for: selectedSummaryLength)) • \(label(for: selectedSummaryContent))"
-    }
-
-    private func label(for length: SummaryLength) -> String {
-        switch length {
-        case .short: return "Short"
-        case .medium: return "Medium"
-        case .long: return "Long"
-        }
-    }
-
-    private func label(for content: DocumentManager.SummaryContent) -> String {
-        switch content {
-        case .general: return "General"
-        }
-    }
-
     private func isSummaryPlaceholder(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
@@ -1926,8 +1942,7 @@ struct DocumentSummaryView: View {
         documentManager.generateSummary(
             for: currentDoc,
             force: force,
-            length: selectedSummaryLength,
-            content: selectedSummaryContent
+            length: selectedSummaryLength
         )
     }
 

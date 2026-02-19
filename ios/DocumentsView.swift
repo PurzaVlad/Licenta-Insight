@@ -684,10 +684,9 @@ struct DocumentsView: View {
         ToolbarItem(placement: .navigationBarTrailing) {
             Menu {
                 Button {
-                    newFolderName = ""
-                    showingNewFolderDialog = true
+                    showingDocumentPicker = true
                 } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
+                    Label("Import Files", systemImage: "square.and.arrow.down")
                 }
 
                 Button {
@@ -695,11 +694,12 @@ struct DocumentsView: View {
                 } label: {
                     Label("Scan Document", systemImage: "doc.viewfinder")
                 }
-                
+
                 Button {
-                    showingDocumentPicker = true
+                    newFolderName = ""
+                    showingNewFolderDialog = true
                 } label: {
-                    Label("Import Files", systemImage: "square.and.arrow.down")
+                    Label("New Folder", systemImage: "folder.badge.plus")
                 }
                 
                 Button {
@@ -1199,74 +1199,77 @@ struct DocumentsView: View {
 
     private func processImportedFiles(_ urls: [URL]) {
         isProcessing = true
-        var processedCount = 0
 
-        for url in urls {
-            let didStartAccess = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async {
+            var processedDocuments: [Document] = []
 
-            if let document = documentManager.processFile(at: url) {
-                let withFolder = Document(
-                    id: document.id,
-                    title: document.title,
-                    content: document.content,
-                    summary: document.summary,
-                    ocrPages: document.ocrPages,
-                    category: document.category,
-                    keywordsResume: document.keywordsResume,
-                    tags: document.tags,
-                    sourceDocumentId: document.sourceDocumentId,
-                    dateCreated: document.dateCreated,
-                    folderId: activeFolder?.id,
-                    sortOrder: document.sortOrder,
-                    type: document.type,
-                    imageData: document.imageData,
-                    pdfData: document.pdfData,
-                    originalFileData: document.originalFileData
-                )
+            for url in urls {
+                let didStartAccess = url.startAccessingSecurityScopedResource()
+                if let document = self.documentManager.processFile(at: url) {
+                    processedDocuments.append(document)
+                }
+                if didStartAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
 
-                documentManager.addDocument(withFolder)
+            DispatchQueue.main.async {
+                for document in processedDocuments {
+                    let withFolder = Document(
+                        id: document.id,
+                        title: document.title,
+                        content: document.content,
+                        summary: document.summary,
+                        ocrPages: document.ocrPages,
+                        category: document.category,
+                        keywordsResume: document.keywordsResume,
+                        tags: document.tags,
+                        sourceDocumentId: document.sourceDocumentId,
+                        dateCreated: document.dateCreated,
+                        folderId: self.activeFolder?.id,
+                        sortOrder: document.sortOrder,
+                        type: document.type,
+                        imageData: document.imageData,
+                        pdfData: document.pdfData,
+                        originalFileData: document.originalFileData
+                    )
 
-                let fullTextForKeywords = withFolder.content
-                DispatchQueue.global(qos: .utility).async {
-                    let cat = DocumentManager.inferCategory(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
-                    let kw = DocumentManager.makeKeywordsResume(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+                    self.documentManager.addDocument(withFolder)
 
-                    DispatchQueue.main.async {
-                        let current = self.documentManager.getDocument(by: withFolder.id) ?? withFolder
-                        let updated = Document(
-                            id: current.id,
-                            title: current.title,
-                            content: current.content,
-                            summary: current.summary,
-                            ocrPages: current.ocrPages,
-                            category: cat,
-                            keywordsResume: kw,
-                            tags: current.tags,
-                            sourceDocumentId: current.sourceDocumentId,
-                            dateCreated: current.dateCreated,
-                            folderId: current.folderId ?? activeFolder?.id,
-                            sortOrder: current.sortOrder,
-                            type: current.type,
-                            imageData: current.imageData,
-                            pdfData: current.pdfData,
-                            originalFileData: current.originalFileData
-                        )
-                        if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
-                            self.documentManager.documents[idx] = updated
+                    let fullTextForKeywords = withFolder.content
+                    DispatchQueue.global(qos: .utility).async {
+                        let cat = DocumentManager.inferCategory(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+                        let kw = DocumentManager.makeKeywordsResume(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+
+                        DispatchQueue.main.async {
+                            let current = self.documentManager.getDocument(by: withFolder.id) ?? withFolder
+                            let updated = Document(
+                                id: current.id,
+                                title: current.title,
+                                content: current.content,
+                                summary: current.summary,
+                                ocrPages: current.ocrPages,
+                                category: cat,
+                                keywordsResume: kw,
+                                tags: current.tags,
+                                sourceDocumentId: current.sourceDocumentId,
+                                dateCreated: current.dateCreated,
+                                folderId: current.folderId ?? self.activeFolder?.id,
+                                sortOrder: current.sortOrder,
+                                type: current.type,
+                                imageData: current.imageData,
+                                pdfData: current.pdfData,
+                                originalFileData: current.originalFileData
+                            )
+                            if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
+                                self.documentManager.documents[idx] = updated
+                            }
                         }
                     }
                 }
 
-                processedCount += 1
+                self.isProcessing = false
             }
-
-            if didStartAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        DispatchQueue.main.async {
-            self.isProcessing = false
         }
     }
 
@@ -3823,74 +3826,77 @@ struct FolderDocumentsView: View {
 
     private func processImportedFiles(_ urls: [URL]) {
         isProcessing = true
-        var processedCount = 0
 
-        for url in urls {
-            let didStartAccess = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async {
+            var processedDocuments: [Document] = []
 
-            if let document = documentManager.processFile(at: url) {
-                let withFolder = Document(
-                    id: document.id,
-                    title: document.title,
-                    content: document.content,
-                    summary: document.summary,
-                    ocrPages: document.ocrPages,
-                    category: document.category,
-                    keywordsResume: document.keywordsResume,
-                    tags: document.tags,
-                    sourceDocumentId: document.sourceDocumentId,
-                    dateCreated: document.dateCreated,
-                    folderId: folder.id,
-                    sortOrder: document.sortOrder,
-                    type: document.type,
-                    imageData: document.imageData,
-                    pdfData: document.pdfData,
-                    originalFileData: document.originalFileData
-                )
+            for url in urls {
+                let didStartAccess = url.startAccessingSecurityScopedResource()
+                if let document = self.documentManager.processFile(at: url) {
+                    processedDocuments.append(document)
+                }
+                if didStartAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
 
-                documentManager.addDocument(withFolder)
+            DispatchQueue.main.async {
+                for document in processedDocuments {
+                    let withFolder = Document(
+                        id: document.id,
+                        title: document.title,
+                        content: document.content,
+                        summary: document.summary,
+                        ocrPages: document.ocrPages,
+                        category: document.category,
+                        keywordsResume: document.keywordsResume,
+                        tags: document.tags,
+                        sourceDocumentId: document.sourceDocumentId,
+                        dateCreated: document.dateCreated,
+                        folderId: self.folder.id,
+                        sortOrder: document.sortOrder,
+                        type: document.type,
+                        imageData: document.imageData,
+                        pdfData: document.pdfData,
+                        originalFileData: document.originalFileData
+                    )
 
-                let fullTextForKeywords = withFolder.content
-                DispatchQueue.global(qos: .utility).async {
-                    let cat = DocumentManager.inferCategory(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
-                    let kw = DocumentManager.makeKeywordsResume(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+                    self.documentManager.addDocument(withFolder)
 
-                    DispatchQueue.main.async {
-                        let current = self.documentManager.getDocument(by: withFolder.id) ?? withFolder
-                        let updated = Document(
-                            id: current.id,
-                            title: current.title,
-                            content: current.content,
-                            summary: current.summary,
-                            ocrPages: current.ocrPages,
-                            category: cat,
-                            keywordsResume: kw,
-                            tags: current.tags,
-                            sourceDocumentId: current.sourceDocumentId,
-                            dateCreated: current.dateCreated,
-                            folderId: current.folderId ?? self.folder.id,
-                            sortOrder: current.sortOrder,
-                            type: current.type,
-                            imageData: current.imageData,
-                            pdfData: current.pdfData,
-                            originalFileData: current.originalFileData
-                        )
-                        if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
-                            self.documentManager.documents[idx] = updated
+                    let fullTextForKeywords = withFolder.content
+                    DispatchQueue.global(qos: .utility).async {
+                        let cat = DocumentManager.inferCategory(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+                        let kw = DocumentManager.makeKeywordsResume(title: withFolder.title, content: fullTextForKeywords, summary: withFolder.summary)
+
+                        DispatchQueue.main.async {
+                            let current = self.documentManager.getDocument(by: withFolder.id) ?? withFolder
+                            let updated = Document(
+                                id: current.id,
+                                title: current.title,
+                                content: current.content,
+                                summary: current.summary,
+                                ocrPages: current.ocrPages,
+                                category: cat,
+                                keywordsResume: kw,
+                                tags: current.tags,
+                                sourceDocumentId: current.sourceDocumentId,
+                                dateCreated: current.dateCreated,
+                                folderId: current.folderId ?? self.folder.id,
+                                sortOrder: current.sortOrder,
+                                type: current.type,
+                                imageData: current.imageData,
+                                pdfData: current.pdfData,
+                                originalFileData: current.originalFileData
+                            )
+                            if let idx = self.documentManager.documents.firstIndex(where: { $0.id == current.id }) {
+                                self.documentManager.documents[idx] = updated
+                            }
                         }
                     }
                 }
 
-                processedCount += 1
+                self.isProcessing = false
             }
-
-            if didStartAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        DispatchQueue.main.async {
-            self.isProcessing = false
         }
     }
 

@@ -4,10 +4,17 @@ import UIKit
 import OSLog
 
 struct ChatMessage: Identifiable, Equatable {
-    let id = UUID()
+    let id: UUID
     let role: String // "user" or "assistant"
     let text: String
     let date: Date
+
+    init(id: UUID = UUID(), role: String, text: String, date: Date) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.date = date
+    }
 }
 
 struct NativeChatView: View {
@@ -82,6 +89,12 @@ struct NativeChatView: View {
     @State private var showingSettings = false
     @State private var showingScopePicker = false
     @State private var scopedDocumentIds: Set<UUID> = []
+
+    // Conversation history
+    @State private var conversations: [PersistedConversation] = []
+    @State private var currentConversationId: UUID? = nil
+    @State private var showingHistory: Bool = false
+    @State private var isTitlePending: Bool = false
 
     private let inputLineHeight: CGFloat = 22
     private let inputMinLines = 1
@@ -172,6 +185,18 @@ struct NativeChatView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
+                            flushCurrentConversationToDisk()
+                            resetConversation()
+                        } label: {
+                            Label("New Conversation", systemImage: "square.and.pencil")
+                        }
+                        Button {
+                            showingHistory = true
+                        } label: {
+                            Label("History", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                        }
+                        Divider()
+                        Button {
                             showingSettings = true
                         } label: {
                             Label("Preferences", systemImage: "gearshape")
@@ -191,6 +216,27 @@ struct NativeChatView: View {
             .sheet(isPresented: $showingScopePicker) {
                 ScopePickerSheet(selectedIds: $scopedDocumentIds)
                     .environmentObject(documentManager)
+            }
+            .sheet(isPresented: $showingHistory) {
+                ConversationHistorySheet(
+                    conversations: conversations,
+                    onSelect: { conversation in
+                        loadConversation(conversation)
+                        showingHistory = false
+                    },
+                    onDelete: { id in
+                        deleteConversation(id: id)
+                    }
+                )
+            }
+            .onAppear {
+                loadConversationsFromDisk()
+            }
+            .onDisappear {
+                flushCurrentConversationToDisk()
+            }
+            .onChange(of: showingHistory) { showing in
+                if showing { loadConversationsFromDisk() }
             }
             .safeAreaInset(edge: .bottom) {
                 inputBar
@@ -290,6 +336,13 @@ struct NativeChatView: View {
         input = ""
         isGenerating = true
 
+        // Start or update the persisted conversation
+        if currentConversationId == nil {
+            initializeConversation(firstMessage: userMsg)
+        } else {
+            updateConversationMessages()
+        }
+
         startGeneration(question: trimmed)
     }
 
@@ -299,6 +352,8 @@ struct NativeChatView: View {
         isGenerating = false
         activeChatGenerationId = nil
         conversationState.reset()
+        currentConversationId = nil
+        isTitlePending = false
     }
 
     private func stopGeneration() {
@@ -312,6 +367,109 @@ struct NativeChatView: View {
         let generationId = UUID()
         activeChatGenerationId = generationId
         runLLMAnswer(question: question, generationId: generationId)
+    }
+
+    // MARK: - Conversation History
+
+    private func loadConversationsFromDisk() {
+        do {
+            let all = try PersistenceService.shared.loadConversations()
+            let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+            let recent = all.filter { $0.updatedAt >= cutoff }
+            conversations = recent
+            if recent.count < all.count {
+                try? PersistenceService.shared.saveConversations(recent)
+            }
+        } catch {
+            AppLogger.ui.error("Failed to load conversations: \(error.localizedDescription)")
+        }
+    }
+
+    private func flushCurrentConversationToDisk() {
+        guard !messages.isEmpty else { return }
+        updateConversationMessages(updateTimestamp: false)
+    }
+
+    private func initializeConversation(firstMessage: ChatMessage) {
+        let tempTitle = String(firstMessage.text.prefix(50))
+        let now = Date()
+        let conversation = PersistedConversation(
+            id: UUID(),
+            title: tempTitle,
+            messages: [PersistedMessage(id: firstMessage.id, role: firstMessage.role, text: firstMessage.text, date: firstMessage.date)],
+            createdAt: now,
+            updatedAt: now
+        )
+        conversations.append(conversation)
+        currentConversationId = conversation.id
+        isTitlePending = true
+        do {
+            try PersistenceService.shared.saveConversations(conversations)
+        } catch {
+            AppLogger.ui.error("Failed to save new conversation: \(error.localizedDescription)")
+        }
+    }
+
+    private func updateConversationMessages(updateTimestamp: Bool = true) {
+        guard let convId = currentConversationId,
+              let idx = conversations.firstIndex(where: { $0.id == convId }) else { return }
+        let persisted = messages.map { PersistedMessage(id: $0.id, role: $0.role, text: $0.text, date: $0.date) }
+        conversations[idx].messages = persisted
+        if updateTimestamp {
+            conversations[idx].updatedAt = Date()
+        }
+        do {
+            try PersistenceService.shared.saveConversations(conversations)
+        } catch {
+            AppLogger.ui.error("Failed to update conversation: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadConversation(_ conversation: PersistedConversation) {
+        flushCurrentConversationToDisk()
+        messages = conversation.messages.map {
+            ChatMessage(id: $0.id, role: $0.role, text: $0.text, date: $0.date)
+        }
+        currentConversationId = conversation.id
+        isTitlePending = false
+        conversationState.reset()
+    }
+
+    private func deleteConversation(id: UUID) {
+        conversations.removeAll { $0.id == id }
+        if currentConversationId == id {
+            currentConversationId = nil
+            isTitlePending = false
+        }
+        do {
+            try PersistenceService.shared.saveConversations(conversations)
+        } catch {
+            AppLogger.ui.error("Failed to delete conversation: \(error.localizedDescription)")
+        }
+    }
+
+    private func generateConversationTitle(userMessage: String, assistantResponse: String) {
+        guard let convId = currentConversationId,
+              let edgeAI = EdgeAI.shared else { return }
+        let prompt = AIService.shared.buildTitlePrompt(
+            userMessage: userMessage,
+            assistantExcerpt: assistantResponse
+        )
+        edgeAI.generate(prompt, resolver: { [self] result in
+            DispatchQueue.main.async {
+                let raw = (result as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = String(raw.components(separatedBy: "\n").first ?? raw).prefix(80)
+                guard !title.isEmpty else { return }
+                if let idx = self.conversations.firstIndex(where: { $0.id == convId }) {
+                    self.conversations[idx].title = String(title)
+                    do {
+                        try PersistenceService.shared.saveConversations(self.conversations)
+                    } catch {
+                        AppLogger.ui.error("Failed to save conversation title: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }, rejecter: { _, _, _ in })
     }
 
     private func runLLMAnswer(question: String, generationId: UUID) {
@@ -356,6 +514,13 @@ struct NativeChatView: View {
                         assistantResponse: text
                     )
                     self.conversationState.lastRewrittenQuery = result.rewrittenQuery
+
+                    // Save conversation and optionally generate a title
+                    self.updateConversationMessages()
+                    if self.isTitlePending {
+                        self.isTitlePending = false
+                        self.generateConversationTitle(userMessage: question, assistantResponse: text)
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {

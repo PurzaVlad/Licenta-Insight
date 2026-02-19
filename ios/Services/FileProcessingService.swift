@@ -47,13 +47,22 @@ class FileProcessingService {
         switch fileExtension {
         case "pdf":
             content = extractTextFromPDF(url: url)
+            // Detect scanned PDF: PDFKit returned almost no text → fall back to Vision OCR
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).count < 200 {
+                let result = extractTextFromPresentationViaOCR(url: url)
+                if !result.text.isEmpty {
+                    content = result.text
+                    ocrPages = result.pages
+                }
+            }
             documentType = .pdf
         case "txt", "rtf":
             content = extractTextFromTXT(url: url)
             documentType = .text
         case "jpg", "jpeg", "png", "heic":
-            content = "Imported image file. OCR extraction is skipped for image documents."
-            ocrPages = nil
+            let result = extractTextFromPresentationViaOCR(url: url)
+            content = result.text.isEmpty ? "No text found in image." : result.text
+            ocrPages = result.pages
             documentType = .image
         case "docx", "doc":
             content = extractTextFromWordDocument(url: url)
@@ -87,7 +96,7 @@ class FileProcessingService {
             content = extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xls
         case "xlsx":
-            content = "Imported XLSX spreadsheet. OCR extraction is skipped for XLSX documents."
+            content = extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xlsx
         default:
             throw FileProcessingError.unsupportedFormat(fileExtension)
@@ -489,9 +498,9 @@ class FileProcessingService {
 
     private func shouldAutoOCR(for type: Document.DocumentType) -> Bool {
         switch type {
-        case .pdf, .docx, .ppt, .pptx, .xls, .text, .scanned:
+        case .pdf, .docx, .ppt, .pptx, .xls, .xlsx, .image, .text, .scanned:
             return true
-        case .xlsx, .image, .zip:
+        case .zip:
             return false
         }
     }

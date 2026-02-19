@@ -193,12 +193,14 @@ struct TabContainerView: View {
             summaryCoordinator.autoSummarizeOnAppear()
             if modelReady {
                 summaryCoordinator.generateMissingTagsIfNeeded()
+                summaryCoordinator.generateMissingKeywordsIfNeeded()
                 lockManager.lockIfNeeded(force: true)
             }
         }
         .onChange(of: modelReady) { ready in
             if ready {
                 summaryCoordinator.generateMissingTagsIfNeeded()
+                summaryCoordinator.generateMissingKeywordsIfNeeded()
                 finishInitialStartupLoadingIfNeeded()
             } else {
                 startInitialStartupLoadingIfNeeded()
@@ -211,6 +213,7 @@ struct TabContainerView: View {
             }
             if ready {
                 summaryCoordinator.generateMissingTagsIfNeeded()
+                summaryCoordinator.generateMissingKeywordsIfNeeded()
                 finishInitialStartupLoadingIfNeeded()
             } else {
                 startInitialStartupLoadingIfNeeded()

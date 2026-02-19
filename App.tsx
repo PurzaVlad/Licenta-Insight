@@ -456,12 +456,21 @@ useEffect(() => {
 
   const parsePromptControlMarkers = (
     input: string,
-  ): { text: string; noHistory: boolean } => {
+  ): { text: string; noHistory: boolean; nPredict: number | null } => {
     let text = input;
     let noHistory = false;
+    let nPredict: number | null = null;
+
     if (text.includes(NO_HISTORY_MARKER)) {
       noHistory = true;
       text = text.replace(NO_HISTORY_MARKER, '').trimStart();
+    }
+
+    // Extract and strip <<<N_PREDICT:N>>> token embedded by Swift for output length control
+    const nPredictMatch = text.match(/<<<N_PREDICT:(\d+)>>>\n?/);
+    if (nPredictMatch) {
+      nPredict = parseInt(nPredictMatch[1], 10);
+      text = text.replace(/<<<N_PREDICT:\d+>>>\n?/, '').trimStart();
     }
 
     if (text.startsWith(CHAT_DETAIL_MARKER)) {
@@ -470,7 +479,7 @@ useEffect(() => {
       text = text.slice(CHAT_BRIEF_MARKER.length).trimStart();
     }
 
-    return {text, noHistory};
+    return {text, noHistory, nPredict};
   };
 
   const buildNoHistoryMessages = (input: string): Message[] => {
@@ -534,6 +543,9 @@ useEffect(() => {
         const parsedPrompt = parsePromptControlMarkers(prompt);
         let rawPrompt = parsedPrompt.text;
         const noHistory = parsedPrompt.noHistory;
+        const nPredictOverride = parsedPrompt.nPredict;
+        // Structured Swift task (summary, keyword, etc.) — n_predict controls length, not JS caps
+        const isStructuredTask = noHistory && nPredictOverride !== null;
         const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
         const isName = rawPrompt.startsWith(NAME_MARKER);
         const isTag = rawPrompt.startsWith(TAG_MARKER);
@@ -770,7 +782,7 @@ useEffect(() => {
             text = (nameResult?.text ?? '').trim();
             generationHitTokenLimit = inferHitTokenLimit(nameResult, nPredictClamped, text);
           } else if (isTag) {
-            const nPredictClamped = 60;
+            const nPredictClamped = nPredictOverride ?? 60;
             const tagPrompt = formatPrompt(messagesForAI);
             const tagResult = await context.completion(
               {
@@ -788,7 +800,7 @@ useEffect(() => {
             text = (tagResult?.text ?? '').trim();
             generationHitTokenLimit = inferHitTokenLimit(tagResult, nPredictClamped, text);
           } else {
-            const nPredictClamped = DEFAULT_MAX_NEW_TOKENS;
+            const nPredictClamped = nPredictOverride ?? DEFAULT_MAX_NEW_TOKENS;
             const completionParams = {
               prompt: promptText,
               n_predict: nPredictClamped,
@@ -1157,16 +1169,16 @@ useEffect(() => {
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
 
             // New: if it still looks like a keyword dump, force a safe clamp
-            if (!isName && !isTag && looksLikeKeywordDump(text)) {
+            if (!isName && !isTag && !isStructuredTask && looksLikeKeywordDump(text)) {
               text = hardCapChatLength(text, 260);
             }
 
-            if (!isName && !isTag) {
+            if (!isName && !isTag && !isStructuredTask) {
               text = limitToSentenceCount(text, 3);
             }
 
             // New: final hard cap for any case where punctuation is absent
-            if (!isName && !isTag) {
+            if (!isName && !isTag && !isStructuredTask) {
               text = hardCapChatLength(text, 420);
             }
 

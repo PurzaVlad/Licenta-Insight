@@ -17,6 +17,17 @@ class FileStorageService {
         imageCache.totalCostLimit = 50_000_000
         pdfCache.totalCostLimit = 30_000_000
         originalCache.totalCostLimit = 30_000_000
+        setupBaseDirectory()
+    }
+
+    /// Creates the base DocumentFiles directory on first launch and marks it
+    /// as excluded from iCloud backup — these binaries can be re-imported.
+    private func setupBaseDirectory() {
+        let base = baseDirectoryURL()
+        if !fileManager.fileExists(atPath: base.path) {
+            try? fileManager.createDirectory(at: base, withIntermediateDirectories: true)
+        }
+        try? (base as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
     }
 
     // MARK: - Save
@@ -26,6 +37,7 @@ class FileStorageService {
         for (index, data) in imageData.enumerated() {
             let fileURL = dir.appendingPathComponent("image_\(index).dat")
             try data.write(to: fileURL, options: [.atomic])
+            try? (fileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
         }
         // Remove stale image files beyond new count
         do {
@@ -50,6 +62,7 @@ class FileStorageService {
         let dir = try documentDirectory(for: documentId)
         let fileURL = dir.appendingPathComponent("pdf.dat")
         try data.write(to: fileURL, options: [.atomic])
+        try? (fileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
         pdfCache.setObject(data as NSData, forKey: documentId.uuidString as NSString, cost: data.count)
     }
 
@@ -57,6 +70,7 @@ class FileStorageService {
         let dir = try documentDirectory(for: documentId)
         let fileURL = dir.appendingPathComponent("original.dat")
         try data.write(to: fileURL, options: [.atomic])
+        try? (fileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
         originalCache.setObject(data as NSData, forKey: documentId.uuidString as NSString, cost: data.count)
     }
 
@@ -187,6 +201,25 @@ class FileStorageService {
         imageCache.removeAllObjects()
         pdfCache.removeAllObjects()
         originalCache.removeAllObjects()
+    }
+
+    // MARK: - Temp File Cleanup
+
+    /// Removes share-temp files older than 24 hours from the system tmp directory.
+    /// Call once on app startup to prevent accumulation from interrupted share operations.
+    func cleanupShareTempFiles() {
+        let tmpDir = FileManager.default.temporaryDirectory
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: tmpDir,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+        let cutoff = Date().addingTimeInterval(-86400)
+        for url in contents {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, modified < cutoff {
+                try? fileManager.removeItem(at: url)
+            }
+        }
     }
 
     // MARK: - Directory Helpers

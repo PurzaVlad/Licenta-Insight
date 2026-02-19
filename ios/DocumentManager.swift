@@ -3,10 +3,6 @@ import UIKit
 import OSLog
 
 class DocumentManager: ObservableObject {
-    enum SummaryContent: String, CaseIterable {
-        case general
-    }
-
     // Constants
     static let summaryUnavailableMessage = "Not available as source file is still available."
     static let ocrUnavailableWhileSourceExistsMessage = "No OCR because source file is still available."
@@ -243,8 +239,9 @@ class DocumentManager: ObservableObject {
 
         generateSummary(for: updated)
         generateTags(for: updated)
+        generateKeywords(for: updated)
     }
-    
+
     func deleteDocument(_ document: Document) {
         documents.removeAll { $0.id == document.id }
         fileStorageService.deleteAllData(for: document.id)
@@ -260,6 +257,9 @@ class DocumentManager: ObservableObject {
         if updated.tags.isEmpty {
             generateTags(for: updated)
         }
+        if updated.keywordsResume.isEmpty {
+            generateKeywords(for: updated)
+        }
     }
 
     func updateContent(for documentId: UUID, to newContent: String) {
@@ -271,6 +271,12 @@ class DocumentManager: ObservableObject {
     func updateTags(for documentId: UUID, to newTags: [String]) {
         guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
         documents[idx] = documents[idx].with(tags: newTags)
+        saveState()
+    }
+
+    func updateKeywords(for documentId: UUID, to keywords: String) {
+        guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
+        documents[idx] = documents[idx].with(keywordsResume: keywords)
         saveState()
     }
 
@@ -300,19 +306,35 @@ class DocumentManager: ObservableObject {
         if !force && !document.tags.isEmpty { return }
         guard let edgeAI = EdgeAI.shared else { return }
 
-        // Use AIService to build the tag prompt
-        let (prompt, seedText) = aiService.buildTagPrompt(for: document)
+        let prompt = aiService.buildTagPrompt(for: document)
 
         edgeAI.generate(prompt, resolver: { result in
             DispatchQueue.main.async {
                 let raw = (result as? String ?? "")
-
-                // Use AIService to process the tags
-                let finalTags = self.aiService.processTags(rawResponse: raw, document: document, seedText: seedText)
+                let finalTags = self.aiService.processTags(rawResponse: raw, document: document)
                 self.updateTags(for: document.id, to: finalTags)
             }
         }, rejecter: { code, message, _ in
             AppLogger.ai.error("Tag generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
+        })
+    }
+
+    func generateKeywords(for document: Document, force: Bool = false) {
+        if !force && !document.keywordsResume.isEmpty { return }
+        guard let edgeAI = EdgeAI.shared else { return }
+
+        let prompt = aiService.buildKeywordPrompt(for: document)
+
+        edgeAI.generate(prompt, resolver: { result in
+            DispatchQueue.main.async {
+                let raw = result as? String ?? ""
+                let keyword = self.aiService.processKeyword(rawResponse: raw)
+                if !keyword.isEmpty {
+                    self.updateKeywords(for: document.id, to: keyword)
+                }
+            }
+        }, rejecter: { code, message, _ in
+            AppLogger.ai.error("Keyword generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
         })
     }
 
@@ -579,11 +601,9 @@ class DocumentManager: ObservableObject {
     func generateSummary(
         for document: Document,
         force: Bool = false,
-        length: SummaryLength = .medium,
-        content: SummaryContent = .general
+        length: SummaryLength = .medium
     ) {
         if document.type == .zip { return }
-        _ = content
 
         AppLogger.ai.info("Generating summary for '\(document.title)'")
 
@@ -696,6 +716,7 @@ class DocumentManager: ObservableObject {
     }
     
     private func loadDocuments() {
+        fileStorageService.cleanupShareTempFiles()
         do {
             let loaded = try persistenceService.loadDocuments()
             let backfilled = loaded.documents.map { Self.withBackfilledMetadata($0) }
@@ -824,10 +845,8 @@ class DocumentManager: ObservableObject {
 
     private func shouldAutoOCR(for type: Document.DocumentType) -> Bool {
         switch type {
-        case .pdf, .docx, .ppt, .pptx, .xls, .text, .scanned:
+        case .pdf, .docx, .ppt, .pptx, .xls, .xlsx, .image, .text, .scanned:
             return true
-        case .xlsx, .image:
-            return false
         case .zip:
             return false
         }

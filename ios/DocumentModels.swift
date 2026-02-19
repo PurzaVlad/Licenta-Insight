@@ -330,6 +330,16 @@ struct Document: Identifiable, Codable, Hashable, Equatable {
         )
     }
 
+    func with(keywordsResume: String) -> Document {
+        Document(
+            id: id, title: title, content: content, summary: summary,
+            ocrPages: ocrPages, category: category, keywordsResume: keywordsResume,
+            tags: tags, sourceDocumentId: sourceDocumentId, dateCreated: dateCreated,
+            folderId: folderId, sortOrder: sortOrder, type: type,
+            imageData: imageData, pdfData: pdfData, originalFileData: originalFileData
+        )
+    }
+
     func with(ocrPages: [OCRPage]?) -> Document {
         Document(
             id: id, title: title, content: content, summary: summary,
@@ -456,6 +466,23 @@ struct DocumentFolder: Identifiable, Codable, Hashable, Equatable {
         self.parentId = try container.decodeIfPresent(UUID.self, forKey: .parentId)
         self.sortOrder = try container.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
     }
+}
+
+// MARK: - Chat Conversation Persistence
+
+struct PersistedMessage: Identifiable, Codable {
+    let id: UUID
+    let role: String  // "user" or "assistant"
+    let text: String
+    let date: Date
+}
+
+struct PersistedConversation: Identifiable, Codable {
+    let id: UUID
+    var title: String
+    var messages: [PersistedMessage]
+    let createdAt: Date
+    var updatedAt: Date
 }
 
 func splitDisplayTitle(_ title: String) -> (base: String, ext: String) {
