@@ -13,6 +13,11 @@ func formatMarkdownText(_ text: String) -> AttributedString {
     processedText = processedText.replacingOccurrences(of: ">>>", with: "")
     processedText = processedText.replacingOccurrences(of: "<<<", with: "")
 
+    // Ensure list markers always start on their own line (even if the model puts them inline).
+    // Only match "- " (hyphen), NOT "* " — asterisks are used in **bold** and *italic* markers.
+    processedText = processedText.replacingOccurrences(of: "([^\\n])(- )", with: "$1\n- ", options: .regularExpression)
+    processedText = processedText.replacingOccurrences(of: "([^\\n])(\\d+\\. )", with: "$1\n$2", options: .regularExpression)
+
     // Convert markdown list markers to bullet points (line-start only)
     processedText = processedText.replacingOccurrences(of: "(?m)^\\* ", with: "• ", options: .regularExpression)
     processedText = processedText.replacingOccurrences(of: "(?m)^- ", with: "• ", options: .regularExpression)
@@ -62,37 +67,34 @@ func renderMarkdownLines(_ text: String) -> AttributedString {
                 // Horizontal rule → blank separator line
                 attributed = AttributedString("")
 
-            } else if lineText.hasPrefix("#### ") {
-                var h = AttributedString(String(lineText.dropFirst(5)))
+            } else if trimmed.hasPrefix("#### ") {
+                var h = AttributedString(String(trimmed.dropFirst(5)))
                 h.font = .system(size: 13, weight: .semibold)
                 attributed = h
 
-            } else if lineText.hasPrefix("### ") {
-                var h = AttributedString(String(lineText.dropFirst(4)))
+            } else if trimmed.hasPrefix("### ") {
+                var h = AttributedString(String(trimmed.dropFirst(4)))
                 h.font = .system(size: 15, weight: .semibold)
                 attributed = h
 
-            } else if lineText.hasPrefix("## ") {
-                var h = AttributedString(String(lineText.dropFirst(3)))
+            } else if trimmed.hasPrefix("## ") {
+                var h = AttributedString(String(trimmed.dropFirst(3)))
                 h.font = .system(size: 17, weight: .semibold)
                 attributed = h
 
-            } else if lineText.hasPrefix("# ") {
-                var h = AttributedString(String(lineText.dropFirst(2)))
+            } else if trimmed.hasPrefix("# ") {
+                var h = AttributedString(String(trimmed.dropFirst(2)))
                 h.font = .system(size: 20, weight: .bold)
                 attributed = h
 
-            } else if lineText.hasPrefix("> ") {
-                // Blockquote — indent and parse inline markdown
-                let quote = String(lineText.dropFirst(2))
-                do {
-                    attributed = try AttributedString(markdown: "  " + quote, options: mdOptions)
-                } catch {
-                    attributed = AttributedString("  " + quote)
-                }
+            } else if trimmed.hasPrefix("> ") {
+                // Blockquote — visual │ prefix + inline markdown
+                let quote = String(trimmed.dropFirst(2))
+                let body = (try? AttributedString(markdown: quote, options: mdOptions)) ?? AttributedString(quote)
+                attributed = AttributedString("│ ") + body
 
             } else {
-                // Default: inline markdown (bold, italic, code, numbered lists, plain text)
+                // Default: inline markdown (bold, italic, `code`, numbered lists, bullets, plain text)
                 do {
                     attributed = try AttributedString(markdown: lineText, options: mdOptions)
                 } catch {

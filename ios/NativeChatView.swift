@@ -2904,7 +2904,6 @@ private struct MessageRow: View {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                         if block.isQuoted {
                             Text(renderMarkdownLines(block.text))
-                                .font(.system(size: 15))
                                 .foregroundStyle(Color.primary)
                                 .padding(10)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2914,7 +2913,6 @@ private struct MessageRow: View {
                             let trimmed = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
                             if !trimmed.isEmpty {
                                 Text(renderMarkdownLines(trimmed))
-                                    .font(.system(size: 18))
                                     .foregroundStyle(Color.primary)
                             }
                         }
@@ -2930,7 +2928,6 @@ private struct MessageRow: View {
                 )
             } else {
                 Text(formatMarkdownText(msg.text))
-                    .font(.system(size: 18))
                     .foregroundStyle(msg.role == "user" ? Color.white : Color.primary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)

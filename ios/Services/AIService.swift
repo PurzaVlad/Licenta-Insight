@@ -176,44 +176,47 @@ class AIService {
     private func buildSummaryPrompt(input: String, length: SummaryLength, archetype: String, docLength: Int, facts: ExtractedFacts) -> String {
         let nPredict = nPredictToken(length: length, docLength: docLength)
 
-        let archetypeHint = archetype.isEmpty ? "" : "This is a \(archetype).\n"
         let factsSection = facts.isEmpty ? "" : "DOCUMENT FACTS:\n\(facts.formatted())\n\n"
 
         let instruction: String
         switch length {
         case .short:
             instruction = """
-            Write a concise summary of this document. The DOCUMENT FACTS above are verified anchors — \
-            use them for accuracy but weave them naturally into your writing, don't list them verbatim. \
-            Cover what the document is, who's involved, and the most critical specifics. \
+            Use Markdown: **bold** for key names, numbers, and important terms. \
+            Write a concise summary. Cover what the document is, who's involved, and the most critical specifics. \
+            DOCUMENT FACTS (if present) are verified — weave them naturally into your writing. \
             Plain language. No preamble.
             """
         case .medium:
             instruction = """
-            Write a detailed, informative summary of this document. The DOCUMENT FACTS above are verified anchors \
-            for accuracy — weave them naturally into your writing rather than listing them. \
-            Cover what this document is, who's involved, the key terms and specifics, and what it means. \
-            Let the content and complexity of the document guide the depth and structure of your response. \
-            Plain language anyone can understand. No preamble.
+            Use Markdown: **bold** for key names, numbers, and important terms; \
+            ## headings for major sections when appropriate. \
+            Write a detailed, informative summary. DOCUMENT FACTS (if present) are verified — \
+            weave them naturally into your writing. Cover what this document is, who's involved, \
+            the key terms and specifics, and what it means. Plain language. No preamble.
             """
         case .long:
             instruction = """
-            Write a thorough, in-depth summary of this document. The DOCUMENT FACTS above are verified anchors \
-            for accuracy — weave them naturally into your writing rather than listing them. \
-            Cover every significant party and their role, every important date and deadline, every key amount \
-            and obligation, the conditions and terms that matter, and what this document means in practice. \
-            Let the document's own structure and complexity dictate how deep you go and how you organize the summary. \
+            Use Markdown: ## headings for major sections, **bold** for key names, dates, amounts, \
+            and important terms, and - bullet lists for grouped items. \
+            Write a thorough, in-depth summary. DOCUMENT FACTS (if present) are verified — \
+            weave them naturally into your writing. Cover every significant party and their role, \
+            every important date and deadline, every key amount and obligation, \
+            the conditions and terms that matter, and what this document means in practice. \
             Plain language. No preamble.
             """
         }
 
+        let archetypeLine = archetype.isEmpty ? "" : "\nDocument type: \(archetype)."
+
         return """
         <<<NO_HISTORY>>>
         \(nPredict)
-        \(archetypeHint)\(factsSection)DOCUMENT:
-        \(input)
+        SYSTEM:
+        \(instruction)\(archetypeLine)
 
-        \(instruction)
+        \(factsSection)DOCUMENT:
+        \(input)
         """
     }
 

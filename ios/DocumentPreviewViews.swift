@@ -97,7 +97,6 @@ struct DocumentDetailView: View {
                                     }
                                     
                                     Text(formatMarkdownText(document.summary))
-                                        .font(.body)
                                         .foregroundColor(.primary)
                                         .padding()
                                         .background(Color(.secondarySystemBackground))
@@ -156,7 +155,6 @@ struct DocumentDetailView: View {
                                 .font(.headline)
                             
                             Text(formatMarkdownText(document.summary))
-                                .font(.body)
                                 .foregroundColor(.secondary)
                                 .padding()
                                 .background(Color(.secondarySystemBackground))
@@ -762,6 +760,7 @@ struct SearchablePDFView: UIViewRepresentable {
         weak var pdfView: PDFView?
         var onPageChanged: ((Int, Int) -> Void)?
         private var pageChangeObserver: NSObjectProtocol?
+        private var retintTimer: Timer?
 
         init(parent: SearchablePDFView) {
             self.parent = parent
@@ -793,18 +792,24 @@ struct SearchablePDFView: UIViewRepresentable {
             pdfView.tintColor = primaryTintColor()
             applyPrimaryTint(to: pdfView)
             pdfView.findInteraction.presentFindNavigator(showingReplace: false)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak pdfView] in
-                guard let pdfView else { return }
+            startRetintTimer()
+        }
+
+        private func startRetintTimer() {
+            retintTimer?.invalidate()
+            var count = 0
+            retintTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
+                guard let self, let pdfView = self.pdfView else { timer.invalidate(); return }
                 retintNativeFindNavigator(from: pdfView)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak pdfView] in
-                guard let pdfView else { return }
-                retintNativeFindNavigator(from: pdfView)
+                count += 1
+                if count >= 25 { timer.invalidate() } // ~2 seconds total
             }
         }
 
         /// Dismiss the native system find panel.
         func dismissFindNavigator() {
+            retintTimer?.invalidate()
+            retintTimer = nil
             guard let pdfView else { return }
             pdfView.findInteraction.dismissFindNavigator()
         }
@@ -820,6 +825,7 @@ struct SearchablePDFView: UIViewRepresentable {
         }
 
         deinit {
+            retintTimer?.invalidate()
             if let pageChangeObserver {
                 NotificationCenter.default.removeObserver(pageChangeObserver)
             }
@@ -918,8 +924,12 @@ private func applyPrimaryTint(to view: UIView) {
 }
 
 private func retintNativeFindNavigator(from sourceView: UIView) {
-    guard let window = sourceView.window else { return }
-    retintFindViews(in: window, inFindContext: false)
+    guard let windowScene = sourceView.window?.windowScene else { return }
+    let tint = primaryTintColor()
+    for window in windowScene.windows {
+        window.tintColor = tint
+        retintFindViews(in: window, inFindContext: false)
+    }
 }
 
 private func retintFindViews(in view: UIView, inFindContext: Bool) {
@@ -928,15 +938,13 @@ private func retintFindViews(in view: UIView, inFindContext: Bool) {
         || typeName.contains("find")
         || typeName.contains("search")
         || typeName.contains("navigator")
+        || typeName.contains("panel")
 
     if nowInFindContext {
         let tint = primaryTintColor()
         view.tintColor = tint
 
-        if let button = view as? UIButton {
-            button.tintColor = tint
-            button.setTitleColor(tint, for: .normal)
-        } else if let textField = view as? UITextField {
+        if let textField = view as? UITextField {
             textField.tintColor = tint
         } else if let searchBar = view as? UISearchBar {
             searchBar.tintColor = tint
