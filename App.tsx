@@ -14,8 +14,6 @@ type Message = {
   timestamp: number;
 };
 
-type SummaryLengthOption = 'short' | 'medium' | 'long';
-type SummaryContentOption = 'general' | 'finance' | 'legal' | 'academic' | 'medical';
 
 const MODEL_FILENAME = 'Qwen2.5-1.5B-Instruct.Q4_K_M.gguf';
 const MODEL_URL =
@@ -24,7 +22,6 @@ const MODEL_DOWNLOAD_STATE_KEY = 'edgeai:model_download_state';
 const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
 const LLAMA_N_CTX = 2048;
 const DEFAULT_MAX_NEW_TOKENS = 160;
-const SUMMARY_MAX_NEW_TOKENS = 220;
 const DEFAULT_TEMPERATURE = 0.2;
 const CHAT_TEMPERATURE = 0.15;
 const DEFAULT_TOP_P = 0.9;
@@ -33,72 +30,6 @@ const CHAT_REPEAT_PENALTY = 1.15;
 const MAX_CHAT_HISTORY_MESSAGES = 3;
 const MIN_MODEL_FILE_SIZE_BYTES = 200 * 1024 * 1024;
 
-const SUMMARY_PROMPT_COMMON = `
-  You will receive extracted text from a document.
-  Write a concise summary of the key points in plain sentences.
-
-  Rules:
-  Output only the summary text.
-  English only. Always respond in English.
-  If the input is not English, translate the summary to English.
-  Do not output any non-English words or sentences.
-  No title, no label, no introduction, no headings, no bullet points.
-  Do not repeat any idea.
-  Do not rephrase earlier sentences.
-  Do not add information not explicitly stated.
-  Omit unclear details.
-  `;
-
-const SUMMARY_LENGTH_RULES: Record<SummaryLengthOption, string> = {
-  short: `
-  2-4 sentences max.
-  ~60-100 words.
-  Prefer only the highest-signal points.
-  `,
-  medium: `
-  4–7 sentences max.
-  ~120–180 words.
-  If more info exists, prefer omission.
-  Keep it short.
-  `,
-  long: `
-  8-12 sentences max.
-  ~220-320 words.
-  Include more key details while avoiding repetition.
-  `,
-};
-
-const SUMMARY_CONTENT_RULES: Record<SummaryContentOption, string> = {
-  general: `
-  Provide a neutral general summary of the document's main points.
-  Do not adopt a domain-specific style or persona.
-  `,
-  finance: `
-  Focus on financial information first.
-  Prioritize concrete numbers and financial facts: amounts, currencies, rates, KPIs, trends, costs, revenues, margins, forecasts, and financial risks.
-  If exact numbers are present, include them.
-  `,
-  legal: `
-  Focus on legal meaning and constraints in the document.
-  Prioritize parties, obligations, rights, prohibitions, conditions, deadlines, liabilities, remedies, and compliance requirements.
-  Mention legal constraints only if they are explicitly present.
-  `,
-  academic: `
-  Explain the document in technically specific terms.
-  Prioritize objective, methods/approach, data/evidence, key concepts, findings/results, assumptions, and limitations.
-  Use precise technical wording based only on the source text.
-  `,
-  medical: `
-  Focus on clinical and medical facts in the document.
-  Prioritize patient/context details, findings, diagnosis or differential, treatment/medications, dosages, timelines, outcomes, contraindications, precautions, and follow-up instructions.
-  If values or measurements are present, include the exact numbers and units.
-  Mention medical constraints or cautions only if explicitly stated.
-  `,
-};
-
-const SUMMARY_PROMPT_FOOTER = `
-  Stop after the last sentence.
-  `;
 
 const TAG_SYSTEM_PROMPT = `
   You will receive a short excerpt from a document.
@@ -128,56 +59,10 @@ const CONTINUATION_SYSTEM_PROMPT =
 const CHAT_DETAIL_MARKER = '<<<CHAT_DETAIL>>>';
 const CHAT_BRIEF_MARKER = '<<<CHAT_BRIEF>>>';
 const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
-const SUMMARY_MARKER = '<<<SUMMARY_REQUEST>>>';
-const SUMMARY_STYLE_PREFIX = '<<<SUMMARY_STYLE:';
+const SUMMARY_TASK_MARKER = '<<<SUMMARY_TASK>>>';
 const NAME_MARKER = '<<<NAME_REQUEST>>>';
 const TAG_MARKER = '<<<TAG_REQUEST>>>';
 
-const parseSummaryStylePayload = (
-  raw: string,
-): { text: string; length: SummaryLengthOption; content: SummaryContentOption } => {
-  const fallback = {text: raw.trim(), length: 'medium' as SummaryLengthOption, content: 'general' as SummaryContentOption};
-  const trimmed = raw.trimStart();
-  if (!trimmed.startsWith(SUMMARY_STYLE_PREFIX)) {
-    return fallback;
-  }
-
-  const endIndex = trimmed.indexOf('>>>');
-  if (endIndex <= SUMMARY_STYLE_PREFIX.length) {
-    return fallback;
-  }
-
-  const header = trimmed.slice(SUMMARY_STYLE_PREFIX.length, endIndex);
-  const rest = trimmed.slice(endIndex + 3).trimStart();
-  let length: SummaryLengthOption = 'medium';
-  let content: SummaryContentOption = 'general';
-
-  for (const chunk of header.split(';')) {
-    const [rawKey, rawValue] = chunk.split('=');
-    const key = (rawKey ?? '').trim().toLowerCase();
-    const value = (rawValue ?? '').trim().toLowerCase();
-
-    if (key === 'length' && (value === 'short' || value === 'medium' || value === 'long')) {
-      length = value;
-    } else if (
-      key === 'content' &&
-      (value === 'general' || value === 'finance' || value === 'legal' || value === 'academic' || value === 'medical')
-    ) {
-      content = value;
-    }
-  }
-
-  return {text: rest, length, content};
-};
-
-const buildSummarySystemPrompt = (
-  length: SummaryLengthOption,
-  content: SummaryContentOption,
-): string => {
-  const contentRules = SUMMARY_CONTENT_RULES[content];
-  const lengthRules = SUMMARY_LENGTH_RULES[length];
-  return `${SUMMARY_PROMPT_COMMON}${contentRules}${lengthRules}${SUMMARY_PROMPT_FOOTER}`;
-};
 
 const INITIAL_CONVERSATION: Message[] = [
   {
@@ -456,14 +341,20 @@ useEffect(() => {
 
   const parsePromptControlMarkers = (
     input: string,
-  ): { text: string; noHistory: boolean; nPredict: number | null } => {
+  ): { text: string; noHistory: boolean; nPredict: number | null; isSummaryTask: boolean } => {
     let text = input;
     let noHistory = false;
     let nPredict: number | null = null;
+    let isSummaryTask = false;
 
     if (text.includes(NO_HISTORY_MARKER)) {
       noHistory = true;
       text = text.replace(NO_HISTORY_MARKER, '').trimStart();
+    }
+
+    if (text.includes(SUMMARY_TASK_MARKER)) {
+      isSummaryTask = true;
+      text = text.replace(SUMMARY_TASK_MARKER, '').trimStart();
     }
 
     // Extract and strip <<<N_PREDICT:N>>> token embedded by Swift for output length control
@@ -479,7 +370,7 @@ useEffect(() => {
       text = text.slice(CHAT_BRIEF_MARKER.length).trimStart();
     }
 
-    return {text, noHistory, nPredict};
+    return {text, noHistory, nPredict, isSummaryTask};
   };
 
   const buildNoHistoryMessages = (input: string): Message[] => {
@@ -516,7 +407,7 @@ useEffect(() => {
 
   const isUserPromptText = (raw: string): boolean => {
     const {text} = parsePromptControlMarkers(raw);
-    return !(text.startsWith(SUMMARY_MARKER) || text.startsWith(NAME_MARKER) || text.startsWith(TAG_MARKER));
+    return !(text.startsWith(NAME_MARKER) || text.startsWith(TAG_MARKER));
   };
 
   const processQueue = async () => {
@@ -544,40 +435,24 @@ useEffect(() => {
         let rawPrompt = parsedPrompt.text;
         const noHistory = parsedPrompt.noHistory;
         const nPredictOverride = parsedPrompt.nPredict;
+        const isSummaryTask = parsedPrompt.isSummaryTask;
         // Structured Swift task (summary, keyword, etc.) — n_predict controls length, not JS caps
         const isStructuredTask = noHistory && nPredictOverride !== null;
-        const isSummary = rawPrompt.startsWith(SUMMARY_MARKER);
         const isName = rawPrompt.startsWith(NAME_MARKER);
         const isTag = rawPrompt.startsWith(TAG_MARKER);
-        let summaryLength: SummaryLengthOption = 'medium';
-        let summaryContent: SummaryContentOption = 'general';
-        const userContent = isSummary
-          ? (() => {
-              const parsed = parseSummaryStylePayload(rawPrompt.slice(SUMMARY_MARKER.length).trim());
-              summaryLength = parsed.length;
-              summaryContent = parsed.content;
-              return parsed.text;
-            })()
-          : isName
+        const userContent = isName
           ? rawPrompt.slice(NAME_MARKER.length).trim()
           : isTag
           ? rawPrompt.slice(TAG_MARKER.length).trim()
           : rawPrompt;
-        const summaryContentMaxChars = 50000;
-        const modeLabel: 'summary' | 'name' | 'tag' | 'chat' = isSummary ? 'summary' : isName ? 'name' : isTag ? 'tag' : 'chat';
+        const modeLabel: 'summary' | 'name' | 'tag' | 'chat' = isSummaryTask ? 'summary' : isName ? 'name' : isTag ? 'tag' : 'chat';
         const jobType = modeLabel;
-        console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length, 'summary style:', `${summaryLength}/${summaryContent}`);
+        console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
         currentJobRef.current = { requestId, prompt, type: modeLabel };
         abortCurrentRef.current = false;
-        
-        const userMessage: Message = { role: 'user', content: userContent, timestamp: Date.now() };
-        const summarySystemPrompt = buildSummarySystemPrompt(summaryLength, summaryContent);
-        const summaryChunkPrompt = `${summarySystemPrompt}\n  Extract only the most important points; ignore minor details.`;
-        const summaryCombinePrompt = `${summarySystemPrompt}\n  Merge and deduplicate; prefer omission over repetition.`;
 
-        const messagesForAI: Message[] = isSummary
-          ? [{ role: 'system', content: summarySystemPrompt, timestamp: Date.now() }, userMessage]
-          : isName
+        const userMessage: Message = { role: 'user', content: userContent, timestamp: Date.now() };
+        const messagesForAI: Message[] = isName
           ? [userMessage]
           : isTag
           ? [{ role: 'system', content: TAG_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
@@ -617,90 +492,14 @@ useEffect(() => {
             return approxCount >= Math.max(24, Math.floor(nPredict * 0.9));
           };
 
-          const runSummary = async (summaryText: string, nPredict: number): Promise<string> => {
-            const nPredictClamped = Math.min(nPredict, SUMMARY_MAX_NEW_TOKENS);
-            const summaryMessages: Message[] = [
-              { role: 'system', content: summaryChunkPrompt, timestamp: Date.now() },
-              { role: 'user', content: summaryText, timestamp: Date.now() }
-            ];
-            const summaryPrompt = formatPrompt(summaryMessages);
-            const summaryResult = await context.completion(
-              {
-                prompt: summaryPrompt,
-                n_predict: nPredictClamped,
-                temperature: DEFAULT_TEMPERATURE,
-                top_p: DEFAULT_TOP_P,
-                repeat_penalty: DEFAULT_REPEAT_PENALTY,
-                repeat_last_n: 256,
-                min_p: 0.05,
-                stop: stopTokens
-              },
-              () => {}
-            );
-
-            let out = (summaryResult?.text ?? '').trim();
-            out = out.replace(/\b(\w+)\b(?:\s+\1){5,}/gi, '$1');
-            generationHitTokenLimit = inferHitTokenLimit(summaryResult, nPredictClamped, out);
-            return out;
-          };
-
-          const runSummaryFinalCombine = async (summaryText: string, nPredict: number): Promise<string> => {
-            const nPredictClamped = Math.min(nPredict, SUMMARY_MAX_NEW_TOKENS);
-            const summaryMessages: Message[] = [
-              { role: 'system', content: summaryCombinePrompt, timestamp: Date.now() },
-              { role: 'user', content: summaryText, timestamp: Date.now() }
-            ];
-            const summaryPrompt = formatPrompt(summaryMessages);
-            const summaryResult = await context.completion(
-              {
-                prompt: summaryPrompt,
-                n_predict: nPredictClamped,
-                temperature: DEFAULT_TEMPERATURE,
-                top_p: DEFAULT_TOP_P,
-                repeat_penalty: DEFAULT_REPEAT_PENALTY,
-                repeat_last_n: 256,
-                min_p: 0.05,
-                stop: stopTokens
-              },
-              () => {}
-            );
-
-            let out = (summaryResult?.text ?? '').trim();
-            out = out.replace(/\b(\w+)\b(?:\s+\1){5,}/gi, '$1');
-            generationHitTokenLimit = inferHitTokenLimit(summaryResult, nPredictClamped, out);
-            return out;
-          };
-
-          const combineSummaries = async (summaries: string[]): Promise<string> => {
-            const items = summaries.map(s => s.trim()).filter(Boolean);
-            if (items.length === 0) return '';
-            if (items.length === 1) return items[0];
-            if (items.length > 6) {
-              const intermediates: string[] = [];
-              for (let i = 0; i < items.length; i += 5) {
-                const slice = items.slice(i, i + 5);
-                const combined = await combineSummaries(slice);
-                if (combined) intermediates.push(combined);
-              }
-              return combineSummaries(intermediates);
-            }
-
-            const combined = items.join('\n');
-            const finalPrompt =
-              `Combine the following chunk summaries into one concise summary in plain sentences. ` +
-              `No bullets, no headings, no labels. Do not repeat ideas.\n\n` +
-              combined;
-            return runSummaryFinalCombine(finalPrompt, 420);
-          };
-
           const runContinuation = async (draftText: string, nPredict: number): Promise<string> => {
             const continuationMessages: Message[] = [
               { role: 'system', content: CONTINUATION_SYSTEM_PROMPT, timestamp: Date.now() },
               { role: 'user', content: draftText, timestamp: Date.now() }
             ];
             const continuationPrompt = formatPrompt(continuationMessages);
-            const continuationTemperature = isSummary ? DEFAULT_TEMPERATURE : CHAT_TEMPERATURE;
-            const continuationRepeatPenalty = isSummary ? DEFAULT_REPEAT_PENALTY : CHAT_REPEAT_PENALTY;
+            const continuationTemperature = CHAT_TEMPERATURE;
+            const continuationRepeatPenalty = CHAT_REPEAT_PENALTY;
             const continuationResult = await context.completion(
               {
                 prompt: continuationPrompt,
@@ -721,49 +520,7 @@ useEffect(() => {
           };
 
           let text = "";
-          if (isSummary) {
-            const summaryInput =
-              userContent.length > summaryContentMaxChars
-                ? userContent.slice(0, summaryContentMaxChars)
-                : userContent;
-            const chunkSize = 4000;
-            const chunks: string[] = [];
-            const paragraphs = summaryInput.split(/\n\s*\n/);
-            let current = '';
-            for (const para of paragraphs) {
-              const trimmed = para.trim();
-              if (!trimmed) continue;
-              const candidate = current ? `${current}\n\n${trimmed}` : trimmed;
-              if (candidate.length > chunkSize && current) {
-                chunks.push(current);
-                current = trimmed;
-              } else {
-                current = candidate;
-              }
-            }
-            if (current) {
-              chunks.push(current);
-            }
-
-            if (chunks.length <= 1) {
-              text = await runSummary(summaryInput, SUMMARY_MAX_NEW_TOKENS);
-            } else {
-              const chunkSummaries: string[] = [];
-              for (let i = 0; i < chunks.length; i++) {
-                if (abortCurrentRef.current) break;
-                const chunk = chunks[i];
-                const chunkSummary = await runSummary(chunk, 192);
-                if (abortCurrentRef.current) break;
-                if (chunkSummary) {
-                  chunkSummaries.push(chunkSummary);
-                }
-              }
-
-              if (!abortCurrentRef.current) {
-                text = await combineSummaries(chunkSummaries);
-              }
-            }
-          } else if (isName) {
+          if (isName) {
             const nPredictClamped = 50;
             const namePrompt = formatPrompt(messagesForAI);
             const nameResult = await context.completion(
@@ -801,15 +558,18 @@ useEffect(() => {
             generationHitTokenLimit = inferHitTokenLimit(tagResult, nPredictClamped, text);
           } else {
             const nPredictClamped = nPredictOverride ?? DEFAULT_MAX_NEW_TOKENS;
+            const summaryStopSeqs = isSummaryTask
+              ? ['\nSummary', '\nNote:', '\nI ', '\nHere', '\nSure', '```']
+              : [];
             const completionParams = {
               prompt: promptText,
               n_predict: nPredictClamped,
-              temperature: CHAT_TEMPERATURE,
+              temperature: isSummaryTask ? 0.3 : CHAT_TEMPERATURE,
               top_p: DEFAULT_TOP_P,
-              repeat_penalty: CHAT_REPEAT_PENALTY,
+              repeat_penalty: isSummaryTask ? DEFAULT_REPEAT_PENALTY : CHAT_REPEAT_PENALTY,
               repeat_last_n: 256,
               min_p: 0.05,
-              stop: stopTokens
+              stop: [...stopTokens, ...summaryStopSeqs],
             };
 
             console.log('[EdgeAI] Calling context.completion with params:', Object.keys(completionParams));
@@ -1143,16 +903,25 @@ useEffect(() => {
             .replace(/<\|eot_id\|>/g, '')
             .replace(/^\s*model\s*\n/i, '')
             .trim();
-          if (isSummary && !abortCurrentRef.current) {
+          if (isSummaryTask && !abortCurrentRef.current) {
             text = stripSummaryHeading(text);
             text = stripLeadingMarkdownMarkers(text).trimStart();
           }
-          
-          if (isSummary && !abortCurrentRef.current) {
+
+          if (isSummaryTask && !abortCurrentRef.current) {
+            // Strip preamble slipthrough patterns
+            text = text.replace(/^\s*(Here(?:\s+(?:is|are|follows))?|Sure[,!]?|The following[:\s]|This document[:\s]|Below[:\s])[^\n]*[\n:]\s*/i, '');
             text = squashWordStutter(text);
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
             text = trimRepeatedTail(text);
             text = await finishIfCut(text, generationHitTokenLimit, 2);
+            // Truncate at last sentence boundary if output significantly exceeds budget
+            if (isSummaryTask && nPredictOverride !== null) {
+              const budgetChars = nPredictOverride * 7;
+              if (text.length > budgetChars) {
+                text = trimToLastCompleteSentence(text.slice(0, budgetChars));
+              }
+            }
             text = text.trim();
           } else {
             // Non-summary (chat) cleanup
@@ -1188,7 +957,7 @@ useEffect(() => {
           // Remove any leftover chat/template markers (failsafe).
           text = text.replace(/<\|[^|>]*\|>/g, '').trim();
 
-          if (abortCurrentRef.current && isSummary) {
+          if (abortCurrentRef.current && isSummaryTask) {
             abortCurrentRef.current = false;
             continue;
           }
@@ -1201,7 +970,7 @@ useEffect(() => {
 
           if (!text) text = "(No output)";
 
-          if (!isSummary && !isName && !noHistory) {
+          if (!isName && !noHistory) {
             const isFallback =
               text.trim() === "Not specified in the documents.";
 
@@ -1223,7 +992,7 @@ useEffect(() => {
         } catch (e: any) {
           console.error('[EdgeAI] Generation error:', e);
           const errorMsg = e?.message ?? 'Unknown error';
-          if (abortCurrentRef.current && isSummary) {
+          if (abortCurrentRef.current && isSummaryTask) {
             abortCurrentRef.current = false;
           } else {
             EdgeAI.rejectRequest(requestId, 'GEN_ERR', errorMsg);
@@ -1259,9 +1028,8 @@ useEffect(() => {
     console.log('[EdgeAI] Adding to queue. Current queue length:', queueRef.current.length);
     const normalizedPrompt = parsePromptControlMarkers(String(prompt)).text;
     const isName = normalizedPrompt.startsWith(NAME_MARKER);
-    const isSummary = normalizedPrompt.startsWith(SUMMARY_MARKER);
     const isTag = normalizedPrompt.startsWith(TAG_MARKER);
-    const isUserPrompt = !isSummary && !isName && !isTag;
+    const isUserPrompt = !isName && !isTag;
     let enqueued = false;
 
     if (isUserPrompt) {

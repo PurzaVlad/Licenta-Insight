@@ -247,80 +247,9 @@ struct DocumentDetailView: View {
     private func generateAISummary() {
         AppLogger.ui.debug("Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
-        
-        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document in English only. Focus on the main topics, key points, and important details:\n\n\(document.content)"
-        
-        AppLogger.ui.debug("Sending summary request, content length: \(document.content.count)")
-        EdgeAI.shared?.generate(prompt, resolver: { result in
-            AppLogger.ui.debug("Got summary result: \(String(describing: result))")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                if let result = result as? String, !result.isEmpty {
-                    // Show the summary in an alert
-                    let alert = UIAlertController(
-                        title: "AI Summary",
-                        message: result,
-                        preferredStyle: .alert
-                    )
-                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                    
-                    // Present from the current window
-                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                       let window = windowScene.windows.first,
-                       let rootViewController = window.rootViewController {
-                        var presentingController = rootViewController
-                        while let presented = presentingController.presentedViewController {
-                            presentingController = presented
-                        }
-                        presentingController.present(alert, animated: true)
-                    }
-                } else {
-                    AppLogger.ui.warning("DocumentRowView: Empty or nil summary result")
-                    let alert = UIAlertController(
-                        title: "Error",
-                        message: "Empty response from AI. Please try again.",
-                        preferredStyle: .alert
-                    )
-                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                    
-                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                       let window = windowScene.windows.first,
-                       let rootViewController = window.rootViewController {
-                        var presentingController = rootViewController
-                        while let presented = presentingController.presentedViewController {
-                            presentingController = presented
-                        }
-                        presentingController.present(alert, animated: true)
-                    }
-                }
-            }
-        }, rejecter: { code, message, error in
-            AppLogger.ui.error("Summary generation failed - Code: \(code ?? "nil"), Message: \(message ?? "nil")")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                // Handle error
-                let alert = UIAlertController(
-                    title: "Error",
-                    message: "Failed to generate summary: \(message ?? "Unknown error")",
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let window = windowScene.windows.first,
-                   let rootViewController = window.rootViewController {
-                    var presentingController = rootViewController
-                    while let presented = presentingController.presentedViewController {
-                        presentingController = presented
-                    }
-                    presentingController.present(alert, animated: true)
-                }
-            }
-        })
+        documentManager.generateSummary(for: document, force: true)
     }
-    
+
     private func prepareDocumentForPreview() {
         // Create a temporary file for preview
         let tempDirectory = FileManager.default.temporaryDirectory
@@ -542,53 +471,7 @@ struct OldDocumentPreviewView: View {
     private func generateAISummary() {
         AppLogger.ui.debug("OldDocumentPreviewView: Generating AI summary for '\(document.title)'")
         isGeneratingSummary = true
-        
-        let prompt = "<<<SUMMARY_REQUEST>>>Please provide a comprehensive summary of this document in English only. Focus on the main topics, key points, and important details:\n\n\(document.content)"
-        
-        AppLogger.ui.debug("OldDocumentPreviewView: Sending summary request, content length: \(document.content.count)")
-        EdgeAI.shared?.generate(prompt, resolver: { result in
-            AppLogger.ui.debug("OldDocumentPreviewView: Got summary result: \(String(describing: result))")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                if let result = result as? String, !result.isEmpty {
-                    // Show the summary in an alert
-                    let alert = UIAlertController(
-                        title: "AI Summary",
-                        message: result,
-                        preferredStyle: .alert
-                    )
-                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                    
-                    // Present from the current window
-                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                       let window = windowScene.windows.first,
-                       let rootViewController = window.rootViewController {
-                        rootViewController.present(alert, animated: true)
-                    }
-                } else {
-                    AppLogger.ui.warning("OldDocumentPreviewView: Invalid or empty summary result")
-                }
-            }
-        }, rejecter: { code, message, error in
-            AppLogger.ui.error("OldDocumentPreviewView: Summary generation failed - Code: \(String(describing: code)), Message: \(String(describing: message)), Error: \(String(describing: error))")
-            DispatchQueue.main.async {
-                self.isGeneratingSummary = false
-                
-                let alert = UIAlertController(
-                    title: "Summary Failed",
-                    message: "Failed to generate AI summary. Please try again.",
-                    preferredStyle: .alert
-                )
-                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let window = windowScene.windows.first,
-                   let rootViewController = window.rootViewController {
-                    rootViewController.present(alert, animated: true)
-                }
-            }
-        })
+        documentManager.generateSummary(for: document, force: true)
     }
 
     private var tagsText: String {
@@ -1664,7 +1547,6 @@ struct DocumentSummaryView: View {
     let document: Document
     @State private var summary: String = ""
     @State private var isGeneratingSummary = false
-    @State private var hasCanceledCurrent = false
     @State private var selectedSummaryLength: SummaryLength = .medium
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var documentManager: DocumentManager
@@ -1728,23 +1610,21 @@ struct DocumentSummaryView: View {
               
                 if supportsAISummary {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Menu {
-                            Picker("Length", selection: $selectedSummaryLength) {
-                                Text("Short").tag(SummaryLength.short)
-                                Text("Medium").tag(SummaryLength.medium)
-                                Text("Long").tag(SummaryLength.long)
+                        if isGeneratingSummary {
+                            Text("Generating...")
+                                .foregroundColor(.secondary)
+                                .font(.callout)
+                        } else {
+                            Menu {
+                                Picker("Length", selection: $selectedSummaryLength) {
+                                    Text("Short").tag(SummaryLength.short)
+                                    Text("Medium").tag(SummaryLength.medium)
+                                    Text("Long").tag(SummaryLength.long)
+                                }
+                            } label: {
+                                Image(systemName: "text.viewfinder")
+                                    .imageScale(.large)
                             }
-                            Divider()
-                            if isGeneratingSummary {
-                                Button("Cancel Generating", role: .destructive) { cancelSummary() }
-                            } else if hasUsableSummary {
-                                Button("Regenerate") { generateAISummary(force: true) }
-                            } else {
-                                Button("Generate") { generateAISummary(force: false) }
-                            }
-                        } label: {
-                            Image(systemName: "text.viewfinder")
-                                .imageScale(.large)
                         }
                     }
                 }
@@ -1755,12 +1635,17 @@ struct DocumentSummaryView: View {
             documentManager.refreshContentIfNeeded(for: document.id)
             // Use saved summary if available; avoid regenerating every time
             self.summary = currentDoc.summary
-            self.isGeneratingSummary = supportsAISummary && isSummaryPlaceholder(self.summary)
+            let s = self.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isPlaceholder = s.isEmpty || s == "Processing..." || s.contains("Processing summary")
+            self.isGeneratingSummary = supportsAISummary && isPlaceholder
         }
         .onChange(of: currentDoc.summary) { newValue in
             if summary != newValue {
                 summary = newValue
             }
+        }
+        .onChange(of: selectedSummaryLength) { _ in
+            generateAISummary(force: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SummaryGenerationStatus"))) { notification in
             guard let userInfo = notification.userInfo,
@@ -1768,34 +1653,11 @@ struct DocumentSummaryView: View {
                   let docId = UUID(uuidString: idString) else { return }
             guard docId == document.id else { return }
             if let active = userInfo["isActive"] as? Bool {
-                if active {
-                    if !hasCanceledCurrent {
-                        isGeneratingSummary = true
-                    }
-                } else {
-                    isGeneratingSummary = false
-                    hasCanceledCurrent = false
-                }
+                isGeneratingSummary = active
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CancelDocumentSummary"))) { notification in
-            guard let idString = notification.userInfo?["documentId"] as? String,
-                  let docId = UUID(uuidString: idString) else { return }
-            guard docId == document.id else { return }
-            hasCanceledCurrent = true
-            isGeneratingSummary = false
-        }
     }
 
-    private var hasUsableSummary: Bool {
-        !isSummaryPlaceholder(summary)
-    }
-
-    private func isSummaryPlaceholder(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || trimmed == "Processing..." || trimmed == "Processing summary..."
-    }
-    
     private func generateAISummary(force: Bool) {
         AppLogger.ui.debug("DocumentSummaryView: Requesting AI summary for '\(document.title)'")
         isGeneratingSummary = true
@@ -1806,15 +1668,6 @@ struct DocumentSummaryView: View {
         )
     }
 
-    private func cancelSummary() {
-        hasCanceledCurrent = true
-        isGeneratingSummary = false
-        NotificationCenter.default.post(
-            name: NSNotification.Name("CancelDocumentSummary"),
-            object: nil,
-            userInfo: ["documentId": document.id.uuidString]
-        )
-    }
 }
 
 // MARK: - Conversion View

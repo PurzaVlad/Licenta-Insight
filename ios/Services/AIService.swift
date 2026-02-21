@@ -117,15 +117,102 @@ class AIService {
 
     // MARK: - Summary Generation
 
-    /// Builds a summary prompt feeding the full zoned content and embedding an n_predict token
-    /// so the JS model runner applies the right output token budget for this document size and length.
     func buildSummaryPrompt(for document: Document, length: SummaryLength = .medium) -> String {
-        let fullLength = documentContentLength(for: document)
-        let content = selectRepresentativeContent(for: document, budget: 16_000)
-        let archetype = document.keywordsResume.trimmingCharacters(in: .whitespacesAndNewlines)
+        let charCount = documentContentLength(for: document)
+        let targetTok = targetTokens(charCount: charCount, length: length)
+
+        // Keep total prompt within the 2048-token context window.
+        // Reserve: ~250 tokens for system prompt + template overhead + output budget.
+        // Remaining tokens go to document content (~4 chars per token).
+        let systemOverhead = 250
+        let availableContentTokens = max(200, 2048 - systemOverhead - targetTok)
+        let contentBudget = min(8_000, availableContentTokens * 4)
+
+        let content = selectRepresentativeContent(for: document, budget: contentBudget)
         let facts = FactExtractorService.extract(from: fullDocumentText(for: document))
-        AppLogger.ai.debug("FactExtractor: \(facts.facts.count) facts for '\(document.title)'")
-        return buildSummaryPrompt(input: content, length: length, archetype: archetype, docLength: fullLength, facts: facts)
+        AppLogger.ai.debug("FactExtractor: \(facts.facts.count) facts, contentBudget=\(contentBudget) for '\(document.title)'")
+
+        let docType = document.keywordsResume.trimmingCharacters(in: .whitespacesAndNewlines)
+        let systemPrompt = buildSummarySystemPrompt(length: length, docType: docType)
+        let factLimit: Int
+        switch length {
+        case .short:  factLimit = 3
+        case .medium: factLimit = 7
+        case .long:   factLimit = 12
+        }
+        let organizedInput = buildOrganizedInput(
+            content: content,
+            facts: facts,
+            docType: docType,
+            title: document.title,
+            factLimit: factLimit
+        )
+
+        return """
+        <<<NO_HISTORY>>>
+        <<<SUMMARY_TASK>>>
+        <<<N_PREDICT:\(targetTok)>>>
+        SYSTEM:
+        \(systemPrompt)
+
+        TARGET LENGTH: approximately \(targetTok) tokens. Stay close to this length.
+
+        DOCUMENT CONTENT:
+        \(organizedInput)
+        """
+    }
+
+    /// Token budget: medium = clamp(round(N×0.04 + 60), 80, 600); short = ×0.5 min 40; long = ×1.6 max 900.
+    private func targetTokens(charCount: Int, length: SummaryLength) -> Int {
+        let n = Double(charCount)
+        let medium = min(max(Int((n * 0.04 + 60).rounded()), 80), 600)
+        switch length {
+        case .short:  return max(40, Int((Double(medium) * 0.5).rounded()))
+        case .medium: return medium
+        case .long:   return min(900, Int((Double(medium) * 1.6).rounded()))
+        }
+    }
+
+    private func buildSummarySystemPrompt(length: SummaryLength, docType: String) -> String {
+        let typeInstruction = docType.isEmpty
+            ? ""
+            : " Prioritize information most relevant to a \(docType) document."
+        let base = """
+        You are a document summarizer. Output ONLY the summary text. No preamble, no labels, \
+        no meta-commentary. Write in clear, dense prose. Prioritize information by importance: \
+        critical findings and conclusions first, supporting details second, context third.\(typeInstruction) \
+        Preserve specific numbers, names, dates, and claims. Never fabricate information not \
+        present in the source. Markdown is supported — use it where it improves readability.
+        """
+        switch length {
+        case .short:
+            return base + "\n\nCover only the most critical 2-3 points."
+        case .medium:
+            return base
+        case .long:
+            return base + "\n\nInclude supporting evidence, secondary findings, and relevant context beyond the main points."
+        }
+    }
+
+    private func buildOrganizedInput(content: String, facts: ExtractedFacts, docType: String, title: String, factLimit: Int) -> String {
+        var parts: [String] = []
+        if !docType.isEmpty {
+            parts.append("DOCUMENT TYPE: \(docType)")
+        }
+        let baseName: String
+        if let dotRange = title.range(of: ".", options: .backwards) {
+            baseName = String(title[title.startIndex..<dotRange.lowerBound])
+        } else {
+            baseName = title
+        }
+        parts.append("TITLE: \(baseName)")
+        let limitedFacts = Array(facts.facts.prefix(factLimit))
+        if !limitedFacts.isEmpty {
+            let bulletFacts = limitedFacts.map { "- \($0.label): \($0.value)" }.joined(separator: "\n")
+            parts.append("KEY FACTS:\n\(bulletFacts)")
+        }
+        parts.append("CONTENT:\n\(content)")
+        return parts.joined(separator: "\n\n")
     }
 
     /// Returns the full best-available text for a document (for fact extraction — not zone-sampled).
@@ -150,76 +237,6 @@ class AIService {
         return document.content.count
     }
 
-    /// Returns an <<<N_PREDICT:N>>> token encoding the desired output token budget,
-    /// plus the raw token count for word-count estimation.
-    /// Scales with document size so a 200-page doc gets a proportionally richer summary than a 1-page doc.
-    /// The length preference is a multiplier: short ≈ 0.45×, medium ≈ 1×, long ≈ 2× (capped at 2400).
-    private func nPredictToken(length: SummaryLength, docLength: Int) -> String {
-        let base: Int
-        switch docLength {
-        case ..<3_000:   base = 200   // ~1 page
-        case ..<8_000:   base = 320   // ~3-5 pages
-        case ..<20_000:  base = 450   // ~5-15 pages
-        case ..<50_000:  base = 600   // ~15-30 pages
-        case ..<150_000: base = 800   // ~30-100 pages
-        default:         base = 1000  // 100+ pages
-        }
-        let tokens: Int
-        switch length {
-        case .short:  tokens = max(120, Int(Double(base) * 0.5))
-        case .medium: tokens = base
-        case .long:   tokens = min(2000, Int(Double(base) * 2.0))
-        }
-        return "<<<N_PREDICT:\(tokens)>>>"
-    }
-
-    private func buildSummaryPrompt(input: String, length: SummaryLength, archetype: String, docLength: Int, facts: ExtractedFacts) -> String {
-        let nPredict = nPredictToken(length: length, docLength: docLength)
-
-        let factsSection = facts.isEmpty ? "" : "DOCUMENT FACTS:\n\(facts.formatted())\n\n"
-
-        let instruction: String
-        switch length {
-        case .short:
-            instruction = """
-            Use Markdown: **bold** for key names, numbers, and important terms. \
-            Write a concise summary. Cover what the document is, who's involved, and the most critical specifics. \
-            DOCUMENT FACTS (if present) are verified — weave them naturally into your writing. \
-            Plain language. No preamble.
-            """
-        case .medium:
-            instruction = """
-            Use Markdown: **bold** for key names, numbers, and important terms; \
-            ## headings for major sections when appropriate. \
-            Write a detailed, informative summary. DOCUMENT FACTS (if present) are verified — \
-            weave them naturally into your writing. Cover what this document is, who's involved, \
-            the key terms and specifics, and what it means. Plain language. No preamble.
-            """
-        case .long:
-            instruction = """
-            Use Markdown: ## headings for major sections, **bold** for key names, dates, amounts, \
-            and important terms, and - bullet lists for grouped items. \
-            Write a thorough, in-depth summary. DOCUMENT FACTS (if present) are verified — \
-            weave them naturally into your writing. Cover every significant party and their role, \
-            every important date and deadline, every key amount and obligation, \
-            the conditions and terms that matter, and what this document means in practice. \
-            Plain language. No preamble.
-            """
-        }
-
-        let archetypeLine = archetype.isEmpty ? "" : "\nDocument type: \(archetype)."
-
-        return """
-        <<<NO_HISTORY>>>
-        \(nPredict)
-        SYSTEM:
-        \(instruction)\(archetypeLine)
-
-        \(factsSection)DOCUMENT:
-        \(input)
-        """
-    }
-
     // MARK: - Tag Generation
 
     /// Builds a semantic tag prompt using multi-word concept extraction and zoned sampling.
@@ -230,11 +247,6 @@ class AIService {
         <<<N_PREDICT:50>>>
         List exactly 4 concept tags for this document. Each tag is 1-3 words. Cover: the domain or field, the main subject or named entity, the purpose or action, and one additional relevant concept.
         Output format: one tag per line, nothing else. No numbering. No bullets. No explanation.
-        Example output:
-        employment law
-        contract termination
-        severance agreement
-        non-disclosure clause
 
         Document:
         \(content)
@@ -315,7 +327,28 @@ class AIService {
 
     // MARK: - Keyword Generation
 
+    /// Extracts the top N most-frequent content words (non-stopwords, ≥4 chars) from text.
+    /// These act as anchor words that reveal the document's vocabulary/domain.
+    private func extractTopWords(from text: String, count: Int = 10) -> [String] {
+        let stopwords: Set<String> = [
+            "that","this","with","from","have","been","were","they","their","about",
+            "would","could","should","which","there","these","those","more","some",
+            "than","into","also","when","will","what","each","after","before","where",
+            "such","even","here","then","both","same","most","other","while","under",
+            "over","between","through","against","during","without","within","along",
+            "following","across","however","therefore","whereas","although","whether",
+            "provided","including","regarding","concerning","pursuant","thereof","herein"
+        ]
+        var freq: [String: Int] = [:]
+        text.lowercased()
+            .components(separatedBy: CharacterSet.letters.inverted)
+            .filter { $0.count >= 4 && !stopwords.contains($0) }
+            .forEach { freq[$0, default: 0] += 1 }
+        return freq.sorted { $0.value > $1.value }.prefix(count).map { $0.key }
+    }
+
     /// Builds a keyword prompt that identifies the document archetype (type, not topic).
+    /// Includes top-frequency anchor words so the model can infer the domain from vocabulary.
     func buildKeywordPrompt(for document: Document) -> String {
         let content = selectRepresentativeContent(for: document, budget: 1500)
 
@@ -327,14 +360,16 @@ class AIService {
             return base
         }()
 
+        let topWords = extractTopWords(from: content, count: 10)
+        let topWordsLine = topWords.isEmpty ? "" : "\nTop words: \(topWords.joined(separator: ", "))"
+
         return """
         <<<NO_HISTORY>>>
         <<<N_PREDICT:15>>>
-        Identify this document in 2-4 words. Name its type, not its topic.
-        Output only those words. No punctuation. No explanation.
+        Name the type of this document in 2-3 words. Output only those words, no punctuation.
 
-        Filename: \(titleAnchor)
-        Document excerpt:
+        Filename: \(titleAnchor)\(topWordsLine)
+        Excerpt:
         \(content)
         """
     }
@@ -374,16 +409,36 @@ class AIService {
 
     // MARK: - Summary Cleaning
 
-    /// Cleans AI-generated summary output.
+    /// Post-processing pipeline for AI-generated summary output.
     func cleanSummaryOutput(_ raw: String) -> String {
         var result = raw
-        // Strip echoed completion cue if the model repeated it
-        result = result.replacingOccurrences(of: "^\\s*Summary:\\s*", with: "", options: [.regularExpression, .caseInsensitive])
-        // Strip if model echoed back the DOCUMENT FACTS block
-        result = result.replacingOccurrences(of: "(?s)^DOCUMENT FACTS:[\\s\\S]*?\\n\\n", with: "", options: [.regularExpression, .caseInsensitive])
-        // Collapse 3+ consecutive newlines → one blank line; preserve intentional structure (bullets, paragraphs)
-        result = result.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip leading preamble lines (common Qwen meta-commentary slipthrough)
+        result = result.replacingOccurrences(
+            of: #"^\s*(?:Here(?:\s+(?:is|are|follows))?|Sure[,!]?|The following[:\s]|This document[:\s]|Below[:\s])[^\n]*[\n:]\s*"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // Strip echoed "Summary:" label
+        result = result.replacingOccurrences(
+            of: #"^\s*Summary:\s*"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // Strip echoed prompt blocks (KEY FACTS / DOCUMENT CONTENT / TARGET LENGTH)
+        result = result.replacingOccurrences(
+            of: #"(?s)^\s*(?:KEY FACTS|DOCUMENT CONTENT|DOCUMENT TYPE|TARGET LENGTH)[^\n]*\n.*?\n\n"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // Collapse 3+ newlines → one blank line
+        result = result.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Ensure output starts with a capital letter
+        if let first = result.unicodeScalars.first,
+           CharacterSet.lowercaseLetters.contains(first) {
+            result = result.prefix(1).uppercased() + result.dropFirst()
+        }
+        return result
     }
 
     // MARK: - Document Context Building

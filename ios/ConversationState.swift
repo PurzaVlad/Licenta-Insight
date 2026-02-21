@@ -19,14 +19,13 @@ class ConversationState {
 
     var topicStack: [TopicEntry] = []
     var activeEntities: [String: String] = [:]  // e.g., ["invoice": "INV-2024-001"]
-    var lastQueryType: String?
     var lastRewrittenQuery: String?
 
     /// Current active document (top of stack)
     var activeDocumentId: UUID? { topicStack.first?.documentId }
     var activeDocumentTitle: String? { topicStack.first?.documentTitle }
 
-    func update(documentId: UUID?, documentTitle: String?, queryType: String, assistantResponse: String) {
+    func update(documentId: UUID?, documentTitle: String?, assistantResponse: String) {
         if let id = documentId, let title = documentTitle {
             // Push to topic stack (remove duplicates first)
             topicStack.removeAll { $0.documentId == id }
@@ -42,16 +41,13 @@ class ConversationState {
                 topicStack = Array(topicStack.prefix(maxTopicStackSize))
             }
         }
-        lastQueryType = queryType
-
-        // Extract entities (invoice numbers, account IDs, etc.)
+        // Extract entities from response
         updateEntities(from: assistantResponse, documentTitle: documentTitle)
     }
 
     func reset() {
         topicStack.removeAll()
         activeEntities.removeAll()
-        lastQueryType = nil
         lastRewrittenQuery = nil
     }
 

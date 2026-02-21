@@ -18,7 +18,6 @@ struct ChunkHitLog {
 struct RetrievalLog: Codable {
     let timestamp: Date
     let question: String
-    let queryType: String
     let topChunks: [ChunkLog]
     let selectedDocuments: [String]
     let primaryDocument: String?
@@ -49,7 +48,6 @@ class RetrievalLogger {
     
     func log(
         question: String,
-        queryType: String,
         hits: [ChunkHitLog],
         selectedDocs: [String],
         primaryDoc: String?
@@ -73,7 +71,6 @@ class RetrievalLogger {
         let log = RetrievalLog(
             timestamp: Date(),
             question: question,
-            queryType: queryType,
             topChunks: topChunks,
             selectedDocuments: selectedDocs,
             primaryDocument: primaryDoc,

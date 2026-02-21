@@ -523,20 +523,9 @@ struct NativeChatView: View {
                     self.updateSessionState(from: result.primaryDocument)
 
                     // Update conversation state with result
-                    let queryType = QueryClassifier.classifyQuery(question)
-                    let queryTypeString: String = {
-                        switch queryType {
-                        case .countQuestion: return "countQuestion"
-                        case .numericLookup: return "numericLookup"
-                        case .dateLookup: return "dateLookup"
-                        case .entityLookup: return "entityLookup"
-                        case .semantic: return "semantic"
-                        }
-                    }()
                     self.conversationState.update(
                         documentId: result.primaryDocument?.id,
                         documentTitle: result.primaryDocument?.title,
-                        queryType: queryTypeString,
                         assistantResponse: text
                     )
                     self.conversationState.lastRewrittenQuery = result.rewrittenQuery
@@ -1279,10 +1268,8 @@ struct NativeChatView: View {
         let exactTokens = exactQueryTokens(from: question)
         let phrases = exactQueryPhrases(from: question)
         
-        // Classify query and select appropriate scorer
-        let queryType = QueryClassifier.classifyQuery(question)
-        let scorer = QueryClassifier.makeScorerFor(queryType)
-        
+        let scorer = QueryClassifier.makeScorerFor(QueryClassifier.classifyQuery(question))
+
         var rankedCandidates: [(document: Document, chunk: OCRChunk, features: ChunkLexicalFeatures)] = []
         var documentFrequency: [String: Int] = [:]
         var totalTokenCount = 0
@@ -1333,7 +1320,6 @@ struct NativeChatView: View {
             let exact = exactMatchScores(exactTokens: exactTokens, phrases: phrases, text: chunk.text)
             let combinedExactMatch = max(exact.exactToken, exact.phrase, exact.numeric)
             
-            // Use domain-specific scorer for final score
             let domainScore = scorer.score(
                 normalizedBM25: normalizedBM25,
                 exactMatchScore: combinedExactMatch,
@@ -1439,7 +1425,6 @@ struct NativeChatView: View {
 
     private func passBRerankScore(
         for hit: ChunkHit,
-        queryType: QueryType,
         scorer: QueryScorer,
         subjectToken: String?,
         questionTokens: Set<String>
@@ -1473,17 +1458,15 @@ struct NativeChatView: View {
         let passA = passAChunkCandidates(from: hits)
         if passA.isEmpty { return [] }
 
-        let queryType = QueryClassifier.classifyQuery(question)
-        let scorer = QueryClassifier.makeScorerFor(queryType)
+        let scorer = QueryClassifier.makeScorerFor(QueryClassifier.classifyQuery(question))
         let subjectToken = strongestSubjectAnchorToken(from: question)
         let questionTokens = retrievalTokens(question)
-        
+
         let reranked = passA.map { hit in
             PassBHitScore(
                 hit: hit,
                 score: passBRerankScore(
                     for: hit,
-                    queryType: queryType,
                     scorer: scorer,
                     subjectToken: subjectToken,
                     questionTokens: questionTokens
@@ -2274,7 +2257,7 @@ struct NativeChatView: View {
         }
 
         Rules:
-        - "rewritten_query": Rewrite the current query as a STANDALONE search query that includes all necessary context from the conversation. If the user says "and the due date?" after asking about invoice 2024-001, rewrite as "What is the due date on invoice 2024-001?". If the query is already standalone, copy it as-is.
+        - "rewritten_query": Rewrite the current query as a STANDALONE search query that includes all necessary context from the conversation. If the user says "and when was it signed?" after asking about a document, rewrite as "When was the document signed?". If the query is already standalone, copy it as-is.
         - "intent": "challenge_dispute" if questioning previous answer; "followup_clarification" if refining previous question; "smalltalk" if greeting; "new_topic" if unrelated to conversation; else "ask_doc_fact"
         - "focus_terms": 2-6 key search tokens (entities, proper nouns, numbers)
         - "soft_expansions": 1-4 synonyms (e.g., "EU" → "European Union")
@@ -2408,16 +2391,6 @@ struct NativeChatView: View {
         )
 
         // Log retrieval for debugging and evaluation
-        let queryType = QueryClassifier.classifyQuery(effectiveQuestion)
-        let queryTypeString: String = {
-            switch queryType {
-            case .countQuestion: return "countQuestion"
-            case .numericLookup: return "numericLookup"
-            case .dateLookup: return "dateLookup"
-            case .entityLookup: return "entityLookup"
-            case .semantic: return "semantic"
-            }
-        }()
         let hitLogs = selection.allRankedHits.map { hit in
             ChunkHitLog(
                 documentTitle: hit.document.title,
@@ -2432,7 +2405,6 @@ struct NativeChatView: View {
         }
         RetrievalLogger.shared.log(
             question: effectiveQuestion,
-            queryType: queryTypeString,
             hits: hitLogs,
             selectedDocs: selection.documents.map(\.title),
             primaryDoc: selection.primaryDocument?.title
@@ -2440,10 +2412,6 @@ struct NativeChatView: View {
 
         if selection.selectedHits.isEmpty {
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil, rewrittenQuery: queryAnalysis?.rewrittenQuery)
-        }
-
-        if let countAnswer = preprocessCountQuestion(effectiveQuestion, hits: selection.selectedHits) {
-            return ChatLLMResult(reply: countAnswer, primaryDocument: selection.primaryDocument, rewrittenQuery: queryAnalysis?.rewrittenQuery)
         }
 
         // For challenges/disputes/clarifications: use direct quote response
@@ -2496,46 +2464,6 @@ struct NativeChatView: View {
         sessionState.lastAssistantResponse = finalReply
 
         return ChatLLMResult(reply: finalReply, primaryDocument: selection.primaryDocument, rewrittenQuery: queryAnalysis?.rewrittenQuery)
-    }
-
-    private func preprocessCountQuestion(_ question: String, hits: [ChunkHit]) -> String? {
-        let queryType = QueryClassifier.classifyQuery(question)
-        guard case .countQuestion = queryType else { return nil }
-        
-        let q = question.lowercased()
-        let countTarget = q
-            .replacingOccurrences(of: "how many ", with: "")
-            .replacingOccurrences(of: "number of ", with: "")
-            .replacingOccurrences(of: "total ", with: "")
-            .replacingOccurrences(of: "count ", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        var counts: [Int] = []
-        for hit in hits.prefix(5) {
-            let text = hit.chunk.text.lowercased()
-            let pattern = #"(?:(\d+)\s+\#(countTarget)|total:?\s*(\d+)|count:?\s*(\d+))"#
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
-                if let match = regex.firstMatch(in: text, range: nsRange) {
-                    for i in 1..<match.numberOfRanges {
-                        let range = match.range(at: i)
-                        if range.location != NSNotFound,
-                           let swiftRange = Range(range, in: text),
-                           swiftRange.lowerBound >= text.startIndex,
-                           swiftRange.upperBound <= text.endIndex,
-                           let number = Int(text[swiftRange]) {
-                            counts.append(number)
-                        }
-                    }
-                }
-            }
-        }
-        
-        if let maxCount = counts.max() {
-            return "\(maxCount)"
-        }
-        
-        return nil
     }
 
     private func buildStatsAnswerIfNeeded(for question: String) -> String? {
