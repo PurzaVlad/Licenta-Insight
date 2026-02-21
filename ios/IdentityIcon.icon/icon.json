@@ -2,22 +2,24 @@
   "fill" : {
     "linear-gradient" : [
       "gray:1.00000,1.00000",
-      "gray:0.75056,1.00000"
+      "gray:0.80000,1.00000"
     ],
     "orientation" : {
       "start" : {
         "x" : 0.5,
-        "y" : 0
+        "y" : 1
       },
       "stop" : {
         "x" : 0.5,
-        "y" : 0.7
+        "y" : 0.3
       }
     }
   },
   "groups" : [
     {
+      "blend-mode" : "normal",
       "blur-material" : null,
+      "hidden" : false,
       "layers" : [
         {
           "blend-mode" : "normal",
@@ -37,7 +39,7 @@
             }
           ],
           "position" : {
-            "scale" : 0.83,
+            "scale" : 0.8,
             "translation-in-points" : [
               7,
               10
@@ -45,14 +47,16 @@
           }
         }
       ],
+      "lighting" : "combined",
+      "opacity" : 1,
       "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+        "kind" : "none",
+        "opacity" : 0.3
       },
       "specular" : true,
       "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
+        "enabled" : false,
+        "value" : 1
       }
     }
   ],
