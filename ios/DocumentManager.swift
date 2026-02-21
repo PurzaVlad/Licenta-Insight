@@ -320,7 +320,7 @@ class DocumentManager: ObservableObject {
     }
 
     func generateKeywords(for document: Document, force: Bool = false) {
-        if !force && !document.keywordsResume.isEmpty { return }
+        if !force && !document.keywordsResume.isEmpty && aiService.isValidKeyword(document.keywordsResume) { return }
         guard let edgeAI = EdgeAI.shared else { return }
 
         let prompt = aiService.buildKeywordPrompt(for: document)
@@ -329,8 +329,11 @@ class DocumentManager: ObservableObject {
             DispatchQueue.main.async {
                 let raw = result as? String ?? ""
                 let keyword = self.aiService.processKeyword(rawResponse: raw)
+                AppLogger.ai.debug("Keyword raw='\(raw)' → processed='\(keyword)' for '\(document.title)'")
                 if !keyword.isEmpty {
                     self.updateKeywords(for: document.id, to: keyword)
+                } else {
+                    AppLogger.ai.warning("Keyword empty after processing for '\(document.title)' — raw was: '\(raw)'")
                 }
             }
         }, rejecter: { code, message, _ in

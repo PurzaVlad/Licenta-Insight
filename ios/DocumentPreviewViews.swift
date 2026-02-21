@@ -1610,21 +1610,21 @@ struct DocumentSummaryView: View {
               
                 if supportsAISummary {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        if isGeneratingSummary {
-                            Text("Generating...")
-                                .foregroundColor(.secondary)
-                                .font(.callout)
-                        } else {
-                            Menu {
-                                Picker("Length", selection: $selectedSummaryLength) {
-                                    Text("Short").tag(SummaryLength.short)
-                                    Text("Medium").tag(SummaryLength.medium)
-                                    Text("Long").tag(SummaryLength.long)
-                                }
-                            } label: {
-                                Image(systemName: "text.viewfinder")
-                                    .imageScale(.large)
+                        Menu {
+                            Picker("Length", selection: $selectedSummaryLength) {
+                                Text("Short").tag(SummaryLength.short)
+                                Text("Medium").tag(SummaryLength.medium)
+                                Text("Long").tag(SummaryLength.long)
                             }
+                            Button {
+                                generateAISummary(force: true)
+                            } label: {
+                                Text(isGeneratingSummary ? "Generating..." : "Regenerate")
+                            }
+                            .disabled(isGeneratingSummary)
+                        } label: {
+                            Image(systemName: "text.viewfinder")
+                                .imageScale(.large)
                         }
                     }
                 }

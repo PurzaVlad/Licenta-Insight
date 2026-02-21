@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum SummaryLength: String, CaseIterable {
     case short
@@ -132,7 +133,8 @@ class AIService {
         let facts = FactExtractorService.extract(from: fullDocumentText(for: document))
         AppLogger.ai.debug("FactExtractor: \(facts.facts.count) facts, contentBudget=\(contentBudget) for '\(document.title)'")
 
-        let docType = document.keywordsResume.trimmingCharacters(in: .whitespacesAndNewlines)
+        let docType = validatedDocType(document.keywordsResume)
+        AppLogger.ai.debug("Summary docType: '\(docType.isEmpty ? "(none)" : docType)' for '\(document.title)'")
         let systemPrompt = buildSummarySystemPrompt(length: length, docType: docType)
         let factLimit: Int
         switch length {
@@ -148,10 +150,13 @@ class AIService {
             factLimit: factLimit
         )
 
+        // Allow 40 extra tokens beyond the target so the model can finish its current
+        // sentence rather than stopping mid-thought when the budget runs out.
+        let sentenceBuffer = 40
         return """
         <<<NO_HISTORY>>>
         <<<SUMMARY_TASK>>>
-        <<<N_PREDICT:\(targetTok)>>>
+        <<<N_PREDICT:\(targetTok + sentenceBuffer)>>>
         SYSTEM:
         \(systemPrompt)
 
@@ -368,10 +373,25 @@ class AIService {
         <<<N_PREDICT:15>>>
         Name the type of this document in 2-3 words. Output only those words, no punctuation.
 
-        Filename: \(titleAnchor)\(topWordsLine)
+        Document name: \(titleAnchor)\(topWordsLine)
         Excerpt:
         \(content)
         """
+    }
+
+    /// Returns the docType string only if it doesn't contain echo/label words from the prompt.
+    /// Treats garbage values like "Filename Sameday" as empty so they don't pollute prompts.
+    private func validatedDocType(_ raw: String) -> String {
+        let echoWords: Set<String> = ["filename", "document", "file", "name", "title", "type"]
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let words = trimmed.lowercased().components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        guard !words.isEmpty, !words.contains(where: { echoWords.contains($0) }) else { return "" }
+        return trimmed
+    }
+
+    /// Returns true if the stored keyword is a real type label, not a prompt echo.
+    func isValidKeyword(_ keyword: String) -> Bool {
+        !validatedDocType(keyword).isEmpty
     }
 
     /// Cleans AI-generated keyword output into a short title-cased phrase (1-3 words)
@@ -379,10 +399,11 @@ class AIService {
         let firstLine = rawResponse
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: .newlines).first ?? ""
+        let echoWords: Set<String> = ["filename", "document", "file", "name", "title", "type"]
         let words = firstLine
             .components(separatedBy: .whitespaces)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !echoWords.contains($0.lowercased()) }
             .prefix(3)
         var result = words.joined(separator: " ")
         result = result.replacingOccurrences(of: "[^A-Za-z ]", with: "", options: .regularExpression)
