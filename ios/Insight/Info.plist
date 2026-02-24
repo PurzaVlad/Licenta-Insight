@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Identity</string>
+	<string>Insight</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -38,11 +38,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to scan documents and extract text using OCR.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Identity uses Face ID to unlock your documents.</string>
+	<string>Insight uses Face ID to unlock your documents.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Identity connects to a local conversion server to convert documents.</string>
+	<string>Insight connects to a local conversion server to convert documents.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Identity uses your location to support location-based features.</string>
+	<string>Insight uses your location to support location-based features.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

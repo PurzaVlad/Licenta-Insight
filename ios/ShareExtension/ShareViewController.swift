@@ -20,7 +20,7 @@ final class ShareViewController: UIViewController {
         label.numberOfLines = 0
         label.font = .preferredFont(forTextStyle: .body)
         label.textColor = .secondaryLabel
-        label.text = "Saving to Identity..."
+        label.text = "Saving to Insight..."
         return label
     }()
 
@@ -86,7 +86,7 @@ final class ShareViewController: UIViewController {
 
         dispatchGroup.notify(queue: .main) {
             if savedCount > 0 {
-                self.complete(withStatus: "Saved \(savedCount) item(s) to Identity.", delay: 0.35)
+                self.complete(withStatus: "Saved \(savedCount) item(s) to Insight.", delay: 0.35)
             } else {
                 self.complete(withStatus: "No supported item found.", delay: 0.7)
             }

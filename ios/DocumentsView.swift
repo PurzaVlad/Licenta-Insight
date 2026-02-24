@@ -1559,7 +1559,7 @@ struct DocumentsView: View {
             let tempDir = FileManager.default.temporaryDirectory
             let stagingURL = tempDir.appendingPathComponent("zip_export_\(UUID().uuidString)", isDirectory: true)
             let safeName = zipSanitizedFileName(name)
-            let fileName = safeName.isEmpty ? "Identity_Archive_\(zipShortDateString()).zip" : "\(safeName).zip"
+            let fileName = safeName.isEmpty ? "Insight_Archive_\(zipShortDateString()).zip" : "\(safeName).zip"
             let zipURL = tempDir.appendingPathComponent(fileName)
 
             defer {
@@ -3413,7 +3413,7 @@ struct FolderDocumentsView: View {
             let tempDir = FileManager.default.temporaryDirectory
             let stagingURL = tempDir.appendingPathComponent("zip_export_\(UUID().uuidString)", isDirectory: true)
             let safeName = zipSanitizedFileName(name)
-            let fileName = safeName.isEmpty ? "Identity_Archive_\(zipShortDateString()).zip" : "\(safeName).zip"
+            let fileName = safeName.isEmpty ? "Insight_Archive_\(zipShortDateString()).zip" : "\(safeName).zip"
             let zipURL = tempDir.appendingPathComponent(fileName)
 
             defer {

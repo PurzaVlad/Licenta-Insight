@@ -57,7 +57,7 @@ class LockManager: ObservableObject {
             return
         }
 
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock Identity.") { success, authError in
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock Insight.") { success, authError in
             DispatchQueue.main.async {
                 self.isUnlocking = false
                 if success {

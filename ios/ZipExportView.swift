@@ -246,7 +246,7 @@ struct ZipExportView: View {
             let tempDir = FileManager.default.temporaryDirectory
             let stagingURL = tempDir.appendingPathComponent("zip_export_\(UUID().uuidString)", isDirectory: true)
             let safeName = sanitizedFileName(name)
-            let fileName = safeName.isEmpty ? "Identity_Archive_\(shortDateString()).zip" : "\(safeName).zip"
+            let fileName = safeName.isEmpty ? "Insight_Archive_\(shortDateString()).zip" : "\(safeName).zip"
             let zipURL = tempDir.appendingPathComponent(fileName)
 
             do {

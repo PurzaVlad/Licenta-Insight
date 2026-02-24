@@ -40,7 +40,7 @@
 		C1A0C1A0C1A0C1A0C1A0C1A5 /* ToolsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A4 /* ToolsView.swift */; };
 		C1A0C1A0C1A0C1A0C1A0C1A7 /* ConvertView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */; };
 		F10A00000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10A00000000000000000021 /* ShareViewController.swift */; };
-		F10A00000000000000000002 /* IdentityShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F10A00000000000000000020 /* IdentityShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F10A00000000000000000002 /* InsightShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F10A00000000000000000020 /* InsightShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -49,7 +49,7 @@
 			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = F10A00000000000000000050;
-			remoteInfo = IdentityShareExtension;
+			remoteInfo = InsightShareExtension;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -60,7 +60,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				F10A00000000000000000002 /* IdentityShareExtension.appex in Embed App Extensions */,
+				F10A00000000000000000002 /* InsightShareExtension.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -68,16 +68,16 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		13B07F961A680F5B00A75B9A /* Identity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Identity.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Identity/Images.xcassets; sourceTree = "<group>"; };
-		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Identity/Info.plist; sourceTree = "<group>"; };
-		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = Identity/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		13B07F961A680F5B00A75B9A /* Insight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Insight.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Insight/Images.xcassets; sourceTree = "<group>"; };
+		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Insight/Info.plist; sourceTree = "<group>"; };
+		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = Insight/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		43A934517A58E224B45297CF /* libPods-Identity.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Identity.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		537B7CD00906871DA1872CFE /* Pods-EdgeLLMTuto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-EdgeLLMTuto.release.xcconfig"; path = "Target Support Files/Pods-EdgeLLMTuto/Pods-EdgeLLMTuto.release.xcconfig"; sourceTree = "<group>"; };
-		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Identity/AppDelegate.swift; sourceTree = "<group>"; };
+		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Insight/AppDelegate.swift; sourceTree = "<group>"; };
 		8187BEE6B6DC936AAA3D94C7 /* Pods-Identity.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Identity.debug.xcconfig"; path = "Target Support Files/Pods-Identity/Pods-Identity.debug.xcconfig"; sourceTree = "<group>"; };
-		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Identity/LaunchScreen.storyboard; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = Identity/SceneDelegate.swift; sourceTree = "<group>"; };
+		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Insight/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = Insight/SceneDelegate.swift; sourceTree = "<group>"; };
 		AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDatabase.swift; sourceTree = "<group>"; };
 		AEBD28532F0B119400C3390F /* DocumentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentManager.swift; sourceTree = "<group>"; };
 		AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentModels.swift; sourceTree = "<group>"; };
@@ -105,11 +105,11 @@
 		C1A0C1A0C1A0C1A0C1A0C1A6 /* ConvertView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConvertView.swift; sourceTree = "<group>"; };
 		DF91F9C1F571638680FAB7A1 /* Pods-Identity.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Identity.release.xcconfig"; path = "Target Support Files/Pods-Identity/Pods-Identity.release.xcconfig"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
-		F10A00000000000000000020 /* IdentityShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IdentityShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		F10A00000000000000000020 /* InsightShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = InsightShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		F10A00000000000000000021 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		F10A00000000000000000022 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		F10A00000000000000000023 /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
-		F10A00000000000000000024 /* Identity/Identity.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Identity/Identity.entitlements; sourceTree = "<group>"; };
+		F10A00000000000000000024 /* Insight/Insight.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Insight/Insight.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -138,7 +138,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		13B07FAE1A68108700A75B9A /* Identity */ = {
+		13B07FAE1A68108700A75B9A /* Insight */ = {
 			isa = PBXGroup;
 			children = (
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
@@ -154,7 +154,7 @@
 				AEE10FDC2F0B0A8800D8EFF7 /* EdgeAI.m */,
 				AEE10FDD2F0B0A8800D8EFF7 /* EdgeAI.swift */,
 				AEE10FE42F0B0A8C00D8EFF7 /* EdgeLLMTuto-Bridging-Header.h */,
-				F10A00000000000000000024 /* Identity/Identity.entitlements */,
+				F10A00000000000000000024 /* Insight/Insight.entitlements */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */,
@@ -173,7 +173,7 @@
 				AEE432762F48717500B9EF2F /* IdentityIcon.icon */,
 				AEFE19B32F21089900108CD3 /* ZipExportView.swift */,
 			);
-			name = Identity;
+			name = Insight;
 			sourceTree = "<group>";
 		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
@@ -199,7 +199,7 @@
 				D1A0D1A0D1A0D1A0D1A00022 /* Views */,
 				AECECCD62F43A93A00D1E8DB /* Core */,
 				AECECCC92F43A92D00D1E8DB /* Services */,
-				13B07FAE1A68108700A75B9A /* Identity */,
+				13B07FAE1A68108700A75B9A /* Insight */,
 				F10A00000000000000000040 /* ShareExtension */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
@@ -214,8 +214,8 @@
 		83CBBA001A601CBA00E9B192 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				13B07F961A680F5B00A75B9A /* Identity.app */,
-				F10A00000000000000000020 /* IdentityShareExtension.appex */,
+				13B07F961A680F5B00A75B9A /* Insight.app */,
+				F10A00000000000000000020 /* InsightShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -244,9 +244,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		13B07F861A680F5B00A75B9A /* Identity */ = {
+		13B07F861A680F5B00A75B9A /* Insight */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */;
+			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Insight" */;
 			buildPhases = (
 				5BFAC7D9469BDEBF168AE588 /* [CP] Check Pods Manifest.lock */,
 				13B07F871A680F5B00A75B9A /* Sources */,
@@ -268,14 +268,14 @@
 				D1A0D1A0D1A0D1A0D1A00021 /* Coordinators */,
 				D1A0D1A0D1A0D1A0D1A00022 /* Views */,
 			);
-			name = Identity;
-			productName = Identity;
-			productReference = 13B07F961A680F5B00A75B9A /* Identity.app */;
+			name = Insight;
+			productName = Insight;
+			productReference = 13B07F961A680F5B00A75B9A /* Insight.app */;
 			productType = "com.apple.product-type.application";
 		};
-		F10A00000000000000000050 /* IdentityShareExtension */ = {
+		F10A00000000000000000050 /* InsightShareExtension */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F10A00000000000000000090 /* Build configuration list for PBXNativeTarget "IdentityShareExtension" */;
+			buildConfigurationList = F10A00000000000000000090 /* Build configuration list for PBXNativeTarget "InsightShareExtension" */;
 			buildPhases = (
 				F10A00000000000000000071 /* Sources */,
 				F10A00000000000000000030 /* Frameworks */,
@@ -285,9 +285,9 @@
 			);
 			dependencies = (
 			);
-			name = IdentityShareExtension;
-			productName = IdentityShareExtension;
-			productReference = F10A00000000000000000020 /* IdentityShareExtension.appex */;
+			name = InsightShareExtension;
+			productName = InsightShareExtension;
+			productReference = F10A00000000000000000020 /* InsightShareExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -307,7 +307,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */;
+			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Insight" */;
 			compatibilityVersion = "Xcode 12.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -320,8 +320,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				13B07F861A680F5B00A75B9A /* Identity */,
-				F10A00000000000000000050 /* IdentityShareExtension */,
+				13B07F861A680F5B00A75B9A /* Insight */,
+				F10A00000000000000000050 /* InsightShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -480,7 +480,7 @@
 /* Begin PBXTargetDependency section */
 		F10A00000000000000000061 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = F10A00000000000000000050 /* IdentityShareExtension */;
+			target = F10A00000000000000000050 /* InsightShareExtension */;
 			targetProxy = F10A00000000000000000060 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -492,15 +492,15 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = IdentityIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = Identity/Identity.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Insight/Insight.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_BITCODE = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				EXCLUDED_SOURCE_FILE_NAMES = main.jsbundle;
-				INFOPLIST_FILE = Identity/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Identity;
+				INFOPLIST_FILE = Insight/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Insight;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -513,7 +513,7 @@
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.identity;
-				PRODUCT_NAME = Identity;
+				PRODUCT_NAME = Insight;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -532,14 +532,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = IdentityIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_ENTITLEMENTS = Identity/Identity.entitlements;
+				CODE_SIGN_ENTITLEMENTS = Insight/Insight.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				EXCLUDED_SOURCE_FILE_NAMES = main.jsbundle;
-				INFOPLIST_FILE = Identity/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Identity;
+				INFOPLIST_FILE = Insight/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Insight;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -552,7 +552,7 @@
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.purzavlad.identity;
-				PRODUCT_NAME = Identity;
+				PRODUCT_NAME = Insight;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -776,7 +776,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Identity" */ = {
+		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Insight" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				13B07F941A680F5B00A75B9A /* Debug */,
@@ -785,7 +785,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Identity" */ = {
+		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "Insight" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,
@@ -794,7 +794,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F10A00000000000000000090 /* Build configuration list for PBXNativeTarget "IdentityShareExtension" */ = {
+		F10A00000000000000000090 /* Build configuration list for PBXNativeTarget "InsightShareExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F10A00000000000000000080 /* Debug */,

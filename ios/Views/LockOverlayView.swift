@@ -14,7 +14,7 @@ struct LockOverlayView: View {
                     .font(.system(size: 36, weight: .semibold))
                     .foregroundColor(.primary)
 
-                Text("Unlock Identity")
+                Text("Unlock Insight")
                     .font(.headline)
 
                 if !lockManager.unlockErrorMessage.isEmpty {
