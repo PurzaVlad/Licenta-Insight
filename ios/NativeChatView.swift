@@ -2393,7 +2393,7 @@ struct NativeChatView: View {
         // Log retrieval for debugging and evaluation
         let hitLogs = selection.allRankedHits.map { hit in
             ChunkHitLog(
-                documentTitle: hit.document.title,
+                documentId: hit.document.id,
                 chunkId: hit.chunk.chunkId,
                 finalScore: hit.finalScore,
                 bm25Score: hit.bm25Score,
@@ -2406,8 +2406,8 @@ struct NativeChatView: View {
         RetrievalLogger.shared.log(
             question: effectiveQuestion,
             hits: hitLogs,
-            selectedDocs: selection.documents.map(\.title),
-            primaryDoc: selection.primaryDocument?.title
+            selectedDocIds: selection.documents.map(\.id),
+            primaryDocId: selection.primaryDocument?.id
         )
 
         if selection.selectedHits.isEmpty {

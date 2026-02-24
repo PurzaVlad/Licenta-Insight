@@ -473,36 +473,110 @@ struct DocumentsView: View {
     }
 
     private var rootGridView: some View {
-        NativeDocumentGridView(
-            items: mixedRootItems(),
-            selectedIds: listSelectionBinding,
-            isSelectionMode: $isSelectionMode,
-            dropTargetedFolderId: $dropTargetedFolderId,
-            documentManager: documentManager,
-            onOpenDocument: { openDocumentPreview(document: $0) },
-            onOpenFolder: { folder in
-                documentManager.updateLastAccessed(id: folder.id)
-                navigationPath.append(folder)
-            },
-            onRenameDocument: { renameDocument($0) },
-            onMoveDocument: { documentToMove = $0 },
-            onDeleteDocument: { deleteDocument($0) },
-            onConvertDocument: { convertDocument($0) },
-            onShareDocuments: { shareDocuments($0) },
-            onRenameFolderRequest: { folder in
-                folderToRename = folder
-                renameFolderText = folder.name
-                showingRenameFolderDialog = true
-            },
-            onMoveFolderRequest: { folder in
-                folderToMove = folder
-                showingMoveFolderSheet = true
-            },
-            onDeleteFolderRequest: { folder in
-                folderToDelete = folder
-                showingDeleteFolderDialog = true
+        if isSelectionMode {
+            return AnyView(
+                NativeDocumentGridView(
+                    items: mixedRootItems(),
+                    selectedIds: listSelectionBinding,
+                    isSelectionMode: $isSelectionMode,
+                    dropTargetedFolderId: $dropTargetedFolderId,
+                    documentManager: documentManager,
+                    onOpenDocument: { openDocumentPreview(document: $0) },
+                    onOpenFolder: { folder in
+                        documentManager.updateLastAccessed(id: folder.id)
+                        navigationPath.append(folder)
+                    },
+                    onRenameDocument: { renameDocument($0) },
+                    onMoveDocument: { documentToMove = $0 },
+                    onDeleteDocument: { deleteDocument($0) },
+                    onConvertDocument: { convertDocument($0) },
+                    onShareDocuments: { shareDocuments($0) },
+                    onRenameFolderRequest: { folder in
+                        folderToRename = folder
+                        renameFolderText = folder.name
+                        showingRenameFolderDialog = true
+                    },
+                    onMoveFolderRequest: { folder in
+                        folderToMove = folder
+                        showingMoveFolderSheet = true
+                    },
+                    onDeleteFolderRequest: { folder in
+                        folderToDelete = folder
+                        showingDeleteFolderDialog = true
+                    }
+                )
+            )
+        }
+
+        let columns: [GridItem] = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+        return AnyView(ScrollView {
+            LazyVGrid(columns: columns, spacing: 18) {
+                ForEach(mixedRootItems()) { item in
+                    switch item.kind {
+                    case .folder(let folder):
+                        FolderGridItemView(
+                            folder: folder,
+                            docCount: documentManager.itemCount(in: folder.id),
+                            isSelected: selectedFolderIds.contains(folder.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleFolderSelection(folder.id) },
+                            onOpen: {
+                                documentManager.updateLastAccessed(id: folder.id)
+                                navigationPath.append(folder)
+                            },
+                            onRename: {
+                                folderToRename = folder
+                                renameFolderText = folder.name
+                                showingRenameFolderDialog = true
+                            },
+                            onMove: {
+                                folderToMove = folder
+                                showingMoveFolderSheet = true
+                            },
+                            onDelete: {
+                                folderToDelete = folder
+                                showingDeleteFolderDialog = true
+                            },
+                            isDropTargeted: dropTargetedFolderId == folder.id,
+                            onLongPress: {
+                                beginSelection(folderId: folder.id)
+                            }
+                        )
+                        .onDrag { makeFolderDragProvider(folder.id) }
+                        .onDrop(
+                            of: [UTType.plainText, UTType.text, UTType.data],
+                            delegate: FolderDropDelegate(
+                                folderId: folder.id,
+                                documentManager: documentManager,
+                                onHoverChange: { isHovering in
+                                    dropTargetedFolderId = isHovering ? folder.id : nil
+                                }
+                            )
+                        )
+                    case .document(let document):
+                        DocumentGridItemView(
+                            document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onOpen: { openDocumentPreview(document: document) },
+                            onRename: { renameDocument(document) },
+                            onMoveToFolder: { documentToMove = document },
+                            onDelete: { deleteDocument(document) },
+                            onConvert: { convertDocument(document) },
+                            onShare: { shareDocuments([document]) },
+                            onLongPress: {
+                                beginSelection(documentId: document.id)
+                            }
+                        )
+                        .onDrag { makeDocumentDragProvider(document.id) }
+                    }
+                }
             }
-        )
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
+        })
     }
 
     @ViewBuilder
@@ -641,29 +715,32 @@ struct DocumentsView: View {
 
                 Divider()
 
-                Button { toggleNameSort() } label: {
-                    switch documentsSortMode {
-                    case .nameAsc:  Label("Name", systemImage: "arrow.down")
-                    case .nameDesc: Label("Name", systemImage: "arrow.up")
-                    default:        Label("Name", systemImage: "textformat")
+                Picker("Sort By", selection: Binding(
+                    get: {
+                        switch documentsSortMode {
+                        case .nameAsc, .nameDesc: return "name"
+                        case .dateNewest, .dateOldest: return "date"
+                        case .accessNewest, .accessOldest: return "recent"
+                        }
+                    },
+                    set: { group in
+                        switch group {
+                        case "name": toggleNameSort()
+                        case "date": toggleDateSort()
+                        case "recent": toggleAccessSort()
+                        default: break
+                        }
                     }
+                )) {
+                    let nameText = documentsSortMode == .nameAsc ? "Name ↓" : documentsSortMode == .nameDesc ? "Name ↑" : "Name"
+                    let dateText = documentsSortMode == .dateNewest ? "Date ↓" : documentsSortMode == .dateOldest ? "Date ↑" : "Date"
+                    let recentText = documentsSortMode == .accessNewest ? "Recent ↓" : documentsSortMode == .accessOldest ? "Recent ↑" : "Recent"
+                    Label(nameText, systemImage: "textformat").tag("name")
+                    Label(dateText, systemImage: "calendar").tag("date")
+                    Label(recentText, systemImage: "clock").tag("recent")
                 }
-
-                Button { toggleDateSort() } label: {
-                    switch documentsSortMode {
-                    case .dateNewest: Label("Date", systemImage: "arrow.down")
-                    case .dateOldest: Label("Date", systemImage: "arrow.up")
-                    default:          Label("Date", systemImage: "calendar")
-                    }
-                }
-
-                Button { toggleAccessSort() } label: {
-                    switch documentsSortMode {
-                    case .accessNewest: Label("Recent", systemImage: "arrow.down")
-                    case .accessOldest: Label("Recent", systemImage: "arrow.up")
-                    default:            Label("Recent", systemImage: "clock")
-                    }
-                }
+                .pickerStyle(.inline)
+                .labelsHidden()
             } label: {
                 Image(systemName: "ellipsis")
                     .foregroundColor(.primary)
@@ -2536,6 +2613,19 @@ struct FolderDocumentsView: View {
         get { DocumentsSortMode(rawValue: documentsSortModeRaw) ?? .dateNewest }
         nonmutating set { documentsSortModeRaw = newValue.rawValue }
     }
+
+    private func toggleNameSort() {
+        documentsSortMode = (documentsSortMode == .nameAsc) ? .nameDesc : .nameAsc
+    }
+
+    private func toggleDateSort() {
+        documentsSortMode = (documentsSortMode == .dateNewest) ? .dateOldest : .dateNewest
+    }
+
+    private func toggleAccessSort() {
+        documentsSortMode = (documentsSortMode == .accessNewest) ? .accessOldest : .accessNewest
+    }
+
     @State private var documentToMove: Document?
 
     @State private var showingDocumentPicker = false
@@ -2627,17 +2717,6 @@ struct FolderDocumentsView: View {
         )
     }
 
-    private func toggleNameSort() {
-        documentsSortMode = (documentsSortMode == .nameAsc) ? .nameDesc : .nameAsc
-    }
-
-    private func toggleDateSort() {
-        documentsSortMode = (documentsSortMode == .dateNewest) ? .dateOldest : .dateNewest
-    }
-
-    private func toggleAccessSort() {
-        documentsSortMode = (documentsSortMode == .accessNewest) ? .accessOldest : .accessNewest
-    }
 
     private func toggleFolderSelectAll() {
         if folderIsAllSelected {
@@ -2808,36 +2887,110 @@ struct FolderDocumentsView: View {
     }
 
     private var folderGridContent: some View {
-        NativeDocumentGridView(
-            items: mixedFolderItems(),
-            selectedIds: listSelectionBinding,
-            isSelectionMode: $isSelectionMode,
-            dropTargetedFolderId: $dropTargetedFolderId,
-            documentManager: documentManager,
-            onOpenDocument: { onOpenDocument($0) },
-            onOpenFolder: { sub in
-                documentManager.updateLastAccessed(id: sub.id)
-                navigationPath.append(sub)
-            },
-            onRenameDocument: { renameDocument($0) },
-            onMoveDocument: { documentToMove = $0 },
-            onDeleteDocument: { documentManager.deleteDocument($0) },
-            onConvertDocument: { _ in },
-            onShareDocuments: { shareDocuments($0) },
-            onRenameFolderRequest: { sub in
-                folderToRename = sub
-                renameFolderText = sub.name
-                showingRenameFolderDialog = true
-            },
-            onMoveFolderRequest: { sub in
-                folderToMove = sub
-                showingMoveFolderSheet = true
-            },
-            onDeleteFolderRequest: { sub in
-                folderToDelete = sub
-                showingDeleteFolderDialog = true
+        if isSelectionMode {
+            return AnyView(
+                NativeDocumentGridView(
+                    items: mixedFolderItems(),
+                    selectedIds: listSelectionBinding,
+                    isSelectionMode: $isSelectionMode,
+                    dropTargetedFolderId: $dropTargetedFolderId,
+                    documentManager: documentManager,
+                    onOpenDocument: { onOpenDocument($0) },
+                    onOpenFolder: { sub in
+                        documentManager.updateLastAccessed(id: sub.id)
+                        navigationPath.append(sub)
+                    },
+                    onRenameDocument: { renameDocument($0) },
+                    onMoveDocument: { documentToMove = $0 },
+                    onDeleteDocument: { documentManager.deleteDocument($0) },
+                    onConvertDocument: { _ in },
+                    onShareDocuments: { shareDocuments($0) },
+                    onRenameFolderRequest: { sub in
+                        folderToRename = sub
+                        renameFolderText = sub.name
+                        showingRenameFolderDialog = true
+                    },
+                    onMoveFolderRequest: { sub in
+                        folderToMove = sub
+                        showingMoveFolderSheet = true
+                    },
+                    onDeleteFolderRequest: { sub in
+                        folderToDelete = sub
+                        showingDeleteFolderDialog = true
+                    }
+                )
+            )
+        }
+
+        let columns: [GridItem] = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
+        return AnyView(ScrollView {
+            LazyVGrid(columns: columns, spacing: 18) {
+                ForEach(mixedFolderItems()) { item in
+                    switch item.kind {
+                    case .folder(let sub):
+                        FolderGridItemView(
+                            folder: sub,
+                            docCount: documentManager.itemCount(in: sub.id),
+                            isSelected: selectedFolderIds.contains(sub.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleFolderSelection(sub.id) },
+                            onOpen: {
+                                documentManager.updateLastAccessed(id: sub.id)
+                                navigationPath.append(sub)
+                            },
+                            onRename: {
+                                folderToRename = sub
+                                renameFolderText = sub.name
+                                showingRenameFolderDialog = true
+                            },
+                            onMove: {
+                                folderToMove = sub
+                                showingMoveFolderSheet = true
+                            },
+                            onDelete: {
+                                folderToDelete = sub
+                                showingDeleteFolderDialog = true
+                            },
+                            isDropTargeted: dropTargetedFolderId == sub.id,
+                            onLongPress: {
+                                beginSelection(folderId: sub.id)
+                            }
+                        )
+                        .onDrag { makeFolderDragProvider(sub.id) }
+                        .onDrop(
+                            of: [UTType.plainText, UTType.text, UTType.data],
+                            delegate: FolderDropDelegate(
+                                folderId: sub.id,
+                                documentManager: documentManager,
+                                onHoverChange: { isHovering in
+                                    dropTargetedFolderId = isHovering ? sub.id : nil
+                                }
+                            )
+                        )
+                    case .document(let document):
+                        DocumentGridItemView(
+                            document: document,
+                            isSelected: selectedDocumentIds.contains(document.id),
+                            isSelectionMode: isSelectionMode,
+                            onSelectToggle: { toggleDocumentSelection(document.id) },
+                            onOpen: { onOpenDocument(document) },
+                            onRename: { renameDocument(document) },
+                            onMoveToFolder: { documentToMove = document },
+                            onDelete: { documentManager.deleteDocument(document) },
+                            onConvert: { },
+                            onShare: { shareDocuments([document]) },
+                            onLongPress: {
+                                beginSelection(documentId: document.id)
+                            }
+                        )
+                        .onDrag { makeDocumentDragProvider(document.id) }
+                    }
+                }
             }
-        )
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
+        })
     }
 
     private var folderBaseContent: some View {
@@ -2967,29 +3120,32 @@ struct FolderDocumentsView: View {
 
                 Divider()
 
-                Button { toggleNameSort() } label: {
-                    switch documentsSortMode {
-                    case .nameAsc:  Label("Name", systemImage: "arrow.down")
-                    case .nameDesc: Label("Name", systemImage: "arrow.up")
-                    default:        Label("Name", systemImage: "textformat")
+                Picker("Sort By", selection: Binding(
+                    get: {
+                        switch documentsSortMode {
+                        case .nameAsc, .nameDesc: return "name"
+                        case .dateNewest, .dateOldest: return "date"
+                        case .accessNewest, .accessOldest: return "recent"
+                        }
+                    },
+                    set: { group in
+                        switch group {
+                        case "name": toggleNameSort()
+                        case "date": toggleDateSort()
+                        case "recent": toggleAccessSort()
+                        default: break
+                        }
                     }
+                )) {
+                    let nameText = documentsSortMode == .nameAsc ? "Name ↓" : documentsSortMode == .nameDesc ? "Name ↑" : "Name"
+                    let dateText = documentsSortMode == .dateNewest ? "Date ↓" : documentsSortMode == .dateOldest ? "Date ↑" : "Date"
+                    let recentText = documentsSortMode == .accessNewest ? "Recent ↓" : documentsSortMode == .accessOldest ? "Recent ↑" : "Recent"
+                    Label(nameText, systemImage: "textformat").tag("name")
+                    Label(dateText, systemImage: "calendar").tag("date")
+                    Label(recentText, systemImage: "clock").tag("recent")
                 }
-
-                Button { toggleDateSort() } label: {
-                    switch documentsSortMode {
-                    case .dateNewest: Label("Date", systemImage: "arrow.down")
-                    case .dateOldest: Label("Date", systemImage: "arrow.up")
-                    default:          Label("Date", systemImage: "calendar")
-                    }
-                }
-
-                Button { toggleAccessSort() } label: {
-                    switch documentsSortMode {
-                    case .accessNewest: Label("Recent", systemImage: "arrow.down")
-                    case .accessOldest: Label("Recent", systemImage: "arrow.up")
-                    default:            Label("Recent", systemImage: "clock")
-                    }
-                }
+                .pickerStyle(.inline)
+                .labelsHidden()
             } label: {
                 Image(systemName: "ellipsis")
                     .foregroundColor(.primary)

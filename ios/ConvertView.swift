@@ -238,6 +238,10 @@ private struct ConvertFlowView: View {
     @State private var searchText = ""
     @State private var showScannedPDFChoice = false
     @State private var pendingScannedChoiceDocument: Document? = nil
+    @State private var showServerUploadConsent = false
+    @State private var pendingConsentDocument: Document? = nil
+    @State private var pendingConsentMode: PDFToOfficeMode = .ocrEditable
+    @AppStorage("alwaysAllowServerConversionUpload") private var alwaysAllowServerConversionUpload = false
 
     private var documents: [Document] {
         documentManager.documents.filter { allowedSourceTypes.contains($0.type) }
@@ -325,13 +329,13 @@ private struct ConvertFlowView: View {
             Button("Extracted OCR (editable)") {
                 if let doc = pendingScannedChoiceDocument {
                     pendingScannedChoiceDocument = nil
-                    beginConversion(for: doc, mode: .ocrEditable)
+                    requestConsentOrConvert(for: doc, mode: .ocrEditable)
                 }
             }
             Button("Visual quality (non-editable)") {
                 if let doc = pendingScannedChoiceDocument {
                     pendingScannedChoiceDocument = nil
-                    beginConversion(for: doc, mode: .visualImage)
+                    requestConsentOrConvert(for: doc, mode: .visualImage)
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -339,6 +343,29 @@ private struct ConvertFlowView: View {
             }
         } message: { _ in
             Text("This PDF comes from a scanned document. Choose conversion mode:\n\n• Extracted OCR (lower visual quality, editable text)\n• Visual quality (higher fidelity, image-based, non-editable text)")
+        }
+        .alert("Secure Upload Required", isPresented: $showServerUploadConsent, presenting: pendingConsentDocument) { doc in
+            Button("Continue Once") {
+                let mode = pendingConsentMode
+                pendingConsentDocument = nil
+                performConversion(for: doc, mode: mode)
+            }
+            Button("Always Allow") {
+                alwaysAllowServerConversionUpload = true
+                let mode = pendingConsentMode
+                pendingConsentDocument = nil
+                performConversion(for: doc, mode: mode)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingConsentDocument = nil
+            }
+        } message: { _ in
+            Text(
+                "This file will be securely uploaded to the conversion server for processing.\n\n" +
+                "\(ConversionPrivacyPolicy.uploadedDataDescription)\n" +
+                "\(ConversionPrivacyPolicy.serverRetentionDescription)\n" +
+                "\(ConversionPrivacyPolicy.authScopeDescription)"
+            )
         }
     }
 
@@ -354,10 +381,22 @@ private struct ConvertFlowView: View {
             return
         }
 
-        beginConversion(for: document, mode: .ocrEditable)
+        requestConsentOrConvert(for: document, mode: .ocrEditable)
     }
 
-    private func beginConversion(for document: Document, mode: PDFToOfficeMode) {
+    private func requestConsentOrConvert(for document: Document, mode: PDFToOfficeMode) {
+        let sourceFormat = conversionFormatFromDocumentType(document.type)
+        if requiresServerUpload(sourceFormat: sourceFormat, targetFormat: targetFormat, mode: mode),
+           !alwaysAllowServerConversionUpload {
+            pendingConsentDocument = document
+            pendingConsentMode = mode
+            showServerUploadConsent = true
+            return
+        }
+        performConversion(for: document, mode: mode)
+    }
+
+    private func performConversion(for document: Document, mode: PDFToOfficeMode) {
         isConverting = true
         if !isGlobalLoadingActive {
             GlobalLoadingBridge.setOperationLoading(true)
@@ -401,6 +440,21 @@ private struct ConvertFlowView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func requiresServerUpload(sourceFormat: ConversionView.DocumentFormat, targetFormat: ConversionView.DocumentFormat, mode: PDFToOfficeMode) -> Bool {
+        switch (sourceFormat, targetFormat) {
+        case (.docx, .pdf),
+             (.pptx, .pdf),
+             (.xlsx, .pdf),
+             (.pdf, .pptx),
+             (.pdf, .xlsx):
+            return true
+        case (.pdf, .docx):
+            return mode == .ocrEditable
+        default:
+            return false
         }
     }
 
@@ -742,10 +796,6 @@ func convertDocument(
         }
 
         let filename = canonicalFilename
-
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let fileURL = documentsPath.appendingPathComponent(filename)
-        try data.write(to: fileURL)
 
         return ConversionView.ConversionResult(
             success: true,

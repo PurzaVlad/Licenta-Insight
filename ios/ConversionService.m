@@ -7,6 +7,7 @@ RCT_EXTERN_METHOD(healthCheck:(RCTPromiseResolveBlock)resolve
 
 RCT_EXTERN_METHOD(convertFile:(NSString *)inputPath
                   targetExt:(NSString *)targetExt
+                  documentId:(NSString * _Nullable)documentId
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

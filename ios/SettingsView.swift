@@ -19,8 +19,10 @@ enum AppTheme: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    @EnvironmentObject private var documentManager: DocumentManager
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("useFaceID") private var useFaceID = false
+    @AppStorage(AppConstants.UserDefaultsKeys.securityProfile) private var securityProfileRaw = SecurityProfile.standard.rawValue
     @State private var isFaceIDAvailable = false
     @State private var faceIDStatusText = ""
     @State private var showingFaceIDError = false
@@ -81,6 +83,27 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
+
+                Section(header: Text("Vault Security")) {
+                    Picker("Protection", selection: $securityProfileRaw) {
+                        ForEach(SecurityProfile.allCases) { profile in
+                            Text(profile.title).tag(profile.rawValue)
+                        }
+                    }
+
+                    Text("Standard: keychain after first unlock, metadata readable after first unlock. Strict: keychain and metadata only while unlocked.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+
+                    if let message = documentManager.vaultUnavailableMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                        Button("Reset Local Vault", role: .destructive) {
+                            documentManager.resetLocalVault()
+                        }
+                    }
+                }
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
@@ -88,6 +111,9 @@ struct SettingsView: View {
         .onAppear {
             refreshFaceIDAvailability()
             passcodeSet = KeychainService.passcodeExists()
+        }
+        .onChange(of: securityProfileRaw) { _ in
+            documentManager.applyCurrentSecurityProfile()
         }
         .alert("Face ID Error", isPresented: $showingFaceIDError) {
             Button("OK", role: .cancel) {}

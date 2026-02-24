@@ -42,14 +42,18 @@ const normalizeInputPath = (inputUri: string): string => {
   return inputUri;
 };
 
-export const convertDocument = async (inputUri: string, targetExt: string): Promise<ConversionDocumentResult> => {
+export const convertDocument = async (
+  inputUri: string,
+  targetExt: string,
+  documentId?: string,
+): Promise<ConversionDocumentResult> => {
   if (!ConversionService?.convertFile) {
     throw new Error("ConversionService native module is not available");
   }
 
   try {
     const inputPath = normalizeInputPath(inputUri);
-    const result = (await ConversionService.convertFile(inputPath, targetExt)) as ConversionResult;
+    const result = (await ConversionService.convertFile(inputPath, targetExt, documentId ?? null)) as ConversionResult;
     const outputUri = result.outputPath.startsWith("file://")
       ? result.outputPath
       : `file://${result.outputPath}`;

@@ -59,6 +59,7 @@ enum PersistenceError: LocalizedError {
     case loadFailedDecoding(Error)
     case loadFailedIO(Error)
     case migrationFailed(Error)
+    case vaultUnavailable(Error)
 
     var errorDescription: String? {
         switch self {
@@ -74,6 +75,8 @@ enum PersistenceError: LocalizedError {
             return "Failed to load data: \(error.localizedDescription)"
         case .migrationFailed(let error):
             return "Data migration failed: \(error.localizedDescription)"
+        case .vaultUnavailable(let error):
+            return "Local vault is unavailable or corrupted: \(error.localizedDescription)"
         }
     }
 }

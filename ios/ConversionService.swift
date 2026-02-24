@@ -1,6 +1,12 @@
 import Foundation
 import React
 
+enum ConversionPrivacyPolicy {
+    static let uploadedDataDescription = "Only the selected file bytes plus extension metadata are uploaded when server conversion is required."
+    static let serverRetentionDescription = "Server retention target: immediate delete after conversion response."
+    static let authScopeDescription = "Authorization token is scoped to conversion endpoints."
+}
+
 @objc(ConversionService)
 class ConversionService: NSObject {
     private let maxRetries = 3
@@ -42,6 +48,7 @@ class ConversionService: NSObject {
 
     @objc func convertFile(_ inputPath: String,
                            targetExt: String,
+                           documentId: String?,
                            resolver resolve: @escaping RCTPromiseResolveBlock,
                            rejecter reject: @escaping RCTPromiseRejectBlock) {
         DispatchQueue.global(qos: .userInitiated).async {
@@ -49,6 +56,7 @@ class ConversionService: NSObject {
                 let config = try ConversionConfig.load()
                 self.performConvert(inputPath: inputPath,
                                     targetExt: targetExt,
+                                    documentId: documentId,
                                     config: config,
                                     retryCount: 0,
                                     resolve: resolve,
@@ -61,6 +69,7 @@ class ConversionService: NSObject {
 
     private func performConvert(inputPath: String,
                                 targetExt: String,
+                                documentId: String?,
                                 config: ConversionConfig,
                                 retryCount: Int,
                                 resolve: @escaping RCTPromiseResolveBlock,
@@ -85,7 +94,8 @@ class ConversionService: NSObject {
             request.timeoutInterval = requestTimeout
             request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            request.setValue(inputFilename, forHTTPHeaderField: "X-Filename")
+            // Send only the extension — the actual filename is private to the user's device.
+            // The server uses X-File-Ext for format detection; the name itself is never needed.
             request.setValue(inputExt, forHTTPHeaderField: "X-File-Ext")
 
             guard let stream = InputStream(url: fileURL) else {
@@ -120,11 +130,16 @@ class ConversionService: NSObject {
                         targetExt: target
                     )
                     do {
-                        let outputURL = try self.writeOutputFile(data: body, filename: outputFilename)
+                        let outputURL = try self.writeOutputFile(
+                            data: body,
+                            filename: outputFilename,
+                            documentId: documentId,
+                            targetExt: target
+                        )
                         DispatchQueue.main.async {
                             resolve([
                                 "outputPath": outputURL.path,
-                                "outputFilename": outputFilename
+                                "outputFilename": outputURL.lastPathComponent
                             ])
                         }
                     } catch {
@@ -142,6 +157,7 @@ class ConversionService: NSObject {
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
                         self.performConvert(inputPath: inputPath,
                                             targetExt: targetExt,
+                                            documentId: documentId,
                                             config: config,
                                             retryCount: retryCount + 1,
                                             resolve: resolve,
@@ -185,21 +201,33 @@ class ConversionService: NSObject {
         return "\(safeBase).\(safeExt)"
     }
 
-    private func writeOutputFile(data: Data, filename: String) throws -> URL {
+    private func writeOutputFile(data: Data, filename: String, documentId: String?, targetExt: String) throws -> URL {
+        let _ = filename
+        if let documentId, let uuid = UUID(uuidString: documentId) {
+            do {
+                return try FileStorageService.shared.writeConvertedOutput(data, documentId: uuid, targetExtension: targetExt)
+            } catch {
+                throw ConversionServiceError.writeFailed(reason: "Failed to write converted output")
+            }
+        }
+
+        let fallbackName = "converted_\(UUID().uuidString.lowercased())_\(targetExt).\(targetExt)"
         let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         let convertedDir = cachesDir.appendingPathComponent("Converted", isDirectory: true)
         do {
-            try FileManager.default.createDirectory(at: convertedDir, withIntermediateDirectories: true, attributes: nil)
-        } catch {
-            throw ConversionServiceError.writeFailed(reason: "Failed to create output directory")
-        }
-        let outputURL = convertedDir.appendingPathComponent(filename)
-        do {
-            try data.write(to: outputURL, options: .atomic)
+            try FileManager.default.createDirectory(
+                at: convertedDir,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+            )
+            try (convertedDir as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+            let outputURL = convertedDir.appendingPathComponent(fallbackName)
+            try data.write(to: outputURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            try (outputURL as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+            return outputURL
         } catch {
             throw ConversionServiceError.writeFailed(reason: "Failed to write output file")
         }
-        return outputURL
     }
 
     private func makeSession() -> URLSession {
@@ -247,6 +275,18 @@ struct ConversionConfig {
         let normalized = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
         guard let baseURL = URL(string: normalized) else {
             throw ConversionServiceError.invalidRequest(reason: "Invalid CONVERT_BASE_URL")
+        }
+        let scheme = (baseURL.scheme ?? "").lowercased()
+        if scheme != "https" {
+#if DEBUG
+            let allowInsecure = (Bundle.main.object(forInfoDictionaryKey: "CONVERT_ALLOW_INSECURE_HTTP_DEBUG") as? Bool) ?? false
+            guard allowInsecure else {
+                assertionFailure("CONVERT_BASE_URL must be HTTPS. Set CONVERT_ALLOW_INSECURE_HTTP_DEBUG=true only for local debug.")
+                throw ConversionServiceError.invalidRequest(reason: "CONVERT_BASE_URL must use https")
+            }
+#else
+            throw ConversionServiceError.invalidRequest(reason: "CONVERT_BASE_URL must use https")
+#endif
         }
         return ConversionConfig(baseURL: baseURL, apiKey: apiKey)
     }

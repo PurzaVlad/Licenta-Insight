@@ -6,6 +6,7 @@ class FileStorageService {
 
     private let fileManager = FileManager.default
     private let baseDirectoryName = "DocumentFiles"
+    private let ioQueue = DispatchQueue(label: "com.purzavlad.identity.fileStorage.io", qos: .utility)
 
     // NSCache auto-evicts under memory pressure
     private let imageCache = NSCache<NSString, NSArray>()
@@ -18,6 +19,8 @@ class FileStorageService {
         pdfCache.totalCostLimit = 30_000_000
         originalCache.totalCostLimit = 30_000_000
         setupBaseDirectory()
+        ensureConvertedCacheDirectory()
+        purgeConvertedCache()
     }
 
     /// Creates the base DocumentFiles directory on first launch and marks it
@@ -25,7 +28,11 @@ class FileStorageService {
     private func setupBaseDirectory() {
         let base = baseDirectoryURL()
         if !fileManager.fileExists(atPath: base.path) {
-            try? fileManager.createDirectory(at: base, withIntermediateDirectories: true)
+            try? fileManager.createDirectory(
+                at: base,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+            )
         }
         try? (base as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
     }
@@ -36,8 +43,7 @@ class FileStorageService {
         let dir = try documentDirectory(for: documentId)
         for (index, data) in imageData.enumerated() {
             let fileURL = dir.appendingPathComponent("image_\(index).dat")
-            try data.write(to: fileURL, options: [.atomic])
-            try? (fileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
+            try writeProtectedFile(data, to: fileURL, protection: .completeUnlessOpen)
         }
         // Remove stale image files beyond new count
         do {
@@ -61,16 +67,14 @@ class FileStorageService {
     func savePdfData(_ data: Data, for documentId: UUID) throws {
         let dir = try documentDirectory(for: documentId)
         let fileURL = dir.appendingPathComponent("pdf.dat")
-        try data.write(to: fileURL, options: [.atomic])
-        try? (fileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
+        try writeProtectedFile(data, to: fileURL, protection: .completeUnlessOpen)
         pdfCache.setObject(data as NSData, forKey: documentId.uuidString as NSString, cost: data.count)
     }
 
     func saveOriginalFileData(_ data: Data, for documentId: UUID) throws {
         let dir = try documentDirectory(for: documentId)
         let fileURL = dir.appendingPathComponent("original.dat")
-        try data.write(to: fileURL, options: [.atomic])
-        try? (fileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
+        try writeProtectedFile(data, to: fileURL, protection: .completeUnlessOpen)
         originalCache.setObject(data as NSData, forKey: documentId.uuidString as NSString, cost: data.count)
     }
 
@@ -172,13 +176,15 @@ class FileStorageService {
     // MARK: - Delete
 
     func deleteAllData(for documentId: UUID) {
-        let dir = documentDirectoryURL(for: documentId)
-        do {
-            try fileManager.removeItem(at: dir)
-        } catch {
-            AppLogger.fileStorage.warning("Failed to delete data for \(documentId.uuidString): \(error.localizedDescription)")
+        ioQueue.sync {
+            let dir = documentDirectoryURL(for: documentId)
+            do {
+                try fileManager.removeItem(at: dir)
+            } catch {
+                AppLogger.fileStorage.warning("Failed to delete data for \(documentId.uuidString): \(error.localizedDescription)")
+            }
+            evictCache(for: documentId)
         }
-        evictCache(for: documentId)
     }
 
     // MARK: - Query
@@ -213,11 +219,109 @@ class FileStorageService {
             at: tmpDir,
             includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return }
-        let cutoff = Date().addingTimeInterval(-86400)
+        let cutoff = Date().addingTimeInterval(-Double(AppConstants.Security.tempPreviewRetentionHours) * 3600)
         for url in contents {
+            let name = url.lastPathComponent.lowercased()
+            if !name.hasPrefix("preview_") { continue }
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
             if let modified, modified < cutoff {
                 try? fileManager.removeItem(at: url)
+            }
+        }
+    }
+
+    /// Removes temp preview artifacts tied to a specific document.
+    func cleanupTemporaryPreviewFiles(for documentId: UUID) {
+        ioQueue.sync {
+            let tmpDir = FileManager.default.temporaryDirectory
+            guard let contents = try? fileManager.contentsOfDirectory(at: tmpDir, includingPropertiesForKeys: nil) else {
+                return
+            }
+            let idString = documentId.uuidString.lowercased()
+            for url in contents {
+                let name = url.lastPathComponent.lowercased()
+                if name.contains(idString) || name.hasPrefix("preview_\(idString)") {
+                    try? fileManager.removeItem(at: url)
+                }
+            }
+        }
+    }
+
+    /// Removes converted server cache files to avoid orphaned sensitive artifacts.
+    func cleanupConvertedCache(documentId: UUID? = nil) {
+        ioQueue.sync {
+            let convertedDir = convertedDirectoryURL()
+            guard fileManager.fileExists(atPath: convertedDir.path) else { return }
+            guard let files = try? fileManager.contentsOfDirectory(at: convertedDir, includingPropertiesForKeys: nil) else { return }
+            let idString = documentId?.uuidString.lowercased()
+            for file in files {
+                if let idString {
+                    let lower = file.lastPathComponent.lowercased()
+                    if lower.hasPrefix("converted_\(idString)_") {
+                        try? fileManager.removeItem(at: file)
+                    }
+                } else {
+                    try? fileManager.removeItem(at: file)
+                }
+            }
+            purgeConvertedCache()
+        }
+    }
+
+    func convertedOutputURL(for documentId: UUID, targetExtension: String) -> URL {
+        let safeExt = targetExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let ext = safeExt.isEmpty ? "bin" : safeExt
+        return convertedDirectoryURL().appendingPathComponent("converted_\(documentId.uuidString.lowercased())_\(ext).\(ext)")
+    }
+
+    func writeConvertedOutput(_ data: Data, documentId: UUID, targetExtension: String) throws -> URL {
+        try ioQueue.sync {
+            ensureConvertedCacheDirectory()
+            let outputURL = convertedOutputURL(for: documentId, targetExtension: targetExtension)
+            try writeProtectedFile(data, to: outputURL, protection: .completeUnlessOpen)
+            try? (outputURL as NSURL).setResourceValue(Date(), forKey: .contentModificationDateKey)
+            purgeConvertedCache()
+            return outputURL
+        }
+    }
+
+    func deleteAllArtifacts(for documentId: UUID) {
+        deleteAllData(for: documentId)
+        cleanupTemporaryPreviewFiles(for: documentId)
+        cleanupConvertedCache(documentId: documentId)
+    }
+
+    func clearSensitiveStorage() {
+        ioQueue.sync {
+            if fileManager.fileExists(atPath: baseDirectoryURL().path) {
+                try? fileManager.removeItem(at: baseDirectoryURL())
+            }
+            if fileManager.fileExists(atPath: convertedDirectoryURL().path) {
+                try? fileManager.removeItem(at: convertedDirectoryURL())
+            }
+            clearAllCaches()
+            setupBaseDirectory()
+            ensureConvertedCacheDirectory()
+        }
+    }
+
+    func applyCurrentSecurityProfile() {
+        ioQueue.sync {
+            let protection = SecurityProfile.current == .strict ? FileProtectionType.complete : FileProtectionType.completeUnlessOpen
+            let base = baseDirectoryURL()
+            if fileManager.fileExists(atPath: base.path),
+               let items = try? fileManager.subpathsOfDirectory(atPath: base.path) {
+                for rel in items {
+                    let url = base.appendingPathComponent(rel)
+                    try? (url as NSURL).setResourceValue(protection, forKey: .fileProtectionKey)
+                }
+            }
+            let converted = convertedDirectoryURL()
+            if fileManager.fileExists(atPath: converted.path),
+               let files = try? fileManager.contentsOfDirectory(at: converted, includingPropertiesForKeys: nil) {
+                for url in files {
+                    try? (url as NSURL).setResourceValue(protection, forKey: .fileProtectionKey)
+                }
             }
         }
     }
@@ -231,6 +335,23 @@ class FileStorageService {
             .appendingPathComponent(baseDirectoryName, isDirectory: true)
     }
 
+    private func convertedDirectoryURL() -> URL {
+        let cachesDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        return cachesDir.appendingPathComponent("Converted", isDirectory: true)
+    }
+
+    private func ensureConvertedCacheDirectory() {
+        let convertedDir = convertedDirectoryURL()
+        if !fileManager.fileExists(atPath: convertedDir.path) {
+            try? fileManager.createDirectory(
+                at: convertedDir,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+            )
+        }
+        try? (convertedDir as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+    }
+
     private func documentDirectoryURL(for documentId: UUID) -> URL {
         baseDirectoryURL().appendingPathComponent(documentId.uuidString, isDirectory: true)
     }
@@ -238,8 +359,52 @@ class FileStorageService {
     private func documentDirectory(for documentId: UUID) throws -> URL {
         let dir = documentDirectoryURL(for: documentId)
         if !fileManager.fileExists(atPath: dir.path) {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fileManager.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+            )
         }
         return dir
+    }
+
+    private func writeProtectedFile(_ data: Data, to url: URL, protection: FileProtectionType) throws {
+        try data.write(to: url, options: [.atomic])
+        try? (url as NSURL).setResourceValue(protection, forKey: .fileProtectionKey)
+        try? (url as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+    }
+
+    private func purgeConvertedCache() {
+        let convertedDir = convertedDirectoryURL()
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: convertedDir,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        let cutoff = Date().addingTimeInterval(-Double(AppConstants.Security.convertedCacheRetentionDays) * 86400)
+        var kept: [(url: URL, modified: Date, size: Int)] = []
+
+        for url in files {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let modified = values?.contentModificationDate ?? .distantPast
+            let size = values?.fileSize ?? 0
+            if modified < cutoff {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+            kept.append((url, modified, size))
+        }
+
+        var total = kept.reduce(0) { $0 + $1.size }
+        if total <= AppConstants.Security.convertedCacheMaxBytes { return }
+
+        for item in kept.sorted(by: { $0.modified < $1.modified }) {
+            try? fileManager.removeItem(at: item.url)
+            total -= item.size
+            if total <= AppConstants.Security.convertedCacheMaxBytes {
+                break
+            }
+        }
     }
 }

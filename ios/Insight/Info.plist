@@ -31,18 +31,12 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
+		<false/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>This app needs camera access to scan documents and extract text using OCR.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Insight uses Face ID to unlock your documents.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Insight connects to a local conversion server to convert documents.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Insight uses your location to support location-based features.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

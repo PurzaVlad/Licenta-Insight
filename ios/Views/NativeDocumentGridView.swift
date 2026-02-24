@@ -106,7 +106,11 @@ struct FolderGridCell: View {
 
 // MARK: - NativeDocumentGridView
 
-struct NativeDocumentGridView: UIViewControllerRepresentable {
+// UIViewRepresentable (not UIViewControllerRepresentable) so the UICollectionView is a direct
+// subview of the SwiftUI hosting view. The navigation controller's large-title collapse
+// mechanism traverses the top VC's view hierarchy to find a UIScrollView; using a child
+// UICollectionViewController blocked that traversal, causing the title to never collapse.
+struct NativeDocumentGridView: UIViewRepresentable {
     let items: [MixedItem]
     @Binding var selectedIds: Set<UUID>
     @Binding var isSelectionMode: Bool
@@ -123,10 +127,12 @@ struct NativeDocumentGridView: UIViewControllerRepresentable {
     let onMoveFolderRequest: (DocumentFolder) -> Void
     let onDeleteFolderRequest: (DocumentFolder) -> Void
 
-    func makeUIViewController(context: Context) -> UIViewController {
+    func makeUIView(context: Context) -> UICollectionView {
         let cv = UICollectionView(frame: .zero, collectionViewLayout: Self.makeLayout())
         cv.backgroundColor = .clear
         cv.allowsMultipleSelectionDuringEditing = true
+        cv.alwaysBounceVertical = true
+        cv.contentInsetAdjustmentBehavior = .automatic
         cv.delegate = context.coordinator
         cv.dragDelegate = context.coordinator
         cv.dropDelegate = context.coordinator
@@ -143,22 +149,10 @@ struct NativeDocumentGridView: UIViewControllerRepresentable {
         cv.addGestureRecognizer(longPress)
 
         context.coordinator.setup(collectionView: cv)
-
-        let vc = UIViewController()
-        vc.view.backgroundColor = .clear
-        vc.view.addSubview(cv)
-        cv.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            cv.topAnchor.constraint(equalTo: vc.view.topAnchor),
-            cv.leadingAnchor.constraint(equalTo: vc.view.leadingAnchor),
-            cv.trailingAnchor.constraint(equalTo: vc.view.trailingAnchor),
-            cv.bottomAnchor.constraint(equalTo: vc.view.bottomAnchor),
-        ])
-        return vc
+        return cv
     }
 
-    func updateUIViewController(_ vc: UIViewController, context: Context) {
-        guard let cv = context.coordinator.collectionView else { return }
+    func updateUIView(_ cv: UICollectionView, context: Context) {
         let coord = context.coordinator
         coord.parent = self
 

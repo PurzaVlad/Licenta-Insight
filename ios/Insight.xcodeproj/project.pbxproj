@@ -28,9 +28,6 @@
 		AEE8C6E82F426D8000F7743F /* ConversationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE8C6E52F426D8000F7743F /* ConversationState.swift */; };
 		AEE8C6E92F426D8000F7743F /* QueryClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE8C6E62F426D8000F7743F /* QueryClassifier.swift */; };
 		AEE8C6EA2F426D8000F7743F /* RetrievalLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE8C6E72F426D8000F7743F /* RetrievalLogger.swift */; };
-		AEE8C6EB2F426D8000F7743F /* ConversationState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE8C6E52F426D8000F7743F /* ConversationState.swift */; };
-		AEE8C6EC2F426D8000F7743F /* QueryClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE8C6E62F426D8000F7743F /* QueryClassifier.swift */; };
-		AEE8C6ED2F426D8000F7743F /* RetrievalLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE8C6E72F426D8000F7743F /* RetrievalLogger.swift */; };
 		AEFE19AE2F20EE9400108CD3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AD2F20EE9400108CD3 /* SettingsView.swift */; };
 		AEFE19B02F20F03D00108CD3 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19AF2F20F03D00108CD3 /* KeychainService.swift */; };
 		AEFE19B42F21089900108CD3 /* ZipExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEFE19B32F21089900108CD3 /* ZipExportView.swift */; };
@@ -469,9 +466,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				F10A00000000000000000001 /* ShareViewController.swift in Sources */,
-				AEE8C6EB2F426D8000F7743F /* ConversationState.swift in Sources */,
-				AEE8C6EC2F426D8000F7743F /* QueryClassifier.swift in Sources */,
-				AEE8C6ED2F426D8000F7743F /* RetrievalLogger.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

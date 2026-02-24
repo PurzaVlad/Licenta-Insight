@@ -21,6 +21,7 @@ class DocumentManager: ObservableObject {
     @Published var folders: [DocumentFolder] = []
     @Published var prefersGridLayout: Bool = false
     @Published private(set) var lastAccessedMap: [UUID: Date] = [:]
+    @Published private(set) var vaultUnavailableMessage: String?
 
     // Private state
     private let sharedInboxImportQueue = DispatchQueue(label: "com.purzavlad.identity.sharedInboxImport", qos: .utility)
@@ -41,6 +42,7 @@ class DocumentManager: ObservableObject {
         self.aiService = aiService
         self.validationService = validationService
 
+        fileStorageService.applyCurrentSecurityProfile()
         loadDocuments()
         lastAccessedMap = loadLastAccessedMap()
         importSharedInboxIfNeeded()
@@ -244,7 +246,8 @@ class DocumentManager: ObservableObject {
 
     func deleteDocument(_ document: Document) {
         documents.removeAll { $0.id == document.id }
-        fileStorageService.deleteAllData(for: document.id)
+        fileStorageService.deleteAllArtifacts(for: document.id)
+        RetrievalLogger.shared.removeEntries(referencing: document.id)
         handleSourceDeletion(sourceId: document.id)
         saveState()
     }
@@ -393,7 +396,8 @@ class DocumentManager: ObservableObject {
 
             // Clean up file storage for deleted documents
             for doc in documents where doc.folderId != nil && idsToDelete.contains(doc.folderId!) {
-                fileStorageService.deleteAllData(for: doc.id)
+                fileStorageService.deleteAllArtifacts(for: doc.id)
+                RetrievalLogger.shared.removeEntries(referencing: doc.id)
             }
 
             documents.removeAll { doc in
@@ -770,7 +774,33 @@ class DocumentManager: ObservableObject {
             self.documents = []
             self.folders = []
             self.prefersGridLayout = false
+            if let persistenceError = error as? PersistenceError, case .vaultUnavailable = persistenceError {
+                self.vaultUnavailableMessage = "Storage unavailable or corrupted. Reset local vault to continue."
+            } else {
+                self.vaultUnavailableMessage = nil
+            }
         }
+    }
+
+    func resetLocalVault() {
+        do {
+            try persistenceService.resetLocalVault()
+            documents.removeAll()
+            folders.removeAll()
+            prefersGridLayout = false
+            lastAccessedMap = [:]
+            fileStorageService.clearSensitiveStorage()
+            RetrievalLogger.shared.clearLogs()
+            vaultUnavailableMessage = nil
+            saveState()
+        } catch {
+            AppLogger.documents.error("Failed to reset local vault: \(error.localizedDescription)")
+        }
+    }
+
+    func applyCurrentSecurityProfile() {
+        persistenceService.applyCurrentSecurityProfile()
+        fileStorageService.applyCurrentSecurityProfile()
     }
 
     private func backfillSortOrdersIfNeeded() {

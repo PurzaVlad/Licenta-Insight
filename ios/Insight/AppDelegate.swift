@@ -48,6 +48,11 @@ class AppDelegate: RCTAppDelegate {
     // They will be passed down to the ViewController used by React Native.
     self.initialProps = [:]
 
+#if DEBUG
+    PersistenceService.shared.runSecuritySelfChecks()
+    _ = try? ConversionConfig.load()
+#endif
+
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 

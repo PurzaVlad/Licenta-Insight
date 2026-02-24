@@ -6,6 +6,12 @@ import {initLlama, releaseAllLlama} from 'llama.rn';
 import {downloadModel} from './src/api/model';
 
 import NativeChatView from './src/native/NativeChatView';
+
+if (!__DEV__) {
+  console.log = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+}
 const {EdgeAI} = NativeModules;
 
 type Message = {
