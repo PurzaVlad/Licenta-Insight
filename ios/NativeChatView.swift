@@ -141,7 +141,7 @@ struct NativeChatView: View {
     private let expandedEvidenceLimit = 5
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -258,43 +258,36 @@ struct NativeChatView: View {
         return inputMaxCornerRadius - (inputMaxCornerRadius - inputMinCornerRadius) * t
     }
 
+    @ViewBuilder
+    private var scopeButton: some View {
+        Button { showingScopePicker = true } label: {
+            Image(systemName: "scope")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(isScopeActive ? Color("Primary") : Color.primary)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .ifAvailableiOS26GlassCircle(isActive: isScopeActive)
+        }
+        .buttonStyle(.plain)
+    }
+
     private var inputBar: some View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasText = !trimmed.isEmpty
 
         return HStack(spacing: 12) {
-            Button {
-                showingScopePicker = true
-            } label: {
-                Image(systemName: "scope")
-                    .foregroundColor(isScopeActive ? .white : .primary)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        Circle()
-                            .fill(isScopeActive ? Color("Primary") : (colorScheme == .light ? Color(.systemGray6) : Color.clear))
-                    )
-                    .shadow(
-                        color: isScopeActive ? Color("Primary").opacity(0.35) : Color.black.opacity(0.15),
-                        radius: isScopeActive ? 10 : 6,
-                        x: 0,
-                        y: isScopeActive ? 4 : 3
-                    )
-                    .scaleEffect(isScopeActive ? 1.03 : 1.0)
-                    .animation(.easeInOut(duration: 0.18), value: isScopeActive)
-            }
-                    
+            scopeButton
+
             HStack(alignment: .center, spacing: 6) {
-                Group {
-                    TextField("Ask anything", text: $input, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 17))
-                        .lineLimit(1...6)
-                        .frame(minHeight: 24)
-                        .disabled(isGenerating)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 12)
-                .padding(.trailing, 6)
+                TextField("Ask anything", text: $input, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 17))
+                    .lineLimit(1...6)
+                    .frame(minHeight: 24)
+                    .disabled(isGenerating)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 12)
+                    .padding(.trailing, 6)
 
                 Button {
                     send()
@@ -309,15 +302,10 @@ struct NativeChatView: View {
                 .tint(Color("Primary"))
                 .frame(width: 32, height: 32)
             }
-            .padding(.leading, 0)
             .padding(.trailing, 6)
             .padding(.vertical, 6)
             .frame(minHeight: 44)
-            .background(
-                RoundedRectangle(cornerRadius: inputCornerRadius, style: .continuous)
-                    .fill(colorScheme == .light ? Color(.systemGray6) : Color.clear)
-            )
-            .shadow(color: Color.black.opacity(0.15), radius: 6, x: 0, y: 3)
+            .ifAvailableiOS26GlassBackground(cornerRadius: inputCornerRadius)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -2595,7 +2583,7 @@ struct NativeChatView: View {
         }
 
         var body: some View {
-            NavigationView {
+            NavigationStack {
                 List(selection: $selectedIds) {
                     if filteredItems.isEmpty {
                         Text("No documents or folders available.")
@@ -2804,6 +2792,54 @@ private extension View {
     func ifAvailableiOS17CircleBorder() -> some View {
         self
             .buttonBorderShape(.circle)
+    }
+
+    @ViewBuilder
+    func ifAvailableiOS26GlassButton(isActive: Bool) -> some View {
+        if #available(iOS 26.0, *) {
+            if isActive {
+                self
+                    .buttonStyle(.borderedProminent)
+            } else {
+                self
+                    .buttonStyle(.glass)
+            }
+        } else {
+            if isActive {
+                self
+                    .buttonStyle(.borderedProminent)
+            } else {
+                self
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func ifAvailableiOS26GlassBackground(cornerRadius: CGFloat) -> some View {
+        if #available(iOS 26.0, *) {
+            self
+                .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            self
+                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    func ifAvailableiOS26GlassCircle(isActive: Bool) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(in: Circle())
+        } else {
+            if isActive {
+                self
+                    .background(Color("Primary").opacity(0.15), in: Circle())
+                    .overlay(Circle().stroke(Color("Primary").opacity(0.4), lineWidth: 1))
+            } else {
+                self
+                    .background(Color(.secondarySystemGroupedBackground), in: Circle())
+            }
+        }
     }
 }
 

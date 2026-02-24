@@ -15,7 +15,7 @@ struct ConvertView: View {
     @State private var showDeepLinkFlow = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 ScrollView {
                     VStack(spacing: 16) {
@@ -91,20 +91,6 @@ struct ConvertView: View {
                     }
                     .padding(.top, 8)
                 }
-                NavigationLink(isActive: $showDeepLinkFlow) {
-                    if let config = deepLinkConfig {
-                        ConvertFlowView(
-                            targetFormat: config.targetFormat,
-                            allowedSourceTypes: config.allowedSourceTypes
-                        )
-                        .environmentObject(documentManager)
-                    } else {
-                        EmptyView()
-                    }
-                } label: {
-                    EmptyView()
-                }
-                .hidden()
             }
             .hideScrollBackground()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -136,6 +122,15 @@ struct ConvertView: View {
             }
             .onChange(of: pendingConvertDeepLink) { _ in
                 handlePendingDeepLinkIfNeeded()
+            }
+            .navigationDestination(isPresented: $showDeepLinkFlow) {
+                if let config = deepLinkConfig {
+                    ConvertFlowView(
+                        targetFormat: config.targetFormat,
+                        allowedSourceTypes: config.allowedSourceTypes
+                    )
+                    .environmentObject(documentManager)
+                }
             }
         }
     }
@@ -212,10 +207,6 @@ struct ConvertRow<Destination: View>: View {
                     .foregroundColor(.primary)
 
                 Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color("Primary"))
             }
             .padding(.vertical, 6)
         }

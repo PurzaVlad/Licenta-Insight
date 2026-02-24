@@ -36,7 +36,7 @@ struct SettingsView: View {
     @State private var passcodeErrorMessage = ""
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 Picker("Theme", selection: $appThemeRaw) {
                     ForEach(AppTheme.allCases) { theme in
@@ -126,7 +126,7 @@ struct SettingsView: View {
             Text(passcodeErrorMessage)
         }
         .sheet(isPresented: $showingPasscodeSheet) {
-            NavigationView {
+            NavigationStack {
                 Form {
                     SecureField("New 6-digit passcode", text: $passcode)
                         .keyboardType(.numberPad)

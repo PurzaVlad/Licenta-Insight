@@ -12,7 +12,7 @@ struct ToolsView: View {
     @State private var showDeepLinkFlow = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ZStack {
                 ScrollView {
                     VStack(spacing: 16) {
@@ -81,17 +81,6 @@ struct ToolsView: View {
                     }
                     .padding(.top, 8)
                 }
-                NavigationLink(isActive: $showDeepLinkFlow) {
-                    if let tool = deepLinkTool {
-                        ToolsFlowView(tool: tool)
-                            .environmentObject(documentManager)
-                    } else {
-                        EmptyView()
-                    }
-                } label: {
-                    EmptyView()
-                }
-                .hidden()
             }
             .hideScrollBackground()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -123,6 +112,12 @@ struct ToolsView: View {
             }
             .onChange(of: pendingToolsDeepLink) { _ in
                 handlePendingDeepLinkIfNeeded()
+            }
+            .navigationDestination(isPresented: $showDeepLinkFlow) {
+                if let tool = deepLinkTool {
+                    ToolsFlowView(tool: tool)
+                        .environmentObject(documentManager)
+                }
             }
         }
     }
@@ -198,10 +193,6 @@ struct ToolRow<Destination: View>: View {
                     .foregroundColor(.primary)
 
                 Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color("Primary"))
             }
             .padding(.vertical, 6)
         }
@@ -277,21 +268,17 @@ private struct ToolsFlowView: View {
                 dismiss()
             }
         )
-        .background(
-            NavigationLink(isActive: $showEditor) {
-                ToolsEditorView(
-                    tool: tool,
-                    selectedIds: selectedIds,
-                    onFinish: {
-                        shouldExitToRoot = true
-                        showEditor = false
-                    }
-                )
-                .environmentObject(documentManager)
-            } label: {
-                EmptyView()
-            }
-        )
+        .navigationDestination(isPresented: $showEditor) {
+            ToolsEditorView(
+                tool: tool,
+                selectedIds: selectedIds,
+                onFinish: {
+                    shouldExitToRoot = true
+                    showEditor = false
+                }
+            )
+            .environmentObject(documentManager)
+        }
         .onAppear {
             if shouldExitToRoot {
                 dismiss()
@@ -702,13 +689,7 @@ struct CompressPDFView: View {
 
                     let targetSize = CGSize(width: bounds.width * compressionQuality, height: bounds.height * compressionQuality)
                     let image = page.thumbnail(of: targetSize, for: .mediaBox)
-                    let rect = CGRect(
-                        x: (bounds.width - image.size.width) / 2,
-                        y: (bounds.height - image.size.height) / 2,
-                        width: image.size.width,
-                        height: image.size.height
-                    )
-                    image.draw(in: rect)
+                    image.draw(in: bounds)
                 }
             }
 
@@ -1323,12 +1304,17 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
                 let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSignaturePan(_:)))
                 pan.delegate = self
                 created.addGestureRecognizer(pan)
+                let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleSignaturePinch(_:)))
+                pinch.delegate = self
+                created.addGestureRecognizer(pinch)
                 overlayView.addSubview(created)
                 signatureViews[placement.id] = created
                 sigView = created
             }
-            sigView.frame = docRect
-            sigView.contentInsets = scaledContentInsets(placement.contentInsets, imageSize: placement.image.size, targetSize: docRect.size)
+            UIView.performWithoutAnimation {
+                sigView.frame = docRect
+                sigView.contentInsets = scaledContentInsets(placement.contentInsets, imageSize: placement.image.size, targetSize: docRect.size)
+            }
         }
     }
 
@@ -1387,8 +1373,57 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
         }
     }
 
+    @objc private func handleSignaturePinch(_ gesture: UIPinchGestureRecognizer) {
+        guard let view = gesture.view,
+              let overlayView,
+              let pdfView,
+              let idString = view.accessibilityIdentifier,
+              let placementIndex = placements.firstIndex(where: { $0.id.uuidString == idString }) else {
+            return
+        }
+
+        switch gesture.state {
+        case .began, .changed:
+            let scale = gesture.scale
+            let center = view.center
+            let newWidth = min(max(view.bounds.width * scale, 30), 500)
+            let newHeight = min(max(view.bounds.height * scale, 15), 500)
+            view.bounds = CGRect(origin: .zero, size: CGSize(width: newWidth, height: newHeight))
+            view.center = center
+            gesture.scale = 1.0
+        case .ended, .cancelled, .failed:
+            let centerInPdf = overlayView.convert(view.center, to: pdfView)
+            guard let page = pdfView.page(for: centerInPdf, nearest: true) else { return }
+            let pageBounds = page.bounds(for: pdfView.displayBox)
+            let frameInPdf = overlayView.convert(view.frame, to: pdfView)
+            var pageRect = pdfView.convert(frameInPdf, to: page)
+
+            let placement = placements[placementIndex]
+            let contentInsetsScaled = scaledContentInsets(placement.contentInsets, imageSize: placement.image.size, targetSize: pageRect.size)
+            let minX = pageBounds.minX - contentInsetsScaled.left
+            let maxX = pageBounds.maxX - pageRect.width + contentInsetsScaled.right
+            let minY = pageBounds.minY - contentInsetsScaled.bottom
+            let maxY = pageBounds.maxY - pageRect.height + contentInsetsScaled.top
+            pageRect.origin.x = min(max(pageRect.origin.x, minX), maxX)
+            pageRect.origin.y = min(max(pageRect.origin.y, minY), maxY)
+
+            let pageIndex = document?.index(for: page) ?? max(0, (page.pageRef?.pageNumber ?? 1) - 1)
+            placements[placementIndex].pageIndex = pageIndex
+            placements[placementIndex].boundsInPage = pageRect
+
+            let correctedViewRect = pdfView.convert(pageRect, from: page)
+            let correctedInOverlay = overlayView.convert(correctedViewRect, from: pdfView)
+            view.frame = correctedInOverlay
+            if let sigView = view as? SignaturePlacementView {
+                sigView.contentInsets = scaledContentInsets(placement.contentInsets, imageSize: placement.image.size, targetSize: correctedInOverlay.size)
+            }
+        default:
+            break
+        }
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        false
+        gestureRecognizer.view is SignaturePlacementView && otherGestureRecognizer.view is SignaturePlacementView
     }
 
     private func attachScrollObserver() {
@@ -1565,7 +1600,7 @@ struct SignatureCaptureSheet: View {
     @State private var showEmptyAlert = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 12) {
                 SignaturePadRepresentable(controller: padController)
                     .background(Color.white)
@@ -2098,6 +2133,7 @@ struct SplitPDFView: View {
                         Spacer()
                         if allowsPicker {
                             Button("Change") { showingPicker = true }
+                                .buttonStyle(.bordered)
                         }
                     }
                     Text("Pages: \(pageCount)")
@@ -2105,6 +2141,7 @@ struct SplitPDFView: View {
                 } else {
                     if allowsPicker {
                         Button("Choose PDF") { showingPicker = true }
+                            .buttonStyle(.bordered)
                     } else {
                         Text("No PDF selected.")
                             .foregroundColor(.secondary)
@@ -2113,23 +2150,30 @@ struct SplitPDFView: View {
 
                 VStack(spacing: 12) {
                     ForEach(ranges.indices, id: \.self) { idx in
-                        HStack(spacing: 12) {
-                            TextField("Start", text: $ranges[idx].start)
-                                .keyboardType(.numberPad)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                            Text("to")
-                            TextField("End", text: $ranges[idx].end)
-                                .keyboardType(.numberPad)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                            Button {
-                                if ranges.count > 1 {
-                                    ranges.remove(at: idx)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 12) {
+                                TextField("Start", text: $ranges[idx].start)
+                                    .keyboardType(.numberPad)
+                                    .textFieldStyle(.roundedBorder)
+                                Text("to")
+                                TextField("End", text: $ranges[idx].end)
+                                    .keyboardType(.numberPad)
+                                    .textFieldStyle(.roundedBorder)
+                                Button {
+                                    if ranges.count > 1 {
+                                        ranges.remove(at: idx)
+                                    }
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundColor(ranges.count > 1 ? .red : .secondary)
                                 }
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundColor(ranges.count > 1 ? .red : .secondary)
+                                .disabled(ranges.count == 1)
                             }
-                            .disabled(ranges.count == 1)
+                            if isInvalidRange(ranges[idx]) {
+                                Text("Start must be less than or equal to end")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
                         }
                     }
 
@@ -2138,6 +2182,8 @@ struct SplitPDFView: View {
                             ranges.append(PageRangeInput())
                         }
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color("Primary"))
                     .disabled(ranges.count >= 3)
                 }
             }
@@ -2152,7 +2198,7 @@ struct SplitPDFView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color("Primary"))
-                .disabled(selectedDocument == nil || isSaving)
+                .disabled(selectedDocument == nil || isSaving || ranges.contains(where: { isInvalidRange($0) }))
             }
         }
         .sheet(isPresented: $showingPicker) {
@@ -2244,6 +2290,11 @@ struct SplitPDFView: View {
             guard start >= 1, end >= 1, start <= end, end <= totalPages else { return nil }
             return start...end
         }.prefix(3).map { $0 }
+    }
+
+    private func isInvalidRange(_ input: PageRangeInput) -> Bool {
+        guard let start = Int(input.start), let end = Int(input.end) else { return false }
+        return start > end
     }
 }
 
@@ -2501,6 +2552,8 @@ struct CropPDFView: View {
                         Spacer()
                         if allowsPicker {
                             Button("Change") { showingPicker = true }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Color("Primary"))
                         }
                     }
 
@@ -2518,28 +2571,34 @@ struct CropPDFView: View {
                         Button("Apply This Crop To All Pages") {
                             applyCurrentCropToAllPages()
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color("Primary"))
                     }
                 } else {
                     if allowsPicker {
                         Button("Choose PDF") { showingPicker = true }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color("Primary"))
                     } else {
                         Text("No PDF selected.")
                             .foregroundColor(.secondary)
                     }
                 }
-
-                Button(isSaving ? "Cropping..." : "Save Cropped PDF") {
+            }
+            .padding()
+        }
+        .navigationTitle("Crop PDF")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isSaving ? "Cropping..." : "Crop") {
                     saveCroppedPDF()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color("Primary"))
                 .disabled(selectedDocument == nil || workingPDF == nil || isSaving)
             }
-            .padding()
         }
-        .navigationTitle("Crop PDF")
-        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingPicker) {
             PDFSinglePickerSheet(
                 documents: documentManager.documents.filter { isPDFDocument($0) },
@@ -2575,6 +2634,9 @@ struct CropPDFView: View {
             } label: {
                 Image(systemName: "chevron.left")
             }
+            .buttonStyle(.borderedProminent)
+            .tint(Color("Primary"))
+            .buttonBorderShape(.circle)
             .disabled(currentPageIndex == 0)
 
             Text("Page \(currentPageIndex + 1) / \(pageCount)")
@@ -2586,6 +2648,9 @@ struct CropPDFView: View {
             } label: {
                 Image(systemName: "chevron.right")
             }
+            .buttonStyle(.borderedProminent)
+            .tint(Color("Primary"))
+            .buttonBorderShape(.circle)
             .disabled(currentPageIndex >= pageCount - 1)
         }
     }
@@ -3093,7 +3158,7 @@ struct PDFSinglePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 if documents.isEmpty {
                     Text("No PDFs available.")
@@ -3139,7 +3204,7 @@ struct PDFMultiPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 if documents.isEmpty {
                     Text("No PDFs available.")

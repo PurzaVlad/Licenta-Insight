@@ -323,7 +323,7 @@ struct DocumentsView: View {
                 Button("Import Files") {
                     showingDocumentPicker = true
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

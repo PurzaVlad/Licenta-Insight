@@ -166,7 +166,7 @@ struct SearchView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             searchList
                 .focused($isSearchFocused)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -242,16 +242,13 @@ struct SearchView: View {
                                                 .foregroundColor(.secondary)
                                         }
                                         Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .foregroundStyle(.secondary)
                                     }
                                     .padding(.vertical, 6)
                                 }
                                 .buttonStyle(.plain)
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 16))
+                                .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 16))
                             }
                         }
                     }

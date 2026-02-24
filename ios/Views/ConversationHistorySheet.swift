@@ -12,7 +12,7 @@ struct ConversationHistorySheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Group {
                 if sorted.isEmpty {
                     VStack(spacing: 12) {
