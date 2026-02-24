@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 import CryptoKit
 
-private let retrievalLog = Logger(subsystem: "com.purzavlad.identity", category: "retrieval")
+private let retrievalLog = Logger(subsystem: "com.purzavlad.insight", category: "retrieval")
 
 // Simplified types for logging (to avoid circular dependencies)
 struct ChunkHitLog {

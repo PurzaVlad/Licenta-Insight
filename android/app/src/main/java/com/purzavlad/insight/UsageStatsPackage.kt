@@ -1,4 +1,4 @@
-package com.edgellmtuto
+package com.purzavlad.insight
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule

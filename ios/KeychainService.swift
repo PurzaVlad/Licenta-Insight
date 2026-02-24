@@ -4,7 +4,7 @@ import CryptoKit
 import CommonCrypto
 
 enum KeychainService {
-    private static let service = "com.identity.app"
+    private static let service = "com.insight.app"
     private static let account = "appPasscode"
     private static let migrationKey = "passcodeHashMigrationComplete"
 

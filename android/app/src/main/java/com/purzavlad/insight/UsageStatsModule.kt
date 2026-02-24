@@ -1,4 +1,4 @@
-package com.edgellmtuto
+package com.purzavlad.insight
 
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents

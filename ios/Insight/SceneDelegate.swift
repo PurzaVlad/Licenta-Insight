@@ -11,7 +11,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     guard let appDelegate = UIApplication.shared.delegate as? AppDelegate else { return }
 
     let rootView = appDelegate.rootViewFactory.view(
-      withModuleName: appDelegate.moduleName ?? "Identity",
+      withModuleName: appDelegate.moduleName ?? "Insight",
       initialProperties: appDelegate.initialProps,
       launchOptions: nil
     )

@@ -37,7 +37,7 @@ class PersistenceService {
     private let envelopeMagic = Data("IDEN".utf8)
     private let envelopeVersion: UInt8 = 1
     private let algorithmAESGCM: UInt8 = 1
-    private let keychainService = "com.identity.app.persistence"
+    private let keychainService = "com.insight.app.persistence"
     private let keychainAccountPrefix = "documents_encryption_key_"
     private let keychainCurrentKeyIdAccount = "documents_encryption_current_key_id"
     private let aadBaseContext = "\(AppConstants.FileNames.savedDocumentsJSON)|v1"
@@ -218,12 +218,12 @@ class PersistenceService {
             throw PersistenceError.directoryNotFound
         }
 
-        let identityDir = appSupport.appendingPathComponent("Identity", isDirectory: true)
+        let insightDir = appSupport.appendingPathComponent("Insight", isDirectory: true)
 
-        if !fileManager.fileExists(atPath: identityDir.path) {
+        if !fileManager.fileExists(atPath: insightDir.path) {
             do {
                 try fileManager.createDirectory(
-                    at: identityDir,
+                    at: insightDir,
                     withIntermediateDirectories: true,
                     attributes: [.protectionKey: SecurityProfile.current.metadataFileProtection]
                 )
@@ -231,9 +231,9 @@ class PersistenceService {
                 throw PersistenceError.saveFailedIO(error)
             }
         }
-        try? (identityDir as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        try? (insightDir as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
 
-        return identityDir
+        return insightDir
     }
 
     /// Returns the shared inbox URL (app group container)

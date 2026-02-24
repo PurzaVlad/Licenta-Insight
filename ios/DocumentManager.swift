@@ -24,7 +24,7 @@ class DocumentManager: ObservableObject {
     @Published private(set) var vaultUnavailableMessage: String?
 
     // Private state
-    private let sharedInboxImportQueue = DispatchQueue(label: "com.purzavlad.identity.sharedInboxImport", qos: .utility)
+    private let sharedInboxImportQueue = DispatchQueue(label: "com.purzavlad.insight.sharedInboxImport", qos: .utility)
     private var isImportingSharedInbox = false
 
     init(

@@ -78,9 +78,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.edgellmtuto"
+    namespace "com.purzavlad.insight"
     defaultConfig {
-        applicationId "com.edgellmtuto"
+        applicationId "com.purzavlad.insight"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

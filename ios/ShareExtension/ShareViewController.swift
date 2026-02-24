@@ -2,7 +2,7 @@ import UIKit
 import UniformTypeIdentifiers
 
 final class ShareViewController: UIViewController {
-    private let appGroupIdentifier = "group.com.purzavlad.identity"
+    private let appGroupIdentifier = "group.com.purzavlad.insight"
     private let sharedInboxFolderName = "ShareInbox"
     private var didStartProcessing = false
 

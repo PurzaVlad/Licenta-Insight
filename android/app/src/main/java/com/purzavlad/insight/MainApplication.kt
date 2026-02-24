@@ -1,4 +1,4 @@
-package com.edgellmtuto
+package com.purzavlad.insight
 
 import android.app.Application
 import com.facebook.react.PackageList

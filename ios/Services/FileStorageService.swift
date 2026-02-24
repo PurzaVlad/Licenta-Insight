@@ -6,7 +6,7 @@ class FileStorageService {
 
     private let fileManager = FileManager.default
     private let baseDirectoryName = "DocumentFiles"
-    private let ioQueue = DispatchQueue(label: "com.purzavlad.identity.fileStorage.io", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "com.purzavlad.insight.fileStorage.io", qos: .utility)
 
     // NSCache auto-evicts under memory pressure
     private let imageCache = NSCache<NSString, NSArray>()
@@ -331,7 +331,7 @@ class FileStorageService {
     private func baseDirectoryURL() -> URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport
-            .appendingPathComponent("Identity", isDirectory: true)
+            .appendingPathComponent("Insight", isDirectory: true)
             .appendingPathComponent(baseDirectoryName, isDirectory: true)
     }
 
