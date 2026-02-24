@@ -15,6 +15,7 @@ struct SearchView: View {
     @State private var searchText = ""
     @State private var isSearchPresented = false
     @State private var openedFolder: DocumentFolder?
+    @State private var folderNavigationPath: [DocumentFolder] = []
 
     private var recentDocuments: [Document] {
         documentManager.documents.sorted {
@@ -294,9 +295,10 @@ struct SearchView: View {
                 dismissSearchKeyboard()
             }
             .sheet(item: $openedFolder) { folder in
-                NavigationView {
+                NavigationStack(path: $folderNavigationPath) {
                     FolderDocumentsView(
                         folder: folder,
+                        navigationPath: $folderNavigationPath,
                         onOpenDocument: { doc in
                             openDocumentPreview(document: doc)
                         }
@@ -307,7 +309,20 @@ struct SearchView: View {
                             Button("Close") { openedFolder = nil }
                         }
                     }
+                    .navigationDestination(for: DocumentFolder.self) { sub in
+                        FolderDocumentsView(
+                            folder: sub,
+                            navigationPath: $folderNavigationPath,
+                            onOpenDocument: { doc in
+                                openDocumentPreview(document: doc)
+                            }
+                        )
+                        .environmentObject(documentManager)
+                    }
                 }
+            }
+            .onChange(of: openedFolder) { folder in
+                if folder == nil { folderNavigationPath = [] }
             }
     }
 

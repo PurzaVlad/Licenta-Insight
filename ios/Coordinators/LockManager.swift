@@ -41,7 +41,7 @@ class LockManager: ObservableObject {
     }
 
     func attemptFaceIDUnlock() {
-        guard useFaceID else { return }
+        guard useFaceID, !isUnlocking else { return }
         isUnlocking = true
         unlockErrorMessage = ""
 

@@ -194,7 +194,6 @@ struct TabContainerView: View {
             if modelReady {
                 summaryCoordinator.generateMissingTagsIfNeeded()
                 summaryCoordinator.generateMissingKeywordsIfNeeded()
-                lockManager.lockIfNeeded(force: true)
             }
         }
         .onChange(of: modelReady) { ready in
