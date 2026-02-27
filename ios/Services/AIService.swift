@@ -119,91 +119,64 @@ class AIService {
     // MARK: - Summary Generation
 
     func buildSummaryPrompt(for document: Document, length: SummaryLength = .medium) -> String {
-        let charCount = documentContentLength(for: document)
-        let targetTok = targetTokens(charCount: charCount, length: length)
-
-        // Keep total prompt within the 2048-token context window.
-        // Reserve: ~250 tokens for system prompt + template overhead + output budget.
-        // Remaining tokens go to document content (~4 chars per token).
-        let systemOverhead = 250
-        let availableContentTokens = max(200, 2048 - systemOverhead - targetTok)
-        let contentBudget = min(8_000, availableContentTokens * 4)
-
-        let content = selectRepresentativeContent(for: document, budget: contentBudget)
-        let facts = FactExtractorService.extract(from: fullDocumentText(for: document))
-        AppLogger.ai.debug("FactExtractor: \(facts.facts.count) facts, contentBudget=\(contentBudget) for '\(document.title)'")
-
-        let docType = validatedDocType(document.keywordsResume)
-        AppLogger.ai.debug("Summary docType: '\(docType.isEmpty ? "(none)" : docType)' for '\(document.title)'")
-        let systemPrompt = buildSummarySystemPrompt(length: length, docType: docType)
         let factLimit: Int
         switch length {
         case .short:  factLimit = 3
-        case .medium: factLimit = 7
-        case .long:   factLimit = 12
+        case .medium: factLimit = 10
+        case .long:   factLimit = 20
         }
+        let facts = FactExtractorService.extract(from: fullDocumentText(for: document))
+        let limitedFacts = Array(facts.facts.prefix(factLimit))
+        let targetTok = targetTokens(factCount: limitedFacts.count, length: length)
+
+        let docType = validatedDocType(document.keywordsResume)
+        AppLogger.ai.debug("FactExtractor: \(limitedFacts.count) facts, n_predict=\(targetTok), docType='\(docType.isEmpty ? "(none)" : docType)' for '\(document.title)'")
+
+        let systemPrompt = buildSummarySystemPrompt(length: length, docType: docType)
         let organizedInput = buildOrganizedInput(
-            content: content,
-            facts: facts,
+            facts: limitedFacts,
             docType: docType,
             title: document.title,
-            factLimit: factLimit
+            document: document,
+            length: length
         )
 
-        // Allow 40 extra tokens beyond the target so the model can finish its current
-        // sentence rather than stopping mid-thought when the budget runs out.
-        let sentenceBuffer = 40
         return """
         <<<NO_HISTORY>>>
-        <<<SUMMARY_TASK>>>
-        <<<N_PREDICT:\(targetTok + sentenceBuffer)>>>
+        <<<SUMMARY_TASK:\(length.rawValue)>>>
+        <<<N_PREDICT:\(targetTok)>>>
         SYSTEM:
         \(systemPrompt)
 
-        TARGET LENGTH: approximately \(targetTok) tokens. Stay close to this length.
-
-        DOCUMENT CONTENT:
         \(organizedInput)
         """
     }
 
-    /// Token budget: medium = clamp(round(N×0.04 + 60), 80, 600); short = ×0.5 min 40; long = ×1.6 max 900.
-    private func targetTokens(charCount: Int, length: SummaryLength) -> Int {
-        let n = Double(charCount)
-        let medium = min(max(Int((n * 0.04 + 60).rounded()), 80), 600)
+    /// n_predict is fact-count-based, not document-size-based.
+    /// Short is fixed. Medium/long scale with facts so the model has just enough room.
+    private func targetTokens(factCount: Int, length: SummaryLength) -> Int {
         switch length {
-        case .short:  return max(40, Int((Double(medium) * 0.5).rounded()))
-        case .medium: return medium
-        case .long:   return min(900, Int((Double(medium) * 1.6).rounded()))
+        case .short:  return 80
+        case .medium: return max(100, min(320, factCount * 25 + 40))
+        case .long:   return max(120, min(700, factCount * 35 + 80))
         }
     }
 
     private func buildSummarySystemPrompt(length: SummaryLength, docType: String) -> String {
-        let typeInstruction = docType.isEmpty
-            ? ""
-            : " Prioritize information most relevant to a \(docType) document."
-        let base = """
-        You are a document summarizer. Output ONLY the summary text. No preamble, no labels, \
-        no meta-commentary. Write in clear, dense prose. Prioritize information by importance: \
-        critical findings and conclusions first, supporting details second, context third.\(typeInstruction) \
-        Preserve specific numbers, names, dates, and claims. Never fabricate information not \
-        present in the source. Markdown is supported — use it where it improves readability.
-        """
+        let typeHint = docType.isEmpty ? "" : " Document type: \(docType)"
         switch length {
         case .short:
-            return base + "\n\nCover only the most critical 2-3 points."
+            return "Output ONLY 1-2 plain sentences. State what type of document this is and its single most important detail. No preamble. No markdown. No labels.\(typeHint)"
         case .medium:
-            return base
+            return "Write a markdown bullet list summarizing the document. Each bullet should be a natural sentence or phrase — not a rigid label:value entry. Combine related facts into informative statements where it reads naturally. No intro sentence. No conclusion. Bullets only."
         case .long:
-            return base + "\n\nInclude supporting evidence, secondary findings, and relevant context beyond the main points."
+            return "Write a detailed summary. Start with one overview sentence. Then for each key fact write 1-2 sentences of context using the document content. Use markdown: **bold** fact labels, bullet points for enumerable items.\(typeHint)"
         }
     }
 
-    private func buildOrganizedInput(content: String, facts: ExtractedFacts, docType: String, title: String, factLimit: Int) -> String {
+    private func buildOrganizedInput(facts: [ExtractedFact], docType: String, title: String, document: Document, length: SummaryLength) -> String {
         var parts: [String] = []
-        if !docType.isEmpty {
-            parts.append("DOCUMENT TYPE: \(docType)")
-        }
+
         let baseName: String
         if let dotRange = title.range(of: ".", options: .backwards) {
             baseName = String(title[title.startIndex..<dotRange.lowerBound])
@@ -211,12 +184,34 @@ class AIService {
             baseName = title
         }
         parts.append("TITLE: \(baseName)")
-        let limitedFacts = Array(facts.facts.prefix(factLimit))
-        if !limitedFacts.isEmpty {
-            let bulletFacts = limitedFacts.map { "- \($0.label): \($0.value)" }.joined(separator: "\n")
+
+        if !facts.isEmpty {
+            // Key sentences are unlabeled bullets — omitting the "Key Point:" prefix
+            // prevents the model from parroting "The Key Point is that..."
+            let bulletFacts = facts.map { fact in
+                fact.label == "Key Point"
+                    ? "- \(fact.value)"
+                    : "- \(fact.label): \(fact.value)"
+            }.joined(separator: "\n")
             parts.append("KEY FACTS:\n\(bulletFacts)")
         }
-        parts.append("CONTENT:\n\(content)")
+
+        // Content budget: short needs a snippet for context; medium needs none (facts drive output);
+        // long needs enough to expand on each fact with real detail.
+        let contentBudget: Int
+        switch length {
+        case .short:  contentBudget = 400
+        case .medium: contentBudget = facts.isEmpty ? 600 : 0
+        case .long:   contentBudget = 3000
+        }
+
+        if contentBudget > 0 {
+            let content = selectRepresentativeContent(for: document, budget: contentBudget)
+            if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                parts.append("CONTENT:\n\(content)")
+            }
+        }
+
         return parts.joined(separator: "\n\n")
     }
 
@@ -231,16 +226,6 @@ class AIService {
         return document.content
     }
 
-    /// Returns the total character count of the document's best available text source.
-    private func documentContentLength(for document: Document) -> Int {
-        if let pages = document.ocrPages, !pages.isEmpty {
-            let full = ocrService.buildStructuredText(from: pages, includePageLabels: false)
-            if full.trimmingCharacters(in: .whitespacesAndNewlines).count >= 40 {
-                return full.count
-            }
-        }
-        return document.content.count
-    }
 
     // MARK: - Tag Generation
 
@@ -353,10 +338,9 @@ class AIService {
     }
 
     /// Builds a keyword prompt that identifies the document archetype (type, not topic).
-    /// Includes top-frequency anchor words so the model can infer the domain from vocabulary.
+    /// Uses the KEYWORD_REQUEST marker so JS routes it through a dedicated low-temperature,
+    /// single-line generation path with the few-shot system prompt in JS.
     func buildKeywordPrompt(for document: Document) -> String {
-        let content = selectRepresentativeContent(for: document, budget: 1500)
-
         let titleAnchor: String = {
             let base = document.title
             if let dotRange = base.range(of: ".", options: .backwards) {
@@ -365,51 +349,78 @@ class AIService {
             return base
         }()
 
-        let topWords = extractTopWords(from: content, count: 10)
-        let topWordsLine = topWords.isEmpty ? "" : "\nTop words: \(topWords.joined(separator: ", "))"
+        // Add a brief content preview when the title is a generic/opaque name
+        // (pure numbers, underscores, or common scan prefixes) so the model has something to work from.
+        let titleSeemsMeaningless = titleAnchor.range(
+            of: #"^[A-Za-z]{0,3}[\d_\-]{3,}$|^(IMG|DSC|SCAN|DOC|FILE|image|photo|document)\w*$"#,
+            options: .regularExpression
+        ) != nil
+        let contentHint: String = {
+            guard titleSeemsMeaningless else { return "" }
+            let firstLine = document.content
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: .newlines)
+                .first(where: { $0.trimmingCharacters(in: .whitespaces).count > 10 }) ?? ""
+            let preview = String(firstLine.prefix(80))
+            return preview.isEmpty ? "" : "\nContent hint: \(preview)"
+        }()
 
-        return """
-        <<<NO_HISTORY>>>
-        <<<N_PREDICT:15>>>
-        Name the type of this document in 2-3 words. Output only those words, no punctuation.
-
-        Document name: \(titleAnchor)\(topWordsLine)
-        Excerpt:
-        \(content)
-        """
+        return "<<<KEYWORD_REQUEST>>>\nTitle: \(titleAnchor)\(contentHint)"
     }
 
-    /// Returns the docType string only if it doesn't contain echo/label words from the prompt.
-    /// Treats garbage values like "Filename Sameday" as empty so they don't pollute prompts.
+    /// Returns the stored keyword/sentence if it looks like real content (not a template artifact).
     private func validatedDocType(_ raw: String) -> String {
-        let echoWords: Set<String> = ["filename", "document", "file", "name", "title", "type"]
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let words = trimmed.lowercased().components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        guard !words.isEmpty, !words.contains(where: { echoWords.contains($0) }) else { return "" }
+        // Reject if too short or contains template markers
+        guard trimmed.count >= 5, !trimmed.contains("<<<") else { return "" }
         return trimmed
     }
 
-    /// Returns true if the stored keyword is a real type label, not a prompt echo.
+    /// Returns true if the stored keyword is real content, not empty or a template artifact.
     func isValidKeyword(_ keyword: String) -> Bool {
         !validatedDocType(keyword).isEmpty
     }
 
-    /// Cleans AI-generated keyword output into a short title-cased phrase (1-3 words)
+    /// Returns the AI-generated keyword sentence with only preamble stripped.
     func processKeyword(rawResponse: String) -> String {
-        let firstLine = rawResponse
+        // Take first non-empty line
+        let lines = rawResponse
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .newlines).first ?? ""
-        let echoWords: Set<String> = ["filename", "document", "file", "name", "title", "type"]
-        let words = firstLine
-            .components(separatedBy: .whitespaces)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !echoWords.contains($0.lowercased()) }
-            .prefix(3)
-        var result = words.joined(separator: " ")
-        result = result.replacingOccurrences(of: "[^A-Za-z ]", with: "", options: .regularExpression)
-        result = result.trimmingCharacters(in: .whitespaces)
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return "" }
+
+        // Try first line; if it's all preamble, fall back to second
+        var result = stripKeywordPreamble(lines[0])
+        if result.isEmpty, lines.count > 1 {
+            result = stripKeywordPreamble(lines[1])
+        }
+
         guard !result.isEmpty else { return "" }
         return result.prefix(1).uppercased() + result.dropFirst()
+    }
+
+    private func stripKeywordPreamble(_ line: String) -> String {
+        var s = line
+        // Strip template markers
+        s = s.replacingOccurrences(of: "<<<[^>]+>>>", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        // Strip preamble ("Sure!", "Here is a description:", etc.)
+        s = s.replacingOccurrences(
+            of: #"^(?:Sure[,!]?|Here(?:\s+(?:is|are|follows))?|I will|I'll|I can|As requested[,:]?|Below[:\s])[^\n]*?[.!?:]\s*"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).trimmingCharacters(in: .whitespaces)
+        // Reject literal non-answers the model produces when it can't classify
+        let lower = s.lowercased()
+        let useless = ["none", "n/a", "unknown", "not specified", "not available",
+                       "unable to determine", "cannot determine", "i cannot", "i don't know",
+                       "i do not know", "no information"]
+        if useless.contains(where: { lower == $0 || lower.hasPrefix($0 + ".") || lower.hasPrefix($0 + ",") }) {
+            return ""
+        }
+        return s
     }
 
     // MARK: - Conversation Title Generation
@@ -435,7 +446,7 @@ class AIService {
         var result = raw
         // Strip leading preamble lines (common Qwen meta-commentary slipthrough)
         result = result.replacingOccurrences(
-            of: #"^\s*(?:Here(?:\s+(?:is|are|follows))?|Sure[,!]?|The following[:\s]|This document[:\s]|Below[:\s])[^\n]*[\n:]\s*"#,
+            of: #"^\s*(?:Here(?:\s+(?:is|are|follows))?|Sure[,!]?|I will|I'll|I can|The user|As requested[,:]?|This is a summary|Below[:\s])[^\n]*?[.!?\n:]\s*"#,
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )

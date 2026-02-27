@@ -25,7 +25,7 @@ class FileProcessingService {
     // MARK: - Main Processing
 
     /// Processes a file at the given URL and returns extracted content and metadata
-    func processFile(at url: URL) throws -> ProcessedFileResult {
+    func processFile(at url: URL) async throws -> ProcessedFileResult {
         AppLogger.fileProcessing.info("Processing \(url.lastPathComponent)")
 
         // Try to start accessing security scoped resource
@@ -49,7 +49,7 @@ class FileProcessingService {
             content = extractTextFromPDF(url: url)
             // Detect scanned PDF: PDFKit returned almost no text → fall back to Vision OCR
             if content.trimmingCharacters(in: .whitespacesAndNewlines).count < 200 {
-                let result = extractTextFromPresentationViaOCR(url: url)
+                let result = await extractTextFromPresentationViaOCR(url: url)
                 if !result.text.isEmpty {
                     content = result.text
                     ocrPages = result.pages
@@ -60,12 +60,12 @@ class FileProcessingService {
             content = extractTextFromTXT(url: url)
             documentType = .text
         case "jpg", "jpeg", "png", "heic":
-            let result = extractTextFromPresentationViaOCR(url: url)
+            let result = await extractTextFromPresentationViaOCR(url: url)
             content = result.text.isEmpty ? "No text found in image." : result.text
             ocrPages = result.pages
             documentType = .image
         case "docx", "doc":
-            content = extractTextFromWordDocument(url: url)
+            content = await extractTextFromWordDocument(url: url)
             documentType = .docx
         case "json":
             content = extractTextFromJSON(url: url)
@@ -77,7 +77,7 @@ class FileProcessingService {
             content = "ZIP archive"
             documentType = .zip
         case "ppt":
-            let result = extractTextFromPresentationViaOCR(url: url)
+            let result = await extractTextFromPresentationViaOCR(url: url)
             content = result.text.isEmpty ? "PowerPoint document - text extraction is limited on this file." : result.text
             ocrPages = result.pages
             documentType = .ppt
@@ -87,16 +87,16 @@ class FileProcessingService {
                 content = parsed
                 ocrPages = nil
             } else {
-                let result = extractTextFromPresentationViaOCR(url: url)
+                let result = await extractTextFromPresentationViaOCR(url: url)
                 content = result.text.isEmpty ? "PowerPoint document - text extraction is limited on this file." : result.text
                 ocrPages = result.pages
             }
             documentType = .pptx
         case "xls":
-            content = extractTextFromSpreadsheetViaOCR(url: url)
+            content = await extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xls
         case "xlsx":
-            content = extractTextFromSpreadsheetViaOCR(url: url)
+            content = await extractTextFromSpreadsheetViaOCR(url: url)
             documentType = .xlsx
         default:
             throw FileProcessingError.unsupportedFormat(fileExtension)
@@ -175,7 +175,7 @@ class FileProcessingService {
         }
     }
 
-    private func extractTextFromWordDocument(url: URL) -> String {
+    private func extractTextFromWordDocument(url: URL) async -> String {
         AppLogger.fileProcessing.info("Extracting Word document")
         let ext = url.pathExtension.lowercased()
 
@@ -190,7 +190,7 @@ class FileProcessingService {
         }
 
         // Fallback: OCR a rendered thumbnail
-        if let ocrText = extractTextFromDOCXViaOCR(url: url), !ocrText.isEmpty, !ocrText.contains("OCR failed") {
+        if let ocrText = await extractTextFromDOCXViaOCR(url: url), !ocrText.isEmpty, !ocrText.contains("OCR failed") {
             AppLogger.fileProcessing.info("Using OCR text (\(ocrText.count) chars)")
             return formatExtractedText(ocrText)
         }
@@ -378,16 +378,16 @@ class FileProcessingService {
 
     // MARK: - OCR-based Extraction
 
-    private func extractTextFromDOCXViaOCR(url: URL) -> String? {
-        if let img = generateThumbnail(url: url) {
+    private func extractTextFromDOCXViaOCR(url: URL) async -> String? {
+        if let img = await generateThumbnail(url: url) {
             let result = ocrService.performOCR(on: img, pageIndex: 0)
             return result.text
         }
         return nil
     }
 
-    private func extractTextFromSpreadsheetViaOCR(url: URL) -> String {
-        if let img = generateThumbnail(url: url) {
+    private func extractTextFromSpreadsheetViaOCR(url: URL) async -> String {
+        if let img = await generateThumbnail(url: url) {
             let result = ocrService.performOCR(on: img, pageIndex: 0)
             if !result.text.isEmpty && !result.text.contains("OCR failed") {
                 return formatExtractedText(result.text)
@@ -396,8 +396,8 @@ class FileProcessingService {
         return "Imported spreadsheet. Text extraction is limited on this file."
     }
 
-    private func extractTextFromPresentationViaOCR(url: URL) -> (text: String, pages: [OCRPage]?) {
-        if let img = generateThumbnail(url: url) {
+    private func extractTextFromPresentationViaOCR(url: URL) async -> (text: String, pages: [OCRPage]?) {
+        if let img = await generateThumbnail(url: url) {
             let result = ocrService.performOCR(on: img, pageIndex: 0)
             if !result.text.isEmpty && !result.text.contains("OCR failed") {
                 return (formatExtractedText(result.text), [result.page])
@@ -406,24 +406,21 @@ class FileProcessingService {
         return ("", nil)
     }
 
-    private func generateThumbnail(url: URL, size: CGSize = CGSize(width: 2048, height: 2048)) -> UIImage? {
+    private func generateThumbnail(url: URL, size: CGSize = CGSize(width: 2048, height: 2048)) async -> UIImage? {
         let request = QLThumbnailGenerator.Request(fileAt: url,
                                                    size: size,
                                                    scale: UIScreen.main.scale,
                                                    representationTypes: .thumbnail)
-        let generator = QLThumbnailGenerator.shared
-        let semaphore = DispatchSemaphore(value: 0)
-        var image: UIImage?
-        generator.generateBestRepresentation(for: request) { rep, error in
-            if let rep = rep {
-                image = rep.uiImage
-            } else if let error = error {
-                AppLogger.fileProcessing.error("Thumbnail generation error: \(error.localizedDescription)")
+        // withCheckedContinuation suspends the task instead of blocking a thread,
+        // eliminating the QoS priority inversion that occurs with semaphore.wait().
+        return await withCheckedContinuation { continuation in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, error in
+                if let error = error {
+                    AppLogger.fileProcessing.error("Thumbnail generation error: \(error.localizedDescription)")
+                }
+                continuation.resume(returning: rep?.uiImage)
             }
-            semaphore.signal()
         }
-        _ = semaphore.wait(timeout: .now() + 5)
-        return image
     }
 
     // MARK: - Helper Methods

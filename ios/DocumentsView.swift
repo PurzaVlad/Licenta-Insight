@@ -314,12 +314,18 @@ struct DocumentsView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
 
-            VStack(spacing: 12) {
+            HStack(spacing: 2) {
                 Button("Scan Document") {
                     startScan()
                 }
                 .buttonStyle(.borderedProminent)
-
+              
+                Text("or")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+              
                 Button("Import Files") {
                     showingDocumentPicker = true
                 }
@@ -1113,13 +1119,14 @@ struct DocumentsView: View {
 
     private func processImportedFiles(_ urls: [URL]) {
         isProcessing = true
+        let folderId = navigationPath.last?.id
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached(priority: .userInitiated) {
             var processedDocuments: [Document] = []
 
             for url in urls {
                 let didStartAccess = url.startAccessingSecurityScopedResource()
-                if let document = self.documentManager.processFile(at: url) {
+                if let document = await self.documentManager.processFile(at: url) {
                     processedDocuments.append(document)
                 }
                 if didStartAccess {
@@ -1127,7 +1134,7 @@ struct DocumentsView: View {
                 }
             }
 
-            DispatchQueue.main.async {
+            await MainActor.run {
                 for document in processedDocuments {
                     let withFolder = Document(
                         id: document.id,
@@ -1140,7 +1147,7 @@ struct DocumentsView: View {
                         tags: document.tags,
                         sourceDocumentId: document.sourceDocumentId,
                         dateCreated: document.dateCreated,
-                        folderId: self.navigationPath.last?.id,
+                        folderId: folderId,
                         sortOrder: document.sortOrder,
                         type: document.type,
                         imageData: document.imageData,
@@ -1168,7 +1175,7 @@ struct DocumentsView: View {
                                 tags: current.tags,
                                 sourceDocumentId: current.sourceDocumentId,
                                 dateCreated: current.dateCreated,
-                                folderId: current.folderId ?? self.navigationPath.last?.id,
+                                folderId: current.folderId ?? folderId,
                                 sortOrder: current.sortOrder,
                                 type: current.type,
                                 imageData: current.imageData,
@@ -3725,13 +3732,14 @@ struct FolderDocumentsView: View {
 
     private func processImportedFiles(_ urls: [URL]) {
         isProcessing = true
+        let folderId = folder.id
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached(priority: .userInitiated) {
             var processedDocuments: [Document] = []
 
             for url in urls {
                 let didStartAccess = url.startAccessingSecurityScopedResource()
-                if let document = self.documentManager.processFile(at: url) {
+                if let document = await self.documentManager.processFile(at: url) {
                     processedDocuments.append(document)
                 }
                 if didStartAccess {
@@ -3739,7 +3747,7 @@ struct FolderDocumentsView: View {
                 }
             }
 
-            DispatchQueue.main.async {
+            await MainActor.run {
                 for document in processedDocuments {
                     let withFolder = Document(
                         id: document.id,
@@ -3752,7 +3760,7 @@ struct FolderDocumentsView: View {
                         tags: document.tags,
                         sourceDocumentId: document.sourceDocumentId,
                         dateCreated: document.dateCreated,
-                        folderId: self.folder.id,
+                        folderId: folderId,
                         sortOrder: document.sortOrder,
                         type: document.type,
                         imageData: document.imageData,
@@ -3780,7 +3788,7 @@ struct FolderDocumentsView: View {
                                 tags: current.tags,
                                 sourceDocumentId: current.sourceDocumentId,
                                 dateCreated: current.dateCreated,
-                                folderId: current.folderId ?? self.folder.id,
+                                folderId: current.folderId ?? folderId,
                                 sortOrder: current.sortOrder,
                                 type: current.type,
                                 imageData: current.imageData,

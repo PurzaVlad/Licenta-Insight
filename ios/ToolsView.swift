@@ -379,6 +379,25 @@ private struct ToolsPDFPickerView: View {
             isAdjustingSelection = true
             defer { isAdjustingSelection = false }
 
+            if maxSelection == 1 {
+                // Radio-button: always pick the newly tapped item
+                if newSet.isEmpty {
+                    // Prevent deselection — keep current
+                    if let current = selectedIds.first {
+                        selectionSet = [current]
+                        lastSelectionSet = selectionSet
+                    }
+                } else {
+                    let added = newSet.subtracting(lastSelectionSet)
+                    let pick = added.first ?? newSet.first!
+                    selectionSet = [pick]
+                    lastSelectionSet = selectionSet
+                    selectedIds = [pick]
+                }
+                return
+            }
+
+            // Multi-select (merge) — existing ordered behaviour
             let added = newSet.subtracting(lastSelectionSet)
             let removed = lastSelectionSet.subtracting(newSet)
             var ordered = selectedIds
@@ -387,9 +406,7 @@ private struct ToolsPDFPickerView: View {
                 ordered.removeAll { removed.contains($0) }
             }
             if !added.isEmpty {
-                for id in added {
-                    ordered.append(id)
-                }
+                for id in added { ordered.append(id) }
             }
 
             if ordered.count > maxSelection {
@@ -957,6 +974,7 @@ struct SignPDFView: View {
     @State private var showingAlert = false
     @State private var alertMessage = ""
     @State private var didAutoPresent = false
+    @State private var signatureScale: Double = 1.0
 
     init(
         autoPresentPicker: Bool = false,
@@ -983,6 +1001,12 @@ struct SignPDFView: View {
                     .cornerRadius(12)
                     .padding(.horizontal)
 
+                if pdfController.selectedPlacementId != nil {
+                    signatureScaleBar
+                        .padding(.horizontal)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
                 HStack(spacing: 12) {
                     Button("Draw Signature") {
                         showingSignatureSheet = true
@@ -1004,6 +1028,7 @@ struct SignPDFView: View {
                 }
             }
         }
+        .animation(.spring(response: 0.3), value: pdfController.selectedPlacementId)
         .padding(.top, 8)
         .navigationTitle("Sign PDF")
         .navigationBarTitleDisplayMode(.inline)
@@ -1042,12 +1067,39 @@ struct SignPDFView: View {
         .onChange(of: selectedDocument) { newDoc in
             loadPDF(for: newDoc)
         }
+        .onChange(of: pdfController.selectedPlacementId) { _ in
+            signatureScale = 1.0
+        }
         .alert("Sign PDF", isPresented: $showingAlert) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(alertMessage)
         }
         .bindGlobalOperationLoading(isSaving)
+    }
+
+    private var signatureScaleBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "signature")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Slider(
+                value: Binding(
+                    get: { signatureScale },
+                    set: { v in
+                        signatureScale = v
+                        pdfController.setScaleForSelected(v)
+                    }
+                ),
+                in: 0.25...3.0
+            )
+            Image(systemName: "signature")
+                .font(.system(size: 18))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var signaturePanel: some View {
@@ -1080,6 +1132,13 @@ struct SignPDFView: View {
                             .buttonStyle(.plain)
                             .cornerRadius(10)
                             .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    signatureStore.removeSignature(id: sig.id)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal)
@@ -1145,6 +1204,8 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
     private var signatureViews: [UUID: SignaturePlacementView] = [:]
     private var observers: [NSObjectProtocol] = []
     private var scrollObservation: NSKeyValueObservation?
+    @Published var selectedPlacementId: UUID?
+    private var initialBoundsForScale: [UUID: CGRect] = [:]
 
     deinit {
         removeObservers()
@@ -1156,6 +1217,8 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
         placements.removeAll()
         signatureViews.values.forEach { $0.removeFromSuperview() }
         signatureViews.removeAll()
+        selectedPlacementId = nil
+        initialBoundsForScale.removeAll()
         pdfView?.document = document
         pdfView?.autoScales = true
         updateOverlay()
@@ -1268,6 +1331,18 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
             self?.attachScrollObserver()
             self?.updateOverlay()
         })
+        let bgTap = UITapGestureRecognizer(target: self, action: #selector(handleBackgroundTap(_:)))
+        bgTap.cancelsTouchesInView = false
+        overlayView.addGestureRecognizer(bgTap)
+    }
+
+    @objc private func handleBackgroundTap(_ gesture: UITapGestureRecognizer) {
+        guard let overlayView else { return }
+        let location = gesture.location(in: overlayView)
+        let isOnSignature = signatureViews.values.contains { $0.frame.contains(location) }
+        if !isOnSignature {
+            selectPlacement(id: nil)
+        }
     }
 
     private func removeObservers() {
@@ -1301,12 +1376,12 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
                 created.onDelete = { [weak self] in
                     self?.removePlacement(id: placement.id)
                 }
+                created.onSelect = { [weak self] in
+                    self?.selectPlacement(id: placement.id)
+                }
                 let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSignaturePan(_:)))
                 pan.delegate = self
                 created.addGestureRecognizer(pan)
-                let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleSignaturePinch(_:)))
-                pinch.delegate = self
-                created.addGestureRecognizer(pinch)
                 overlayView.addSubview(created)
                 signatureViews[placement.id] = created
                 sigView = created
@@ -1324,8 +1399,37 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
             if let view = signatureViews.removeValue(forKey: id) {
                 view.removeFromSuperview()
             }
+            if selectedPlacementId == id {
+                selectedPlacementId = nil
+            }
             updateOverlay()
         }
+    }
+
+    func selectPlacement(id: UUID?) {
+        if let id, let idx = placements.firstIndex(where: { $0.id == id }) {
+            initialBoundsForScale[id] = placements[idx].boundsInPage
+        }
+        selectedPlacementId = id
+        for (placementId, view) in signatureViews {
+            UIView.performWithoutAnimation { view.isSelected = (placementId == id) }
+        }
+    }
+
+    func setScaleForSelected(_ scale: CGFloat) {
+        guard let id = selectedPlacementId,
+              let idx = placements.firstIndex(where: { $0.id == id }),
+              let base = initialBoundsForScale[id] else { return }
+        let aspect = base.height / max(base.width, 1)
+        let newWidth = base.width * scale
+        let newHeight = newWidth * aspect
+        let cx = placements[idx].boundsInPage.midX
+        let cy = placements[idx].boundsInPage.midY
+        placements[idx].boundsInPage = CGRect(
+            x: cx - newWidth / 2, y: cy - newHeight / 2,
+            width: newWidth, height: newHeight
+        )
+        updateOverlay()
     }
 
     @objc private func handleSignaturePan(_ gesture: UIPanGestureRecognizer) {
@@ -1373,57 +1477,8 @@ final class PDFSigningController: NSObject, ObservableObject, UIGestureRecognize
         }
     }
 
-    @objc private func handleSignaturePinch(_ gesture: UIPinchGestureRecognizer) {
-        guard let view = gesture.view,
-              let overlayView,
-              let pdfView,
-              let idString = view.accessibilityIdentifier,
-              let placementIndex = placements.firstIndex(where: { $0.id.uuidString == idString }) else {
-            return
-        }
-
-        switch gesture.state {
-        case .began, .changed:
-            let scale = gesture.scale
-            let center = view.center
-            let newWidth = min(max(view.bounds.width * scale, 30), 500)
-            let newHeight = min(max(view.bounds.height * scale, 15), 500)
-            view.bounds = CGRect(origin: .zero, size: CGSize(width: newWidth, height: newHeight))
-            view.center = center
-            gesture.scale = 1.0
-        case .ended, .cancelled, .failed:
-            let centerInPdf = overlayView.convert(view.center, to: pdfView)
-            guard let page = pdfView.page(for: centerInPdf, nearest: true) else { return }
-            let pageBounds = page.bounds(for: pdfView.displayBox)
-            let frameInPdf = overlayView.convert(view.frame, to: pdfView)
-            var pageRect = pdfView.convert(frameInPdf, to: page)
-
-            let placement = placements[placementIndex]
-            let contentInsetsScaled = scaledContentInsets(placement.contentInsets, imageSize: placement.image.size, targetSize: pageRect.size)
-            let minX = pageBounds.minX - contentInsetsScaled.left
-            let maxX = pageBounds.maxX - pageRect.width + contentInsetsScaled.right
-            let minY = pageBounds.minY - contentInsetsScaled.bottom
-            let maxY = pageBounds.maxY - pageRect.height + contentInsetsScaled.top
-            pageRect.origin.x = min(max(pageRect.origin.x, minX), maxX)
-            pageRect.origin.y = min(max(pageRect.origin.y, minY), maxY)
-
-            let pageIndex = document?.index(for: page) ?? max(0, (page.pageRef?.pageNumber ?? 1) - 1)
-            placements[placementIndex].pageIndex = pageIndex
-            placements[placementIndex].boundsInPage = pageRect
-
-            let correctedViewRect = pdfView.convert(pageRect, from: page)
-            let correctedInOverlay = overlayView.convert(correctedViewRect, from: pdfView)
-            view.frame = correctedInOverlay
-            if let sigView = view as? SignaturePlacementView {
-                sigView.contentInsets = scaledContentInsets(placement.contentInsets, imageSize: placement.image.size, targetSize: correctedInOverlay.size)
-            }
-        default:
-            break
-        }
-    }
-
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        gestureRecognizer.view is SignaturePlacementView && otherGestureRecognizer.view is SignaturePlacementView
+        false
     }
 
     private func attachScrollObserver() {
@@ -1529,9 +1584,17 @@ struct PDFSigningViewRepresentable: UIViewRepresentable {
 final class SignaturePlacementView: UIView {
     private let imageView = UIImageView()
     private let deleteButton = UIButton(type: .system)
+    private let selectionBorderView = UIView()
     var onDelete: (() -> Void)?
+    var onSelect: (() -> Void)?
     var contentInsets: UIEdgeInsets = .zero {
         didSet { setNeedsLayout() }
+    }
+    var isSelected: Bool = false {
+        didSet {
+            selectionBorderView.isHidden = !isSelected
+            deleteButton.isHidden = !isSelected
+        }
     }
 
     init(image: UIImage) {
@@ -1552,6 +1615,14 @@ final class SignaturePlacementView: UIView {
         imageView.contentMode = .scaleAspectFit
         imageView.translatesAutoresizingMaskIntoConstraints = false
 
+        selectionBorderView.layer.borderColor = UIColor.systemBlue.cgColor
+        selectionBorderView.layer.borderWidth = 1.5
+        selectionBorderView.layer.cornerRadius = 4
+        selectionBorderView.backgroundColor = .clear
+        selectionBorderView.isUserInteractionEnabled = false
+        selectionBorderView.isHidden = true
+        selectionBorderView.translatesAutoresizingMaskIntoConstraints = false
+
         deleteButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
         deleteButton.tintColor = .systemRed
         deleteButton.translatesAutoresizingMaskIntoConstraints = true
@@ -1559,16 +1630,21 @@ final class SignaturePlacementView: UIView {
         deleteButton.addTarget(self, action: #selector(handleDelete), for: .touchUpInside)
 
         addSubview(imageView)
+        addSubview(selectionBorderView)
         addSubview(deleteButton)
 
         NSLayoutConstraint.activate([
             imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
             imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
             imageView.topAnchor.constraint(equalTo: topAnchor),
-            imageView.bottomAnchor.constraint(equalTo: bottomAnchor)
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            selectionBorderView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            selectionBorderView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            selectionBorderView.topAnchor.constraint(equalTo: topAnchor),
+            selectionBorderView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleDelete))
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         tap.cancelsTouchesInView = false
         addGestureRecognizer(tap)
     }
@@ -1582,8 +1658,8 @@ final class SignaturePlacementView: UIView {
         deleteButton.frame = CGRect(x: x, y: y, width: buttonSize, height: buttonSize)
     }
 
-    @objc private func toggleDelete() {
-        deleteButton.isHidden.toggle()
+    @objc private func handleTap() {
+        onSelect?()
     }
 
     @objc private func handleDelete() {
@@ -1853,6 +1929,13 @@ final class SignatureStore: ObservableObject {
         if stored.contains(encoded) == false {
             stored.insert(encoded, at: 0)
         }
+        UserDefaults.standard.set(stored, forKey: storageKey)
+        load()
+    }
+
+    func removeSignature(id: String) {
+        var stored = storedSignatures()
+        stored.removeAll { $0 == id }
         UserDefaults.standard.set(stored, forKey: storageKey)
         load()
     }
@@ -3179,6 +3262,12 @@ struct PDFSinglePickerSheet: View {
                                     Text(fileTypeLabel(documentType: document.type, titleParts: splitDisplayTitle(document.title)))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                if selectedDocument?.id == document.id {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(Color("Primary"))
+                                        .fontWeight(.semibold)
                                 }
                             }
                         }

@@ -24,7 +24,6 @@ class DocumentManager: ObservableObject {
     @Published private(set) var vaultUnavailableMessage: String?
 
     // Private state
-    private let sharedInboxImportQueue = DispatchQueue(label: "com.purzavlad.insight.sharedInboxImport", qos: .utility)
     private var isImportingSharedInbox = false
 
     init(
@@ -53,7 +52,7 @@ class DocumentManager: ObservableObject {
         guard let inboxURL = sharedInboxURL(createIfMissing: true) else { return }
 
         isImportingSharedInbox = true
-        sharedInboxImportQueue.async { [weak self] in
+        Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
 
             let fm = FileManager.default
@@ -66,7 +65,7 @@ class DocumentManager: ObservableObject {
                 )
             } catch {
                 AppLogger.documents.error("Failed to list shared inbox: \(error.localizedDescription)")
-                DispatchQueue.main.async { self.isImportingSharedInbox = false }
+                await MainActor.run { self.isImportingSharedInbox = false }
                 return
             }
 
@@ -81,9 +80,7 @@ class DocumentManager: ObservableObject {
             }
 
             guard !fileURLs.isEmpty else {
-                DispatchQueue.main.async {
-                    self.isImportingSharedInbox = false
-                }
+                await MainActor.run { self.isImportingSharedInbox = false }
                 return
             }
 
@@ -101,13 +98,13 @@ class DocumentManager: ObservableObject {
                     continue
                 }
 
-                if let document = self.processFile(at: url) {
+                if let document = await self.processFile(at: url) {
                     importedDocuments.append(document)
                     consumedURLs.append(url)
                 }
             }
 
-            DispatchQueue.main.async {
+            await MainActor.run {
                 for document in importedDocuments {
                     self.addDocument(document)
                 }
@@ -239,9 +236,9 @@ class DocumentManager: ObservableObject {
         saveState()
         AppLogger.documents.info("Document saved successfully")
 
-        generateSummary(for: updated)
-        generateTags(for: updated)
         generateKeywords(for: updated)
+        generateTags(for: updated)
+        generateSummary(for: updated)
     }
 
     func deleteDocument(_ document: Document) {
@@ -575,7 +572,7 @@ class DocumentManager: ObservableObject {
         return fileStorageService.loadAnyFileData(for: documentId)
     }
 
-    func refreshContentIfNeeded(for documentId: UUID) {
+    func refreshContentIfNeeded(for documentId: UUID) async {
         guard let doc = getDocument(by: documentId) else { return }
         guard doc.type == .docx else { return }
 
@@ -591,7 +588,7 @@ class DocumentManager: ObservableObject {
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("repair_\(doc.id).docx")
             do {
                 try data.write(to: tempURL)
-                let result = try fileProcessingService.processFile(at: tempURL)
+                let result = try await fileProcessingService.processFile(at: tempURL)
                 do { try FileManager.default.removeItem(at: tempURL) } catch {
                     AppLogger.documents.warning("Failed to remove temp file: \(error.localizedDescription)")
                 }
@@ -619,18 +616,16 @@ class DocumentManager: ObservableObject {
 
         AppLogger.ai.info("Generating summary for '\(document.title)'")
 
-        // Use AIService to build the summary prompt
-        let prompt = aiService.buildSummaryPrompt(for: document, length: length)
-
         if force {
             updateSummary(for: document.id, to: "Processing summary...")
         }
 
-        // Send to EdgeAI for processing
+        // Prompt is built lazily in SummaryCoordinator right before the EdgeAI call,
+        // so keywordsResume is available even if keyword extraction finishes after queuing.
         NotificationCenter.default.post(
             name: AppConstants.Notifications.generateDocumentSummary,
             object: nil,
-            userInfo: ["documentId": document.id.uuidString, "prompt": prompt, "force": force]
+            userInfo: ["documentId": document.id.uuidString, "length": length.rawValue, "force": force]
         )
     }
     
@@ -651,7 +646,7 @@ class DocumentManager: ObservableObject {
     
     // MARK: - File Processing
 
-    func processFile(at url: URL) -> Document? {
+    func processFile(at url: URL) async -> Document? {
         AppLogger.documents.info("Processing file at \(url.lastPathComponent)")
 
         // Try to start accessing security scoped resource
@@ -664,7 +659,7 @@ class DocumentManager: ObservableObject {
 
         do {
             // Use FileProcessingService to process the file
-            let result = try fileProcessingService.processFile(at: url)
+            let result = try await fileProcessingService.processFile(at: url)
 
             let docId = UUID()
             var content = result.content

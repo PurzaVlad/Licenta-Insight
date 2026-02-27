@@ -1632,7 +1632,7 @@ struct DocumentSummaryView: View {
         }
         .onAppear {
             // Repair Word content if it was previously saved as XML noise
-            documentManager.refreshContentIfNeeded(for: document.id)
+            Task { await documentManager.refreshContentIfNeeded(for: document.id) }
             // Use saved summary if available; avoid regenerating every time
             self.summary = currentDoc.summary
             let s = self.summary.trimmingCharacters(in: .whitespacesAndNewlines)

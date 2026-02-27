@@ -14,7 +14,7 @@ class SummaryCoordinator: ObservableObject {
 
     private struct SummaryJob: Equatable {
         let documentId: UUID
-        let prompt: String
+        let length: SummaryLength
         let force: Bool
     }
 
@@ -66,12 +66,13 @@ class SummaryCoordinator: ObservableObject {
     private func handleGenerateNotification(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let idString = userInfo["documentId"] as? String,
-              let prompt = userInfo["prompt"] as? String,
               let docId = UUID(uuidString: idString) else {
             return
         }
         let force = (userInfo["force"] as? Bool) ?? false
-        AppLogger.ai.debug("Received GenerateDocumentSummary for \(docId), force=\(force), promptLength=\(prompt.count)")
+        let lengthRaw = (userInfo["length"] as? String) ?? "medium"
+        let length = SummaryLength(rawValue: lengthRaw) ?? .medium
+        AppLogger.ai.debug("Received GenerateDocumentSummary for \(docId), force=\(force), length=\(length.rawValue)")
 
         if !force && summaryRequestsInFlight.contains(docId) {
             return
@@ -82,7 +83,7 @@ class SummaryCoordinator: ObservableObject {
         }
 
         summaryQueue.removeAll { $0.documentId == docId }
-        let job = SummaryJob(documentId: docId, prompt: prompt, force: force)
+        let job = SummaryJob(documentId: docId, length: length, force: force)
         summaryQueue.append(job)
         processNextSummaryIfNeeded()
     }
@@ -106,7 +107,8 @@ class SummaryCoordinator: ObservableObject {
         await withCheckedContinuation { continuation in
             edgeAI.generate(prompt, resolver: { result in
                 let text = (result as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                continuation.resume(returning: text.isEmpty ? nil : text)
+                let isNoOutput = text.lowercased() == "(no output)"
+                continuation.resume(returning: (text.isEmpty || isNoOutput) ? nil : text)
             }, rejecter: { _, _, _ in
                 continuation.resume(returning: nil)
             })
@@ -151,7 +153,21 @@ class SummaryCoordinator: ObservableObject {
     private func runSummaryGeneration(edgeAI: EdgeAI, job: SummaryJob) async {
         let docId = job.documentId
 
-        guard let raw = await generateWithEdgeAI(edgeAI, prompt: job.prompt) else {
+        // Build the prompt here (not at queue time) so keywordsResume is available
+        // if keyword extraction completed while this job was waiting in the queue.
+        guard let doc = documentManager.getDocument(by: docId) else {
+            summaryRequestsInFlight.remove(docId)
+            finishSummary(for: docId)
+            return
+        }
+        let prompt = AIService.shared.buildSummaryPrompt(for: doc, length: job.length)
+
+        guard let raw = await generateWithEdgeAI(edgeAI, prompt: prompt) else {
+            // Clear any placeholder we wrote (e.g. "Processing summary…" from force=true)
+            // so it doesn't stay stuck. Empty string is treated as placeholder → retried next open.
+            if let doc = documentManager.getDocument(by: docId), isSummaryPlaceholder(doc.summary) {
+                documentManager.updateSummary(for: docId, to: "")
+            }
             summaryRequestsInFlight.remove(docId)
             finishSummary(for: docId)
             return
@@ -199,7 +215,8 @@ class SummaryCoordinator: ObservableObject {
         return trimmed.isEmpty ||
             trimmed == "Processing..." ||
             trimmed == "Processing summary..." ||
-            trimmed.contains("Processing summary")
+            trimmed.contains("Processing summary") ||
+            trimmed.lowercased() == "(no output)"
     }
 
     private func shouldAutoSummarize(_ doc: Document) -> Bool {

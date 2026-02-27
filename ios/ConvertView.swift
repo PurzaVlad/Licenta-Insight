@@ -303,11 +303,17 @@ private struct ConvertFlowView: View {
             isAdjustingSelection = true
             defer { isAdjustingSelection = false }
 
-            if let first = newSet.first {
-                selectionSet = [first]
-                selectedId = first
+            if newSet.isEmpty {
+                // Radio-button: prevent deselection once something is selected
+                if let current = selectedId {
+                    selectionSet = [current]
+                }
             } else {
-                selectedId = nil
+                // Pick the newly added item (not the previously selected one)
+                let added = newSet.subtracting(selectedId.map { [$0] } ?? [])
+                let pick = added.first ?? newSet.first!
+                selectionSet = [pick]
+                selectedId = pick
             }
         }
         .onDisappear {

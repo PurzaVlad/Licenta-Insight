@@ -59,6 +59,8 @@ Rules:
 - If not found, say: "Not specified in the documents."
 - Never include system markers or metadata.`;
 
+const KEYWORD_SYSTEM_PROMPT = `In one sentence, describe what type of document this is and what it covers. Be specific. Output only the sentence, nothing else.`;
+
 const CONTINUATION_SYSTEM_PROMPT =
   'Continue the previous answer in 1 short sentence. Do not repeat.';
 
@@ -68,6 +70,7 @@ const NO_HISTORY_MARKER = '<<<NO_HISTORY>>>';
 const SUMMARY_TASK_MARKER = '<<<SUMMARY_TASK>>>';
 const NAME_MARKER = '<<<NAME_REQUEST>>>';
 const TAG_MARKER = '<<<TAG_REQUEST>>>';
+const KEYWORD_MARKER = '<<<KEYWORD_REQUEST>>>';
 
 
 const INITIAL_CONVERSATION: Message[] = [
@@ -347,20 +350,24 @@ useEffect(() => {
 
   const parsePromptControlMarkers = (
     input: string,
-  ): { text: string; noHistory: boolean; nPredict: number | null; isSummaryTask: boolean } => {
+  ): { text: string; noHistory: boolean; nPredict: number | null; isSummaryTask: boolean; summaryLength: 'short' | 'medium' | 'long' } => {
     let text = input;
     let noHistory = false;
     let nPredict: number | null = null;
     let isSummaryTask = false;
+    let summaryLength: 'short' | 'medium' | 'long' = 'medium';
 
     if (text.includes(NO_HISTORY_MARKER)) {
       noHistory = true;
       text = text.replace(NO_HISTORY_MARKER, '').trimStart();
     }
 
-    if (text.includes(SUMMARY_TASK_MARKER)) {
+    // Match <<<SUMMARY_TASK>>> or <<<SUMMARY_TASK:short/medium/long>>>
+    const summaryMatch = text.match(/<<<SUMMARY_TASK(?::(\w+))?>>>/);
+    if (summaryMatch) {
       isSummaryTask = true;
-      text = text.replace(SUMMARY_TASK_MARKER, '').trimStart();
+      if (summaryMatch[1] === 'short' || summaryMatch[1] === 'long') summaryLength = summaryMatch[1];
+      text = text.replace(/<<<SUMMARY_TASK(?::\w+)?>>>/, '').trimStart();
     }
 
     // Extract and strip <<<N_PREDICT:N>>> token embedded by Swift for output length control
@@ -376,7 +383,7 @@ useEffect(() => {
       text = text.slice(CHAT_BRIEF_MARKER.length).trimStart();
     }
 
-    return {text, noHistory, nPredict, isSummaryTask};
+    return {text, noHistory, nPredict, isSummaryTask, summaryLength};
   };
 
   const buildNoHistoryMessages = (input: string): Message[] => {
@@ -442,16 +449,20 @@ useEffect(() => {
         const noHistory = parsedPrompt.noHistory;
         const nPredictOverride = parsedPrompt.nPredict;
         const isSummaryTask = parsedPrompt.isSummaryTask;
-        // Structured Swift task (summary, keyword, etc.) — n_predict controls length, not JS caps
-        const isStructuredTask = noHistory && nPredictOverride !== null;
+        const summaryLength = parsedPrompt.summaryLength;
         const isName = rawPrompt.startsWith(NAME_MARKER);
         const isTag = rawPrompt.startsWith(TAG_MARKER);
+        const isKeyword = rawPrompt.startsWith(KEYWORD_MARKER);
+        // Structured Swift task (summary, keyword, etc.) — n_predict controls length, not JS caps
+        const isStructuredTask = (noHistory && nPredictOverride !== null) || isKeyword;
         const userContent = isName
           ? rawPrompt.slice(NAME_MARKER.length).trim()
           : isTag
           ? rawPrompt.slice(TAG_MARKER.length).trim()
+          : isKeyword
+          ? rawPrompt.slice(KEYWORD_MARKER.length).trim()
           : rawPrompt;
-        const modeLabel: 'summary' | 'name' | 'tag' | 'chat' = isSummaryTask ? 'summary' : isName ? 'name' : isTag ? 'tag' : 'chat';
+        const modeLabel: 'summary' | 'name' | 'tag' | 'keyword' | 'chat' = isSummaryTask ? 'summary' : isName ? 'name' : isTag ? 'tag' : isKeyword ? 'keyword' : 'chat';
         const jobType = modeLabel;
         console.log('[EdgeAI] Mode:', modeLabel, 'content length:', userContent.length);
         currentJobRef.current = { requestId, prompt, type: modeLabel };
@@ -462,6 +473,8 @@ useEffect(() => {
           ? [userMessage]
           : isTag
           ? [{ role: 'system', content: TAG_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
+          : isKeyword
+          ? [{ role: 'system', content: KEYWORD_SYSTEM_PROMPT, timestamp: Date.now() }, userMessage]
           : noHistory
           ? buildNoHistoryMessages(userContent)
           : truncateChatHistory([...conversationRef.current, userMessage]);
@@ -562,11 +575,38 @@ useEffect(() => {
             );
             text = (tagResult?.text ?? '').trim();
             generationHitTokenLimit = inferHitTokenLimit(tagResult, nPredictClamped, text);
+          } else if (isKeyword) {
+            // Keyword: ask model to identify document type.
+            // No '\n' stop — Qwen often starts with a blank line, which would fire immediately.
+            // Instead rely on n_predict=30 + first-line extraction below.
+            const keywordPrompt = formatPrompt(messagesForAI);
+            const keywordResult = await context.completion(
+              {
+                prompt: keywordPrompt,
+                n_predict: 60,
+                temperature: DEFAULT_TEMPERATURE,
+                top_p: DEFAULT_TOP_P,
+                repeat_penalty: DEFAULT_REPEAT_PENALTY,
+                repeat_last_n: 64,
+                min_p: 0.05,
+                stop: stopTokens,
+              },
+              () => {}
+            );
+            // Take first non-empty, non-preamble line; fall back to next line if first was all preamble.
+            const preambleRe = /^\s*(Sure[,!]?|Here(?:\s+(?:is|are|follows))?|I will|I'll|I can|As requested[,:]?|Below[:\s])[^\n]*?[.!?:]\s*/i;
+            const kwLines = (keywordResult?.text ?? '').split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+            let kwText = kwLines[0] ?? '';
+            kwText = kwText.replace(preambleRe, '').trim();
+            if (!kwText && kwLines.length > 1) kwText = kwLines[1] ?? '';
+            text = kwText;
+            generationHitTokenLimit = false;
           } else {
             const nPredictClamped = nPredictOverride ?? DEFAULT_MAX_NEW_TOKENS;
-            const summaryStopSeqs = isSummaryTask
-              ? ['\nSummary', '\nNote:', '\nI ', '\nHere', '\nSure', '```']
-              : [];
+            // Avoid '\nSummary', '\nHere', '\nSure' etc. — Qwen often starts with a blank line,
+            // which would make these fire immediately with zero output.
+            // Preamble cleanup in post-processing handles "Here"/"Sure" starts.
+            const summaryStopSeqs = isSummaryTask ? ['```'] : [];
             const completionParams = {
               prompt: promptText,
               n_predict: nPredictClamped,
@@ -763,6 +803,22 @@ useEffect(() => {
             return sentences.join(' ').trim();
           };
 
+          const stripMarkdownToPlainText = (input: string): string => {
+            let out = input;
+            // Remove standalone header lines (Key Points:, 1. **Section:**, ## Heading, etc.)
+            out = out.replace(/^[\s]*(?:#{1,6}\s+.*|\*\*[^*\n]+:\*\*|\d+\.\s+\*\*[^*\n]+:\*\*|Key Points?:|Key Takeaways?:|Summary:|Overview:)\s*$/gmi, '');
+            // Remove numbered list prefixes
+            out = out.replace(/^[\s]*\d+\.\s+/gm, '');
+            // Remove bullet prefixes (•, -, *)
+            out = out.replace(/^[\s]*[•\-*]\s+/gm, '');
+            // Remove bold/italic markers
+            out = out.replace(/\*{1,3}([^*\n]+)\*{1,3}/g, '$1');
+            out = out.replace(/_{1,3}([^_\n]+)_{1,3}/g, '$1');
+            // Join non-empty lines into prose
+            out = out.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0).join(' ');
+            return out.trim();
+          };
+
           const stripSummaryHeading = (input: string): string => {
             let out = input;
             // Remove a leading sentence that contains "summary" up to the first colon.
@@ -910,17 +966,18 @@ useEffect(() => {
             .replace(/^\s*model\s*\n/i, '')
             .trim();
           if (isSummaryTask && !abortCurrentRef.current) {
+            if (summaryLength === 'short') text = stripMarkdownToPlainText(text);
             text = stripSummaryHeading(text);
             text = stripLeadingMarkdownMarkers(text).trimStart();
           }
 
           if (isSummaryTask && !abortCurrentRef.current) {
             // Strip preamble slipthrough patterns
-            text = text.replace(/^\s*(Here(?:\s+(?:is|are|follows))?|Sure[,!]?|The following[:\s]|This document[:\s]|Below[:\s])[^\n]*[\n:]\s*/i, '');
+            text = text.replace(/^\s*(Here(?:\s+(?:is|are|follows))?|Sure[,!]?|I will|I'll|I can|The user|As requested[,:]?|This is a summary|Below[:\s])[^\n]*?[.!?\n:]\s*/i, '');
             text = squashWordStutter(text);
             text = approxDedupeSentences(dedupeSentencesGlobal(dedupeRepeats(text)));
             text = trimRepeatedTail(text);
-            text = await finishIfCut(text, generationHitTokenLimit, 2);
+            // No finishIfCut for summaries — n_predict is intentional. sentenceBuffer=40 handles mid-sentence cutoffs.
             // Truncate at last sentence boundary if output significantly exceeds budget
             if (isSummaryTask && nPredictOverride !== null) {
               const budgetChars = nPredictOverride * 7;
@@ -929,8 +986,8 @@ useEffect(() => {
               }
             }
             text = text.trim();
-          } else {
-            // Non-summary (chat) cleanup
+          } else if (!isKeyword) {
+            // Non-summary, non-keyword (chat) cleanup
             if (!isName && !isTag) {
               text = await finishIfCut(text, generationHitTokenLimit, 1);
             }
@@ -974,9 +1031,9 @@ useEffect(() => {
             continue;
           }
 
-          if (!text) text = "(No output)";
+          if (!text) text = isStructuredTask ? '' : '(No output)';
 
-          if (!isName && !noHistory) {
+          if (!isName && !isKeyword && !noHistory) {
             const isFallback =
               text.trim() === "Not specified in the documents.";
 

@@ -190,11 +190,12 @@ struct TabContainerView: View {
                 startInitialStartupLoadingIfNeeded()
             }
             applyUserInterfaceStyle()
-            summaryCoordinator.autoSummarizeOnAppear()
             if modelReady {
+                // Keywords/tags queue first so they're available when summary prompts build lazily
                 summaryCoordinator.generateMissingTagsIfNeeded()
                 summaryCoordinator.generateMissingKeywordsIfNeeded()
             }
+            summaryCoordinator.autoSummarizeOnAppear()
         }
         .onChange(of: modelReady) { ready in
             if ready {
