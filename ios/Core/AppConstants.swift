@@ -21,6 +21,7 @@ enum AppConstants {
         static let pendingToolsDeepLink = "pendingToolsDeepLink"
         static let pendingConvertDeepLink = "pendingConvertDeepLink"
         static let passcodeHashMigration = "passcodeHashMigrationComplete"
+        static let currentUserID = "currentUserID"
     }
 
     enum AppGroup {

@@ -640,7 +640,7 @@ struct DocumentsView: View {
             }
             .disabled(!hasSelection)
 
-            Button(role: .destructive) {
+            Button {
                 showingBulkDeleteDialog = true
             } label: {
                 Label("Delete", systemImage: "trash")
@@ -3050,7 +3050,7 @@ struct FolderDocumentsView: View {
             }
             .disabled(!hasSelection)
 
-            Button(role: .destructive) {
+            Button {
                 showingBulkDeleteDialog = true
             } label: {
                 Label("Delete", systemImage: "trash")

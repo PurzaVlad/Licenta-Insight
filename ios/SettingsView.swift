@@ -20,6 +20,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @EnvironmentObject private var documentManager: DocumentManager
+    @EnvironmentObject private var authService: AuthService
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("useFaceID") private var useFaceID = false
     @AppStorage(AppConstants.UserDefaultsKeys.securityProfile) private var securityProfileRaw = SecurityProfile.standard.rawValue
@@ -82,6 +83,17 @@ struct SettingsView: View {
                     Text("Passcode is used if Face ID fails.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
+                }
+
+                Section(header: Text("Account")) {
+                    if let email = authService.currentUserEmail {
+                        Text(email)
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    Button("Sign Out", role: .destructive) {
+                        authService.signOut()
+                    }
                 }
 
                 Section(header: Text("Vault Security")) {

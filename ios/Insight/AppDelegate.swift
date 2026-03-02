@@ -2,10 +2,12 @@ import UIKit
 import React
 import React_RCTAppDelegate
 import ReactAppDependencyProvider
+import FirebaseCore
 
 @main
 class AppDelegate: RCTAppDelegate {
   override func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
+    FirebaseApp.configure()
     self.moduleName = "Insight"
     self.dependencyProvider = RCTAppDependencyProvider()
     self.automaticallyLoadReactNativeWindow = false
@@ -50,7 +52,6 @@ class AppDelegate: RCTAppDelegate {
 
 #if DEBUG
     PersistenceService.shared.runSecuritySelfChecks()
-    _ = try? ConversionConfig.load()
 #endif
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)

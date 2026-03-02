@@ -11,7 +11,7 @@ class NativeChatViewManager: RCTViewManager {
     }
 
     override func view() -> UIView! {
-        HostingContainerView(rootView: TabContainerView())
+        HostingContainerView(rootView: TabContainerView().environmentObject(AuthService.shared))
     }
     
     override class func moduleName() -> String! {

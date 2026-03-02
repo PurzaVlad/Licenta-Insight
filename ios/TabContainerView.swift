@@ -88,6 +88,7 @@ struct SharedSettingsSheetBackgroundModifier: ViewModifier {
 struct TabContainerView: View {
     // Tab bar and navigation bar appearance is configured in AppDelegate
 
+    @EnvironmentObject private var authService: AuthService
     @StateObject private var documentManager: DocumentManager
     @StateObject private var lockManager: LockManager
     @StateObject private var summaryCoordinator: SummaryCoordinator
@@ -221,6 +222,13 @@ struct TabContainerView: View {
         }
         .onChange(of: appThemeRaw) { _ in
             applyUserInterfaceStyle()
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { !authService.isSignedIn },
+            set: { _ in }
+        )) {
+            LoginView()
+                .environmentObject(authService)
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background {

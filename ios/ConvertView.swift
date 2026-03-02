@@ -1069,7 +1069,11 @@ private func convertViaServer(
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-    request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+    let idToken = AuthService.shared.currentIDTokenSync()
+    guard !idToken.isEmpty else {
+        return (nil, "Not signed in.", nil)
+    }
+    request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
     request.setValue(document.title, forHTTPHeaderField: "X-Filename")
     request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
     if let mode {

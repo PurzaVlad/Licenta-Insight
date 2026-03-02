@@ -92,7 +92,12 @@ class ConversionService: NSObject {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = requestTimeout
-            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+            let idToken = AuthService.shared.currentIDTokenSync()
+            guard !idToken.isEmpty else {
+                self.reject(ConversionServiceError.invalidRequest(reason: "Not signed in"), rejecter: reject)
+                return
+            }
+            request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             // Send only the extension — the actual filename is private to the user's device.
             // The server uses X-File-Ext for format detection; the name itself is never needed.
@@ -259,16 +264,11 @@ class ConversionService: NSObject {
 
 struct ConversionConfig {
     let baseURL: URL
-    let apiKey: String
 
     static func load() throws -> ConversionConfig {
         guard let baseURLString = Bundle.main.object(forInfoDictionaryKey: "CONVERT_BASE_URL") as? String,
               !baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ConversionServiceError.missingConfig(key: "CONVERT_BASE_URL")
-        }
-        guard let apiKey = Bundle.main.object(forInfoDictionaryKey: "CONVERT_API_KEY") as? String,
-              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ConversionServiceError.missingConfig(key: "CONVERT_API_KEY")
         }
 
         let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -288,7 +288,7 @@ struct ConversionConfig {
             throw ConversionServiceError.invalidRequest(reason: "CONVERT_BASE_URL must use https")
 #endif
         }
-        return ConversionConfig(baseURL: baseURL, apiKey: apiKey)
+        return ConversionConfig(baseURL: baseURL)
     }
 }
 
