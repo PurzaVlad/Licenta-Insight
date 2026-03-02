@@ -304,16 +304,6 @@ struct DocumentsView: View {
                 .font(.system(size: 60))
                 .foregroundColor(.secondary)
 
-            Text("No Documents Yet")
-                .font(.title2)
-                .fontWeight(.medium)
-
-            Text("Import documents or scan with OCR to get started")
-                .font(.body)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-
             HStack(spacing: 2) {
                 Button("Scan Document") {
                     startScan()
@@ -331,6 +321,10 @@ struct DocumentsView: View {
                 }
                 .buttonStyle(.borderedProminent)
             }
+
+            Text("to get started")
+                .font(.body)
+                .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1721,14 +1715,18 @@ struct DocumentsView: View {
         let candidates = extractTitleCandidates(from: seed)
         let fallbackRaw = compactPascalCaseTitle(candidates.first ?? titleCaseFromOCR(text), maxWords: 4)
         let fallback = fallbackRaw.isEmpty ? "ScannedDocument" : fallbackRaw
+        let contentSnippet = String(seed.prefix(300))
 
         let prompt = """
-            Choose the best candidate and output a short Title Case title (2-4 words).
-            Keep useful characters when they are part of the real name.
-            Output only the title.
+            Generate a short, descriptive title (2-5 words) for this document. \
+            The title should capture what the document is specifically about — be specific and descriptive. \
+            Output only the title in Title Case.
 
-            CANDIDATES:
+            HINTS:
             \(candidates.map { "- \($0)" }.joined(separator: "\n"))
+
+            CONTENT:
+            \(contentSnippet)
             """
 
         AppLogger.ui.debug("Generating AI document name from OCR text")
@@ -3930,14 +3928,18 @@ struct FolderDocumentsView: View {
         let candidates = extractTitleCandidates(from: seed)
         let fallbackRaw = compactPascalCaseTitle(candidates.first ?? titleCaseFromOCR(text), maxWords: 4)
         let fallback = fallbackRaw.isEmpty ? "ScannedDocument" : fallbackRaw
+        let contentSnippet = String(seed.prefix(300))
 
         let prompt = """
-            Choose the best candidate and output a short Title Case title (2-4 words).
-            Keep useful characters when they are part of the real name.
-            Output only the title.
+            Generate a short, descriptive title (2-5 words) for this document. \
+            The title should capture what the document is specifically about — be specific and descriptive. \
+            Output only the title in Title Case.
 
-            CANDIDATES:
+            HINTS:
             \(candidates.map { "- \($0)" }.joined(separator: "\n"))
+
+            CONTENT:
+            \(contentSnippet)
             """
 
         EdgeAI.shared?.generate("<<<NO_HISTORY>>><<<NAME_REQUEST>>>" + prompt, resolver: { result in

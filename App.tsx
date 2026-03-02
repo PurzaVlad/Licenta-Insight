@@ -29,7 +29,7 @@ const MODEL_DOWNLOAD_IN_PROGRESS = 'in_progress';
 const LLAMA_N_CTX = 2048;
 const DEFAULT_MAX_NEW_TOKENS = 160;
 const DEFAULT_TEMPERATURE = 0.2;
-const CHAT_TEMPERATURE = 0.15;
+const CHAT_TEMPERATURE = 0.35;
 const DEFAULT_TOP_P = 0.9;
 const DEFAULT_REPEAT_PENALTY = 1.1;
 const CHAT_REPEAT_PENALTY = 1.15;
@@ -37,18 +37,7 @@ const MAX_CHAT_HISTORY_MESSAGES = 3;
 const MIN_MODEL_FILE_SIZE_BYTES = 200 * 1024 * 1024;
 
 
-const TAG_SYSTEM_PROMPT = `
-  You will receive a short excerpt from a document.
-  Extract exactly 4 single-word tags that capture the topic.
-
-  Rules:
-  Output tags as a comma-separated list.
-  Output exactly 4 items, no more and no fewer.
-  Use plain words only; no punctuation, no numbering, no labels, no phrases.
-  Prefer specific topics or names over generic words.
-  Never output stopwords such as: and, or, the, a, an, including, with, without, for, from.
-  Do not repeat words.
-  `;
+const TAG_SYSTEM_PROMPT = `You are a document tagger. Extract the most specific and meaningful tags from the document content. Output each tag on its own line, nothing else.`;
 
 const CHAT_SYSTEM_PROMPT = `You are a document assistant. Answer questions using only the evidence provided.
 
@@ -59,7 +48,7 @@ Rules:
 - If not found, say: "Not specified in the documents."
 - Never include system markers or metadata.`;
 
-const KEYWORD_SYSTEM_PROMPT = `In one sentence, describe what type of document this is and what it covers. Be specific. Output only the sentence, nothing else.`;
+const KEYWORD_SYSTEM_PROMPT = `Identify the main topic or domain in 1-3 words. Examples: Finance, Healthcare, Legal, Tax Return, Insurance, Research, Travel, Real Estate, Employment, Education. Output only the words.`;
 
 const CONTINUATION_SYSTEM_PROMPT =
   'Continue the previous answer in 1 short sentence. Do not repeat.';
@@ -93,7 +82,8 @@ function App(): React.JSX.Element {
   // Serialize AI requests to avoid "context is busy" errors
   const queueRef = useRef<Array<{ requestId: string; prompt: string }>>([]);
   const isRunningRef = useRef(false);
-  const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'tag' | 'chat' } | null>(null);
+  const currentJobRef = useRef<{ requestId: string; prompt: string; type: 'summary' | 'name' | 'tag' | 'chat' | 'keyword' } | null>(null);
+  const cancelDownloadRef = useRef<(() => void) | null>(null);
   const abortCurrentRef = useRef(false);
   const canceledRequestIdsRef = useRef<Set<string>>(new Set());
   const pendingSummaryRestartRef = useRef<{ requestId: string; prompt: string } | null>(null);
@@ -110,9 +100,6 @@ function App(): React.JSX.Element {
       
       isInitializingRef.current = true;
       console.log('[Model] Starting model preparation...');
-      try {
-        EdgeAI?.setModelReady?.(false);
-      } catch {}
       setIsDownloading(true);
       setDownloadProgress(0);
       try {
@@ -221,7 +208,10 @@ function App(): React.JSX.Element {
               }
               
               setDownloadProgress(0);
-              await downloadModel(MODEL_FILENAME, MODEL_URL, setDownloadProgress);
+              const dl = downloadModel(MODEL_FILENAME, MODEL_URL, setDownloadProgress);
+              cancelDownloadRef.current = dl.cancel;
+              await dl.promise;
+              cancelDownloadRef.current = null;
               validation = await validateModelFile();
               if (!validation.valid) {
                 throw new Error(
@@ -268,6 +258,9 @@ function App(): React.JSX.Element {
         }
 
         console.log('[Model] Initializing llama context...');
+        try {
+          EdgeAI?.setModelReady?.(false);
+        } catch {}
         const llamaContext = await initLlama({
           model: filePath,
           use_mlock: false,
@@ -311,6 +304,8 @@ function App(): React.JSX.Element {
     return () => {
       cancelled = true;
       isInitializingRef.current = false; // RESET ON CLEANUP
+      try { cancelDownloadRef.current?.(); } catch {}
+      cancelDownloadRef.current = null;
       try {
         releaseAllLlama();
       } catch (e) {
@@ -610,7 +605,7 @@ useEffect(() => {
             const completionParams = {
               prompt: promptText,
               n_predict: nPredictClamped,
-              temperature: isSummaryTask ? 0.3 : CHAT_TEMPERATURE,
+              temperature: isSummaryTask ? 0.2 : CHAT_TEMPERATURE,
               top_p: DEFAULT_TOP_P,
               repeat_penalty: isSummaryTask ? DEFAULT_REPEAT_PENALTY : CHAT_REPEAT_PENALTY,
               repeat_last_n: 256,
@@ -759,7 +754,7 @@ useEffect(() => {
                 }
                 const union = setA.size + setB.size - inter;
                 const jaccard = union === 0 ? 0 : inter / union;
-                if (jaccard >= 0.82) {
+                if (jaccard >= 0.85) {
                   isDup = true;
                   break;
                 }
@@ -1006,12 +1001,12 @@ useEffect(() => {
             }
 
             if (!isName && !isTag && !isStructuredTask) {
-              text = limitToSentenceCount(text, 3);
+              text = limitToSentenceCount(text, 6);
             }
 
             // New: final hard cap for any case where punctuation is absent
             if (!isName && !isTag && !isStructuredTask) {
-              text = hardCapChatLength(text, 420);
+              text = hardCapChatLength(text, 700);
             }
 
             text = text.trim();

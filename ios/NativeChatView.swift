@@ -104,17 +104,13 @@ struct NativeChatView: View {
     private let inputMaxCornerRadius: CGFloat = 25
     private let inputMinCornerRadius: CGFloat = 12
 
-    // Preprompt (edit this text to change assistant behavior)
-    private let chatPreprompt = """
-    You answer questions by reading the EVIDENCE provided. Read ALL evidence chunks carefully before answering.
-
-    Rules:
-    1. The answer is usually in one of the evidence chunks. Read every chunk.
-    2. Copy the relevant fact directly from the evidence into your answer.
-    3. Keep answers short: 1-3 sentences.
-    4. If the answer is not in any chunk, say "Not specified in the documents."
-    5. Answer in the same language as the question.
-    """
+    // Preprompt (computed so it can be scope-aware)
+    private var chatPreprompt: String {
+        if isScopeActive, scopedDocuments.count == 1, let doc = scopedDocuments.first {
+            return "You are helping the user understand \"\(doc.title)\". Read the passages and answer the question. Quote or paraphrase what the passages say — give a real answer even if partial. Only say \"Not found in this document\" if the passages say absolutely nothing about the topic."
+        }
+        return "Read the passages and answer the question. State what the passages say about it — even a partial answer is better than nothing. Only say \"Not specified in the documents\" if none of the passages mention the topic."
+    }
     private let historyLimit = 4
     private let selectionMaxDocs = 2
     private let activeContextCharBudget = 1600
@@ -602,8 +598,21 @@ struct NativeChatView: View {
         return Set(tokens)
     }
 
+    private func normalizeSpacedLetters(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\b[A-Z](?: [A-Z]){2,}\b"#) else { return text }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return text }
+        let mutable = NSMutableString(string: text)
+        for match in matches.reversed() {
+            let matched = nsText.substring(with: match.range)
+            mutable.replaceCharacters(in: match.range, with: matched.replacingOccurrences(of: " ", with: ""))
+        }
+        return String(mutable)
+    }
+
     private func cleanLine(_ text: String) -> String {
-        text
+        normalizeSpacedLetters(text)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -1465,29 +1474,7 @@ struct NativeChatView: View {
             if lhs.hit.finalScore != rhs.hit.finalScore { return lhs.hit.finalScore > rhs.hit.finalScore }
             return lhs.hit.document.dateCreated > rhs.hit.document.dateCreated
         }
-        // Merge Pass B top-3 with Pass A top-3 so strong BM25 signals
-        // can't be silently dropped by subject-bonus re-ranking.
-        let passBTop = Array(reranked.prefix(passBTopEvidenceLimit).map(\.hit))
-        let passATop3 = Array(hits.prefix(3))
-
-        var merged: [ChunkHit] = passBTop
-        var seenIds = Set(passBTop.map { $0.chunk.chunkId })
-        for hit in passATop3 {
-            if seenIds.insert(hit.chunk.chunkId).inserted {
-                merged.append(hit)
-            }
-        }
-
-        // Soft gating: accept chunks that have ANY signal
-        let gated = merged.filter { hit in
-            let features = passBFeatures(
-                for: hit,
-                subjectToken: subjectToken,
-                questionTokens: questionTokens
-            )
-            return features.subjectMatch || features.queryKeywordMatches >= 1
-        }
-        return gated.isEmpty ? merged : gated
+        return Array(reranked.prefix(passBTopEvidenceLimit).map(\.hit))
     }
 
     private func expandedHitsWithNeighbors(from hits: [ChunkHit], allHits: [ChunkHit]) -> [ChunkHit] {
@@ -2061,11 +2048,11 @@ struct NativeChatView: View {
         SYSTEM:
         \(chatPreprompt)
 
-        EVIDENCE:
-        \(evidence)
-
         QUESTION:
         \(question)
+
+        PASSAGES:
+        \(evidence)
         """
     }
 
@@ -2080,16 +2067,14 @@ struct NativeChatView: View {
         var docOrder: [UUID] = []
         var byDoc: [UUID: [String]] = [:]
 
-        var index = 1
         for hit in dedupedHits {
             let docId = hit.document.id
             if byDoc[docId] == nil {
                 docOrder.append(docId)
                 byDoc[docId] = []
             }
-            let text = trimToCharBudget(hit.chunk.text, maxChars: 560)
-            byDoc[docId]?.append("(\(index)) \(text)")
-            index += 1
+            let text = trimToCharBudget(normalizeSpacedLetters(hit.chunk.text), maxChars: 420)
+            byDoc[docId]?.append(text)
         }
 
         for docId in docOrder {
@@ -2101,7 +2086,7 @@ struct NativeChatView: View {
         var out: [String] = []
         for group in grouped {
             let header = "[\(group.title)]"
-            let body = group.chunks.joined(separator: "\n")
+            let body = group.chunks.joined(separator: "\n\n")
             out.append("\(header)\n\(body)")
         }
 
@@ -2298,8 +2283,23 @@ struct NativeChatView: View {
         // STEP 1: LLM-based query analysis (before heuristics)
         let recentContext = messages.suffix(3).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
         let queryAnalysis: QueryAnalysis?
+
+        let needsLLMAnalysis: Bool = {
+            let wordCount = question.split(separator: " ").count
+            if wordCount >= 8 { return true }
+            let lower = question.lowercased()
+            let pronounPatterns = [#"\bit\b"#, #"\bthey\b"#, #"\bthis\b"#, #"\bthat\b"#,
+                                   #"\bits\b"#, #"\bhe\b"#, #"\bshe\b"#, #"\bthem\b"#, #"\btheir\b"#]
+            if pronounPatterns.contains(where: { (try? NSRegularExpression(pattern: $0))?.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)) != nil }) {
+                return true
+            }
+            return ["vs", "versus", "compared", "between", "differ", "difference"].contains(where: { lower.contains($0) })
+        }()
+
         do {
-            queryAnalysis = try await analyzeQueryIntent(edgeAI: edgeAI, question: question, recentContext: recentContext)
+            queryAnalysis = needsLLMAnalysis
+                ? try await analyzeQueryIntent(edgeAI: edgeAI, question: question, recentContext: recentContext)
+                : nil
         } catch {
             AppLogger.ui.warning("Query intent analysis failed: \(error.localizedDescription)")
             queryAnalysis = nil
@@ -2426,25 +2426,7 @@ struct NativeChatView: View {
                 topScoreByDocumentId: selection.topScoreByDocumentId,
                 selectedHits: selection.selectedHits
             )
-            let reply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
-
-            // If the LLM said "not found" but we have good chunks, fall back to
-            // direct quotes so the user can see the raw evidence.
-            if isNotFoundResponse(reply) && !selection.selectedHits.isEmpty {
-                let introPrompt = buildExploratoryPrompt(
-                    question: effectiveQuestion,
-                    originalQuestion: sessionState.lastOriginalQuestion,
-                    lastResponse: nil,
-                    selectedHits: selection.selectedHits
-                )
-                let introReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(introPrompt))
-                finalReply = buildDirectQuoteResponse(
-                    introReply: introReply,
-                    selectedHits: selection.selectedHits
-                )
-            } else {
-                finalReply = reply
-            }
+            finalReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
         }
 
         // Store for future challenge/dispute handling
@@ -2502,7 +2484,8 @@ struct NativeChatView: View {
     }
 
     private func wrapChatPrompt(_ prompt: String) -> String {
-        "<<<CHAT_DETAIL>>>" + prompt
+        let nPredictMarker = (isScopeActive && scopedDocuments.count == 1) ? "<<<N_PREDICT:300>>>" : ""
+        return "<<<CHAT_DETAIL>>>" + nPredictMarker + prompt
     }
 
     private func callLLM(edgeAI: EdgeAI, prompt: String) async throws -> String {

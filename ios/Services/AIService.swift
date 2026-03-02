@@ -132,13 +132,14 @@ class AIService {
         let docType = validatedDocType(document.keywordsResume)
         AppLogger.ai.debug("FactExtractor: \(limitedFacts.count) facts, n_predict=\(targetTok), docType='\(docType.isEmpty ? "(none)" : docType)' for '\(document.title)'")
 
-        let systemPrompt = buildSummarySystemPrompt(length: length, docType: docType)
+        let systemPrompt = buildSummarySystemPrompt(length: length, docType: docType, factCount: limitedFacts.count)
         let organizedInput = buildOrganizedInput(
             facts: limitedFacts,
             docType: docType,
             title: document.title,
             document: document,
-            length: length
+            length: length,
+            nPredict: targetTok
         )
 
         return """
@@ -156,25 +157,26 @@ class AIService {
     /// Short is fixed. Medium/long scale with facts so the model has just enough room.
     private func targetTokens(factCount: Int, length: SummaryLength) -> Int {
         switch length {
-        case .short:  return 80
+        case .short:  return 110
         case .medium: return max(100, min(320, factCount * 25 + 40))
         case .long:   return max(120, min(700, factCount * 35 + 80))
         }
     }
 
-    private func buildSummarySystemPrompt(length: SummaryLength, docType: String) -> String {
+    private func buildSummarySystemPrompt(length: SummaryLength, docType: String, factCount: Int) -> String {
         let typeHint = docType.isEmpty ? "" : " Document type: \(docType)"
         switch length {
         case .short:
-            return "Output ONLY 1-2 plain sentences. State what type of document this is and its single most important detail. No preamble. No markdown. No labels.\(typeHint)"
+            let lowOCRHint = factCount < 2 ? " If the document content is unclear or unreadable, state that briefly." : ""
+            return "In 1-3 plain sentences, explain what this document is and what it covers. Only state what is clearly present — do not infer. No preamble. No markdown. No labels.\(typeHint)\(lowOCRHint)"
         case .medium:
-            return "Write a markdown bullet list summarizing the document. Each bullet should be a natural sentence or phrase — not a rigid label:value entry. Combine related facts into informative statements where it reads naturally. No intro sentence. No conclusion. Bullets only."
+            return "Write a bullet list of the document's key points using `- ` (dash) for each bullet. Each bullet must be a clear statement based only on what the document content shows. No intro sentence. No conclusion. No inferences."
         case .long:
-            return "Write a detailed summary. Start with one overview sentence. Then for each key fact write 1-2 sentences of context using the document content. Use markdown: **bold** fact labels, bullet points for enumerable items.\(typeHint)"
+            return "Write a thorough summary. Start with one sentence about this document's purpose. Then use `## ` headings for each main topic, followed by 1-2 sentences explaining what the document states about that topic. Use `- ` (dash) for any sub-lists. Use `bold` for key terms. Stay close to what is written — do not add inferences.\(typeHint)"
         }
     }
 
-    private func buildOrganizedInput(facts: [ExtractedFact], docType: String, title: String, document: Document, length: SummaryLength) -> String {
+    private func buildOrganizedInput(facts: [ExtractedFact], docType: String, title: String, document: Document, length: SummaryLength, nPredict: Int) -> String {
         var parts: [String] = []
 
         let baseName: String
@@ -183,11 +185,9 @@ class AIService {
         } else {
             baseName = title
         }
-        parts.append("TITLE: \(baseName)")
+        parts.append("TITLE:\n\(baseName)")
 
         if !facts.isEmpty {
-            // Key sentences are unlabeled bullets — omitting the "Key Point:" prefix
-            // prevents the model from parroting "The Key Point is that..."
             let bulletFacts = facts.map { fact in
                 fact.label == "Key Point"
                     ? "- \(fact.value)"
@@ -196,13 +196,21 @@ class AIService {
             parts.append("KEY FACTS:\n\(bulletFacts)")
         }
 
-        // Content budget: short needs a snippet for context; medium needs none (facts drive output);
-        // long needs enough to expand on each fact with real detail.
-        let contentBudget: Int
+        var contentBudget: Int
         switch length {
-        case .short:  contentBudget = 400
-        case .medium: contentBudget = facts.isEmpty ? 600 : 0
-        case .long:   contentBudget = 3000
+        case .short:  contentBudget = 600
+        case .medium: contentBudget = 1200
+        case .long:   contentBudget = 5000
+        }
+
+        // Token headroom guard: clamp content so total prompt stays within context window
+        let estimatedFixedTokens = 120 + facts.count * 15 + nPredict
+        let tokenHeadroom = 1750 - estimatedFixedTokens
+        if tokenHeadroom > 0 {
+            let maxContentChars = Int(Double(tokenHeadroom) * 3.5)
+            contentBudget = min(contentBudget, maxContentChars)
+        } else {
+            contentBudget = 0
         }
 
         if contentBudget > 0 {
@@ -349,21 +357,9 @@ class AIService {
             return base
         }()
 
-        // Add a brief content preview when the title is a generic/opaque name
-        // (pure numbers, underscores, or common scan prefixes) so the model has something to work from.
-        let titleSeemsMeaningless = titleAnchor.range(
-            of: #"^[A-Za-z]{0,3}[\d_\-]{3,}$|^(IMG|DSC|SCAN|DOC|FILE|image|photo|document)\w*$"#,
-            options: .regularExpression
-        ) != nil
-        let contentHint: String = {
-            guard titleSeemsMeaningless else { return "" }
-            let firstLine = document.content
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .components(separatedBy: .newlines)
-                .first(where: { $0.trimmingCharacters(in: .whitespaces).count > 10 }) ?? ""
-            let preview = String(firstLine.prefix(80))
-            return preview.isEmpty ? "" : "\nContent hint: \(preview)"
-        }()
+        let rawContent = fullDocumentText(for: document)
+        let briefContent = rawContent.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
+        let contentHint = briefContent.isEmpty ? "" : "\nContent: \(briefContent)"
 
         return "<<<KEYWORD_REQUEST>>>\nTitle: \(titleAnchor)\(contentHint)"
     }
