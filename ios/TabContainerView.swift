@@ -111,6 +111,8 @@ struct TabContainerView: View {
     @State private var isOperationLoadingShowingSuccess = false
     @State private var operationLoadingSuccessToken: Int = 0
 
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+
     private struct PreviewItem: Identifiable {
         let id: UUID
         let url: URL
@@ -180,6 +182,10 @@ struct TabContainerView: View {
             }
         }
         .onAppear {
+            // Handle case where auth state is already restored before this view appears
+            if authService.isSignedIn, let uid = authService.currentUserID {
+                documentManager.configureForUser(uid)
+            }
             documentManager.importSharedInboxIfNeeded()
             let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
             if modelReady != persistedModelReady {
@@ -223,12 +229,20 @@ struct TabContainerView: View {
         .onChange(of: appThemeRaw) { _ in
             applyUserInterfaceStyle()
         }
+        .onChange(of: authService.isSignedIn) { isSignedIn in
+            if isSignedIn, let uid = authService.currentUserID {
+                documentManager.configureForUser(uid)
+            } else {
+                documentManager.clearForSignOut()
+            }
+        }
         .fullScreenCover(isPresented: Binding(
-            get: { !authService.isSignedIn },
+            get: { authService.authStateLoaded && (!authService.isSignedIn || !hasCompletedOnboarding) },
             set: { _ in }
         )) {
-            LoginView()
+            OnboardingContainerView()
                 .environmentObject(authService)
+                .environmentObject(lockManager)
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background {
@@ -236,6 +250,7 @@ struct TabContainerView: View {
             } else if phase == .active {
                 documentManager.importSharedInboxIfNeeded()
                 guard !isInitialStartupLoadingVisible else { return }
+                guard hasCompletedOnboarding else { return }
                 lockManager.lockIfNeeded(force: false)
             }
         }
@@ -463,11 +478,15 @@ struct TabContainerView: View {
                 isInitialStartupLoadingVisible = false
             }
             DispatchQueue.main.async {
-                lockManager.lockIfNeeded(force: true)
+                // Don't trigger lock while the onboarding flow is still active —
+                // the user may have just authenticated Face ID to enable it.
+                guard self.hasCompletedOnboarding else { return }
+                self.lockManager.lockIfNeeded(force: true)
             }
             return
         }
 
+        guard hasCompletedOnboarding else { return }
         lockManager.lockIfNeeded(force: true)
     }
 

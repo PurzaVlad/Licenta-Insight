@@ -8,9 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		13B07FB71A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
-		AA11BB22CC33DD44EE55FF61 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA11BB22CC33DD44EE55FF60 /* GoogleService-Info.plist */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		A1B2C3D4E5F60718293A4B5C /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */; };
+		AA11BB22CC33DD44EE55FF61 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA11BB22CC33DD44EE55FF60 /* GoogleService-Info.plist */; };
 		AE9AA29A2F0BF947005C3C92 /* DocumentDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */; };
 		AEBD28542F0B119400C3390F /* DocumentManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBD28532F0B119400C3390F /* DocumentManager.swift */; };
 		AEDA82D82F1FBA4100550D74 /* DocumentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */; };
@@ -69,13 +69,13 @@
 		13B07F961A680F5B00A75B9A /* Insight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Insight.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Insight/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Insight/Info.plist; sourceTree = "<group>"; };
-		AA11BB22CC33DD44EE55FF60 /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = "GoogleService-Info.plist"; path = "Insight/GoogleService-Info.plist"; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = Insight/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		3228B6AC9DD688937E44C697 /* Pods-Insight.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Insight.debug.xcconfig"; path = "Target Support Files/Pods-Insight/Pods-Insight.debug.xcconfig"; sourceTree = "<group>"; };
 		62DB3BFBEBB42337C0565B17 /* Pods-Insight.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Insight.release.xcconfig"; path = "Target Support Files/Pods-Insight/Pods-Insight.release.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Insight/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Insight/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = Insight/SceneDelegate.swift; sourceTree = "<group>"; };
+		AA11BB22CC33DD44EE55FF60 /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = "GoogleService-Info.plist"; path = "Insight/GoogleService-Info.plist"; sourceTree = "<group>"; };
 		AE9AA2992F0BF947005C3C92 /* DocumentDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentDatabase.swift; sourceTree = "<group>"; };
 		AEBD28532F0B119400C3390F /* DocumentManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentManager.swift; sourceTree = "<group>"; };
 		AEDA82D32F1FBA4100550D74 /* DocumentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentModels.swift; sourceTree = "<group>"; };

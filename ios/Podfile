@@ -1,3 +1,11 @@
+# Patch xcodeproj to support objectVersion 71 (Xcode 26.x project format)
+require 'xcodeproj'
+unless Xcodeproj::Constants::COMPATIBILITY_VERSION_BY_OBJECT_VERSION.key?(71)
+  patched = Xcodeproj::Constants::COMPATIBILITY_VERSION_BY_OBJECT_VERSION.dup.merge(71 => 'Xcode 16.1')
+  Xcodeproj::Constants.send(:remove_const, :COMPATIBILITY_VERSION_BY_OBJECT_VERSION)
+  Xcodeproj::Constants.const_set(:COMPATIBILITY_VERSION_BY_OBJECT_VERSION, patched.freeze)
+end
+
 # Resolve react_native_pods.rb with node to allow for hoisting
 require Pod::Executable.execute_command('node', ['-p',
   'require.resolve(
@@ -27,7 +35,8 @@ target 'Insight' do
   # Needed for DOCX unzip support used in `DocumentManager.swift`
   pod 'SSZipArchive'
 
-  # Firebase Auth
+  # Firebase Auth + Google Sign-In
+  pod 'GoogleSignIn', '~> 8.0'
   pod 'FirebaseAuth'
   pod 'FirebaseAuthInterop', :modular_headers => true
   pod 'FirebaseAppCheckInterop', :modular_headers => true

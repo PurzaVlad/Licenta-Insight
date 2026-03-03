@@ -12,88 +12,115 @@ struct LoginView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                Spacer()
-
-                Image(systemName: "doc.text.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(Color("Primary"))
-
-                Text("Insight")
-                    .font(.largeTitle.bold())
-
-                VStack(spacing: 14) {
-                    TextField("Email", text: $email)
-                        .textContentType(.emailAddress)
-                        .keyboardType(.emailAddress)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .padding()
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
-
-                    SecureField("Password", text: $password)
-                        .textContentType(isRegistering ? .newPassword : .password)
-                        .padding()
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(12)
-
-                    if isRegistering {
-                        SecureField("Confirm Password", text: $confirmPassword)
-                            .textContentType(.newPassword)
-                            .padding()
-                            .background(Color(.secondarySystemBackground))
-                            .cornerRadius(12)
-                    }
-                }
-                .padding(.horizontal, 24)
-
-                if let error = errorMessage {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                }
-
-                Button {
-                    Task { await submitAction() }
-                } label: {
-                    Group {
-                        if isLoading {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text(isRegistering ? "Create Account" : "Sign In")
-                                .fontWeight(.semibold)
+            ScrollView {
+                VStack(spacing: 24) {
+                    // MARK: Fields
+                    VStack(spacing: 0) {
+                        NativeField {
+                            TextField("Email", text: $email)
+                                .textContentType(.emailAddress)
+                                .keyboardType(.emailAddress)
+                                .autocapitalization(.none)
+                                .disableAutocorrection(true)
+                        }
+                        Divider().padding(.leading, 16)
+                        NativeField {
+                            SecureField("Password", text: $password)
+                                .textContentType(isRegistering ? .newPassword : .password)
+                        }
+                        if isRegistering {
+                            Divider().padding(.leading, 16)
+                            NativeField {
+                                SecureField("Confirm Password", text: $confirmPassword)
+                                    .textContentType(.newPassword)
+                            }
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color("Primary"))
-                .padding(.horizontal, 24)
-                .disabled(isLoading)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
 
-                Button {
-                    withAnimation {
-                        isRegistering.toggle()
-                        errorMessage = nil
-                        confirmPassword = ""
+                    // MARK: Error
+                    if let error = errorMessage {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
                     }
-                } label: {
-                    Text(isRegistering ? "Already have an account? Sign In" : "Don't have an account? Register")
-                        .font(.footnote)
-                        .foregroundColor(Color("Primary"))
-                }
 
-                Spacer()
+                    // MARK: Primary action
+                    VStack(spacing: 14) {
+                        Button {
+                            Task { await submitEmailAction() }
+                        } label: {
+                            if isLoading {
+                                ProgressView().tint(.white)
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Text(isRegistering ? "Create Account" : "Sign In")
+                                    .fontWeight(.semibold)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(isLoading)
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isRegistering.toggle()
+                                errorMessage = nil
+                                confirmPassword = ""
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(isRegistering ? "Already have an account?" : "Don't have an account?")
+                                    .foregroundStyle(.secondary)
+                                Text(isRegistering ? "Sign In" : "Register")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .font(.subheadline)
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    // MARK: Divider
+                    HStack(spacing: 12) {
+                        Rectangle().fill(Color(.separator)).frame(height: 0.5)
+                        Text("or")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Rectangle().fill(Color(.separator)).frame(height: 0.5)
+                    }
+                    .padding(.horizontal)
+
+                    // MARK: Social sign-in
+                    HStack(spacing: 20) {
+                        Button {
+                            Task { await signInWithGoogle() }
+                        } label: {
+                            Image("GoogleLogo")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 48, height: 48)
+                                .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 3)
+                        }
+                        .disabled(isLoading)
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.top, 12)
             }
-            .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle(isRegistering ? "Create Account" : "Sign In")
+            .navigationBarTitleDisplayMode(.large)
         }
     }
 
-    private func submitAction() async {
+    // MARK: - Actions
+
+    private func submitEmailAction() async {
         errorMessage = nil
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -102,7 +129,6 @@ struct LoginView: View {
             errorMessage = "Please enter your email and password."
             return
         }
-
         if isRegistering {
             guard trimmedPassword == confirmPassword else {
                 errorMessage = "Passwords do not match."
@@ -126,4 +152,31 @@ struct LoginView: View {
         }
         isLoading = false
     }
+
+    private func signInWithGoogle() async {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root = scene.windows.first?.rootViewController else { return }
+        isLoading = true
+        errorMessage = nil
+        do {
+            try await authService.signInWithGoogle(presenting: root)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
+    }
 }
+
+
+// MARK: - Native field row
+
+private struct NativeField<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        content
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+

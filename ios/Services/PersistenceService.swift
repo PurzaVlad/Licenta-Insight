@@ -31,7 +31,6 @@ class PersistenceService {
 
     private let fileManager = FileManager.default
     private let documentsFileName = AppConstants.FileNames.savedDocumentsJSON
-    private let lastAccessedKey = AppConstants.UserDefaultsKeys.lastAccessedMap
     private let legacyUserDefaultsKey = "SavedDocuments_v2" // For migration
     private let legacyEncryptedMagic = Data("ENC1".utf8)
     private let envelopeMagic = Data("IDEN".utf8)
@@ -39,10 +38,20 @@ class PersistenceService {
     private let algorithmAESGCM: UInt8 = 1
     private let keychainService = "com.insight.app.persistence"
     private let keychainAccountPrefix = "documents_encryption_key_"
-    private let keychainCurrentKeyIdAccount = "documents_encryption_current_key_id"
     private let aadBaseContext = "\(AppConstants.FileNames.savedDocumentsJSON)|v1"
 
+    // Per-user namespace — set via configure(userID:) on sign-in
+    private(set) var userID: String = "anonymous"
+
+    // User-scoped computed keys
+    private var lastAccessedKey: String { "\(AppConstants.UserDefaultsKeys.lastAccessedMap)_\(userID)" }
+    private var keychainCurrentKeyIdAccount: String { "\(userID)_documents_encryption_current_key_id" }
+
     private init() {}
+
+    func configure(userID: String) {
+        self.userID = userID
+    }
 
     // MARK: - Document Persistence
 
@@ -218,7 +227,9 @@ class PersistenceService {
             throw PersistenceError.directoryNotFound
         }
 
-        let insightDir = appSupport.appendingPathComponent("Insight", isDirectory: true)
+        let insightDir = appSupport
+            .appendingPathComponent("Insight", isDirectory: true)
+            .appendingPathComponent(userID, isDirectory: true)
 
         if !fileManager.fileExists(atPath: insightDir.path) {
             do {
@@ -380,7 +391,7 @@ class PersistenceService {
     }
 
     private func keyAccountName(for keyId: UUID) -> String {
-        "\(keychainAccountPrefix)\(keyId.uuidString.lowercased())"
+        "\(userID)_\(keychainAccountPrefix)\(keyId.uuidString.lowercased())"
     }
 
     private func loadEncryptionKey(keyId: UUID) throws -> SymmetricKey {
@@ -526,7 +537,7 @@ class PersistenceService {
         guard let items = result as? [[String: Any]] else { return }
         for item in items {
             guard let account = item[kSecAttrAccount as String] as? String else { continue }
-            if account == keychainCurrentKeyIdAccount || account.hasPrefix(keychainAccountPrefix) || account == "documents_encryption_key" {
+            if account == keychainCurrentKeyIdAccount || account.hasPrefix("\(userID)_\(keychainAccountPrefix)") || account == "documents_encryption_key" {
                 let deleteQuery: [String: Any] = [
                     kSecClass as String: kSecClassGenericPassword,
                     kSecAttrService as String: keychainService,

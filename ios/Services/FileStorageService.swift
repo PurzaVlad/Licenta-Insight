@@ -8,6 +8,9 @@ class FileStorageService {
     private let baseDirectoryName = "DocumentFiles"
     private let ioQueue = DispatchQueue(label: "com.purzavlad.insight.fileStorage.io", qos: .utility)
 
+    // Per-user namespace — set via configure(userID:) on sign-in
+    private(set) var userID: String = "anonymous"
+
     // NSCache auto-evicts under memory pressure
     private let imageCache = NSCache<NSString, NSArray>()
     private let pdfCache = NSCache<NSString, NSData>()
@@ -328,10 +331,17 @@ class FileStorageService {
 
     // MARK: - Directory Helpers
 
+    func configure(userID: String) {
+        self.userID = userID
+        clearAllCaches()
+        setupBaseDirectory()
+    }
+
     private func baseDirectoryURL() -> URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport
             .appendingPathComponent("Insight", isDirectory: true)
+            .appendingPathComponent(userID, isDirectory: true)
             .appendingPathComponent(baseDirectoryName, isDirectory: true)
     }
 

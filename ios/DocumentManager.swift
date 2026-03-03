@@ -41,13 +41,29 @@ class DocumentManager: ObservableObject {
         self.aiService = aiService
         self.validationService = validationService
 
+        // Data loading deferred to configureForUser(_:), called by TabContainerView on sign-in
+    }
+
+    func configureForUser(_ userID: String) {
+        persistenceService.configure(userID: userID)
+        fileStorageService.configure(userID: userID)
         fileStorageService.applyCurrentSecurityProfile()
         loadDocuments()
         lastAccessedMap = loadLastAccessedMap()
         importSharedInboxIfNeeded()
     }
 
+    func clearForSignOut() {
+        documents = []
+        folders = []
+        prefersGridLayout = false
+        lastAccessedMap = [:]
+        vaultUnavailableMessage = nil
+        fileStorageService.clearAllCaches()
+    }
+
     func importSharedInboxIfNeeded() {
+        guard persistenceService.userID != "anonymous" else { return }
         guard !isImportingSharedInbox else { return }
         guard let inboxURL = sharedInboxURL(createIfMissing: true) else { return }
 

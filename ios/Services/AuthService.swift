@@ -1,11 +1,14 @@
 import Foundation
 import FirebaseAuth
+import GoogleSignIn
 
 final class AuthService: ObservableObject {
     static let shared = AuthService()
 
     @Published var isSignedIn: Bool = false
     @Published var currentUserEmail: String? = nil
+    /// True after the first Firebase auth state callback fires (persisted user restored or confirmed absent)
+    @Published var authStateLoaded: Bool = false
 
     private var authStateHandle: AuthStateDidChangeListenerHandle?
 
@@ -14,6 +17,7 @@ final class AuthService: ObservableObject {
             DispatchQueue.main.async {
                 self?.isSignedIn = user != nil
                 self?.currentUserEmail = user?.email
+                self?.authStateLoaded = true
             }
         }
     }
@@ -36,7 +40,20 @@ final class AuthService: ObservableObject {
         try await Auth.auth().createUser(withEmail: email, password: password)
     }
 
+    func signInWithGoogle(presenting viewController: UIViewController) async throws {
+        let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: viewController)
+        guard let idToken = result.user.idToken?.tokenString else {
+            throw AuthServiceError.missingGoogleToken
+        }
+        let credential = GoogleAuthProvider.credential(
+            withIDToken: idToken,
+            accessToken: result.user.accessToken.tokenString
+        )
+        try await Auth.auth().signIn(with: credential)
+    }
+
     func signOut() {
+        GIDSignIn.sharedInstance.signOut()
         try? Auth.auth().signOut()
     }
 
@@ -62,8 +79,12 @@ final class AuthService: ObservableObject {
 
 enum AuthServiceError: LocalizedError {
     case notSignedIn
+    case missingGoogleToken
 
     var errorDescription: String? {
-        "No user is currently signed in."
+        switch self {
+        case .notSignedIn: return "No user is currently signed in."
+        case .missingGoogleToken: return "Google sign-in failed: missing token."
+        }
     }
 }
