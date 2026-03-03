@@ -142,7 +142,7 @@ private struct SecurityOptionRow: View {
                             .foregroundStyle(.primary)
                         Text(subtitle)
                             .font(.caption)
-                            .foregroundStyle(isEnabled ? Color.accentColor : .secondary)
+                            .foregroundStyle(isEnabled ? Color("Primary") : .secondary)
                     }
 
                     Spacer()

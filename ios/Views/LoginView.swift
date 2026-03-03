@@ -78,7 +78,7 @@ struct LoginView: View {
                                 Text(isRegistering ? "Already have an account?" : "Don't have an account?")
                                     .foregroundStyle(.secondary)
                                 Text(isRegistering ? "Sign In" : "Register")
-                                    .foregroundStyle(Color.accentColor)
+                                    .foregroundStyle(Color("Primary"))
                             }
                             .font(.subheadline)
                         }
@@ -180,3 +180,6 @@ private struct NativeField<Content: View>: View {
     }
 }
 
+#Preview() {
+  LoginView()
+}

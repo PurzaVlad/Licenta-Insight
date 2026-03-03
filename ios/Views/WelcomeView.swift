@@ -15,8 +15,10 @@ struct WelcomeView: View {
 
                 // TODO: Replace everything in this VStack with your welcome design
                 VStack(spacing: 16) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 72))
+                    Image("IconSvg")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 120, height: 120)   // control size here
                         .foregroundStyle(.tint)
 
                     Text("Insight")
@@ -43,10 +45,21 @@ struct WelcomeView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Color("Primary"))
                 .controlSize(.large)
                 .padding(.horizontal)
                 .padding(.bottom, 48)
             }
         }
     }
+}
+
+#Preview("Welcome step") {
+    OnboardingContainerView()
+        .environmentObject(AuthService.shared)
+        .environmentObject(LockManager())
+        .onAppear {
+            UserDefaults.standard.removeObject(forKey: "hasSeenWelcome")
+            UserDefaults.standard.removeObject(forKey: "hasCompletedOnboarding")
+        }
 }

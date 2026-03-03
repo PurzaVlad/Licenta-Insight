@@ -26,5 +26,35 @@ struct OnboardingContainerView: View {
                 .environmentObject(lockManager)
             }
         }
+        .tint(Color("Primary"))
     }
+}
+
+#Preview("Welcome step") {
+    OnboardingContainerView()
+        .environmentObject(AuthService.shared)
+        .environmentObject(LockManager())
+        .onAppear {
+            UserDefaults.standard.removeObject(forKey: "hasSeenWelcome")
+            UserDefaults.standard.removeObject(forKey: "hasCompletedOnboarding")
+        }
+}
+
+#Preview("Login step") {
+    OnboardingContainerView()
+        .environmentObject(AuthService.shared)
+        .environmentObject(LockManager())
+        .onAppear {
+            UserDefaults.standard.set(true, forKey: "hasSeenWelcome")
+            UserDefaults.standard.removeObject(forKey: "hasCompletedOnboarding")
+        }
+}
+
+#Preview("Biometric step") {
+    OnboardingContainerView()
+        .environmentObject(AuthService.shared)
+        .environmentObject(LockManager())
+        .onAppear {
+            UserDefaults.standard.set(true, forKey: "hasSeenWelcome")
+        }
 }
