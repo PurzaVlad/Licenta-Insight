@@ -54,6 +54,11 @@ class DocumentManager: ObservableObject {
     }
 
     func clearForSignOut() {
+        // Purge the shared inbox so the next user who signs in on this device
+        // does not inherit the previous user's pending shared files.
+        if let inboxURL = sharedInboxURL(createIfMissing: false) {
+            try? FileManager.default.removeItem(at: inboxURL)
+        }
         documents = []
         folders = []
         prefersGridLayout = false
@@ -170,7 +175,7 @@ class DocumentManager: ObservableObject {
     func setPrefersGridLayout(_ value: Bool) {
         guard prefersGridLayout != value else { return }
         prefersGridLayout = value
-        saveState()
+        saveIndex()
     }
 
     enum FolderDeleteMode {
@@ -249,7 +254,9 @@ class DocumentManager: ObservableObject {
 
         documents.append(updated)
         AppLogger.documents.info("Document array now has \(self.documents.count) items")
-        saveState()
+        // Save only the new document file + update the index (no need to rewrite all other docs)
+        saveDocumentOnly(updated)
+        saveIndex()
         AppLogger.documents.info("Document saved successfully")
 
         generateKeywords(for: updated)
@@ -260,16 +267,18 @@ class DocumentManager: ObservableObject {
     func deleteDocument(_ document: Document) {
         documents.removeAll { $0.id == document.id }
         fileStorageService.deleteAllArtifacts(for: document.id)
+        persistenceService.deleteDocumentFile(id: document.id)
         RetrievalLogger.shared.removeEntries(referencing: document.id)
+        saveIndex()
+        // handleSourceDeletion may update derived docs — those save individually via saveDocumentOnly
         handleSourceDeletion(sourceId: document.id)
-        saveState()
     }
 
     func updateSummary(for documentId: UUID, to newSummary: String) {
         guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
         let updated = documents[idx].with(summary: newSummary)
         documents[idx] = updated
-        saveState()
+        saveDocumentOnly(updated)
         if updated.tags.isEmpty {
             generateTags(for: updated)
         }
@@ -281,19 +290,19 @@ class DocumentManager: ObservableObject {
     func updateContent(for documentId: UUID, to newContent: String) {
         guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
         documents[idx] = documents[idx].with(content: newContent)
-        saveState()
+        saveDocumentOnly(documents[idx])
     }
 
     func updateTags(for documentId: UUID, to newTags: [String]) {
         guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
         documents[idx] = documents[idx].with(tags: newTags)
-        saveState()
+        saveDocumentOnly(documents[idx])
     }
 
     func updateKeywords(for documentId: UUID, to keywords: String) {
         guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
         documents[idx] = documents[idx].with(keywordsResume: keywords)
-        saveState()
+        saveDocumentOnly(documents[idx])
     }
 
     func updateOCRPages(for documentId: UUID, to newPages: [OCRPage]?) {
@@ -309,13 +318,13 @@ class DocumentManager: ObservableObject {
             "ocrChunks.count=\(updated.ocrChunks.count), " +
             "chunkPageRange=\(minChunkPage.map(String.init) ?? "nil")...\(maxChunkPage.map(String.init) ?? "nil")"
         )
-        saveState()
+        saveDocumentOnly(updated)
     }
 
     func updateSourceDocumentId(for documentId: UUID, to newSourceId: UUID?) {
         guard let idx = documents.firstIndex(where: { $0.id == documentId }) else { return }
         documents[idx] = documents[idx].with(sourceDocumentId: newSourceId)
-        saveState()
+        saveDocumentOnly(documents[idx])
     }
 
     func generateTags(for document: Document, force: Bool = false) {
@@ -367,7 +376,7 @@ class DocumentManager: ObservableObject {
             .map { $0.sortOrder }
             .max() ?? -1
         folders.append(DocumentFolder(name: trimmed, parentId: parentId, sortOrder: maxOrder + 1))
-        saveState()
+        saveIndex()
     }
 
     func renameFolder(folderId: UUID, to newName: String) {
@@ -376,7 +385,7 @@ class DocumentManager: ObservableObject {
         if let idx = folders.firstIndex(where: { $0.id == folderId }) {
             let old = folders[idx]
             folders[idx] = DocumentFolder(id: old.id, name: trimmed, dateCreated: old.dateCreated, parentId: old.parentId, sortOrder: old.sortOrder)
-            saveState()
+            saveIndex()
         }
     }
 
@@ -401,15 +410,16 @@ class DocumentManager: ObservableObject {
             // Remove the folder itself.
             folders.removeAll { $0.id == folderId }
             normalizeFolderSortOrders(in: parentId)
-            saveState()
+            saveIndex()
 
         case .deleteAllItems:
             // Delete folder, all descendants, and all documents inside.
             let idsToDelete = descendantFolderIds(includingSelf: folderId)
 
-            // Clean up file storage for deleted documents
+            // Clean up file storage and persistent files for deleted documents
             for doc in documents where doc.folderId != nil && idsToDelete.contains(doc.folderId!) {
                 fileStorageService.deleteAllArtifacts(for: doc.id)
+                persistenceService.deleteDocumentFile(id: doc.id)
                 RetrievalLogger.shared.removeEntries(referencing: doc.id)
             }
 
@@ -420,7 +430,7 @@ class DocumentManager: ObservableObject {
 
             folders.removeAll { idsToDelete.contains($0.id) }
             normalizeFolderSortOrders(in: parentId)
-            saveState()
+            saveIndex()
         }
     }
 
@@ -459,7 +469,7 @@ class DocumentManager: ObservableObject {
 
         normalizeFolderSortOrders(in: old.parentId)
         normalizeFolderSortOrders(in: parentId)
-        saveState()
+        saveIndex()
     }
 
     func descendantFolderIds(of folderId: UUID) -> Set<UUID> {
@@ -729,12 +739,31 @@ class DocumentManager: ObservableObject {
     
     // MARK: - Persistence
 
+    /// Full save: rewrites every document file + index. Use for bulk ops (migration, reorder, vault reset).
     private func saveState() {
         do {
             try persistenceService.saveDocuments(documents, folders: folders, prefersGridLayout: prefersGridLayout)
             AppLogger.documents.info("Successfully saved \(self.documents.count) documents + \(self.folders.count) folders")
         } catch {
             AppLogger.documents.error("Failed to save documents: \(error.localizedDescription)")
+        }
+    }
+
+    /// Saves a single document's encrypted file. No index update.
+    private func saveDocumentOnly(_ doc: Document) {
+        do {
+            try persistenceService.saveDocument(doc)
+        } catch {
+            AppLogger.documents.error("Failed to save document '\(doc.title)': \(error.localizedDescription)")
+        }
+    }
+
+    /// Saves only the index (document ordering + folders + layout preference). No per-doc writes.
+    private func saveIndex() {
+        do {
+            try persistenceService.saveIndex(documentIds: documents.map(\.id), folders: folders, prefersGridLayout: prefersGridLayout)
+        } catch {
+            AppLogger.documents.error("Failed to save index: \(error.localizedDescription)")
         }
     }
     
@@ -853,7 +882,7 @@ class DocumentManager: ObservableObject {
             }
             normalizeFolderSortOrders(in: parentId)
         }
-        saveState()
+        saveIndex()   // only folder sort orders changed — no per-doc writes needed
     }
     
     // MARK: - Search and Query

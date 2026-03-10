@@ -1,5 +1,7 @@
 import Foundation
 import React
+import CryptoKit
+import Security
 
 enum ConversionPrivacyPolicy {
     static let uploadedDataDescription = "Only the selected file bytes plus extension metadata are uploaded when server conversion is required."
@@ -171,6 +173,22 @@ class ConversionService: NSObject {
                     return
                 }
 
+                // Token may have expired — force a refresh and retry once.
+                if status == 401, retryCount == 0 {
+                    AuthService.shared.forceTokenRefresh {
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            self.performConvert(inputPath: inputPath,
+                                                targetExt: targetExt,
+                                                documentId: documentId,
+                                                config: config,
+                                                retryCount: retryCount + 1,
+                                                resolve: resolve,
+                                                reject: reject)
+                        }
+                    }
+                    return
+                }
+
                 self.reject(ConversionServiceError.httpError(status: status, errorCode: errorCode), rejecter: reject)
             }
             task.resume()
@@ -239,7 +257,9 @@ class ConversionService: NSObject {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = requestTimeout
         configuration.timeoutIntervalForResource = requestTimeout
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration,
+                          delegate: PinningURLSessionDelegate(),
+                          delegateQueue: nil)
     }
 
     private func fileSizeBytes(url: URL) -> Int64? {
@@ -398,5 +418,128 @@ struct ContentDisposition {
             return nil
         }
         return cleaned
+    }
+}
+
+// MARK: - Certificate Pinning
+
+/// URLSessionDelegate that enforces SPKI pinning against the conversion server's cert chain.
+///
+/// Pinned against the Google Cloud Run (*.a.run.app) certificate chain captured on 2026-03-06:
+///   Cert 1 — intermediate               vh78KSg1Ry4NaqGDV10w/cTb9VH3BQUZoCWNa93W/EY=
+///   Cert 2 — root                       YSoUL4CBzo5aJ/ES9gSZTsavsgtHsiLLnTG+BKUdork=
+///
+/// Leaf cert (cert[0]) is intentionally NOT pinned — Cloud Run rotates it automatically.
+/// Pinning intermediate + root means leaf rotation never breaks the app.
+/// Only re-pin if Google rotates their CA hierarchy (rare). Update pinnedHashes and ship.
+///
+/// BEFORE PUBLISHING: re-verify hashes with:
+///   openssl s_client -connect <your-host>:443 -showcerts 2>/dev/null | \
+///   python3 -c "import re,subprocess,base64,sys; ..."  (see security docs)
+final class PinningURLSessionDelegate: NSObject, URLSessionDelegate {
+
+    // SHA-256 of the DER-encoded SubjectPublicKeyInfo (SPKI) for each cert in the chain.
+    // Matching ANY one of these is sufficient to establish trust.
+    //
+    // NOTE: leaf cert (cert[0]) intentionally excluded — Cloud Run rotates it automatically.
+    // Pinning intermediate + root survives leaf rotation without re-pinning.
+    // Only re-pin here if Google rotates their CA hierarchy (rare).
+    // Last verified: 2026-03-06
+    private static let pinnedHashes: Set<String> = [
+        "YPtHaftLw6/0vnc2BnNKGF54xiCA28WFcccjkA4ypCM=", // cert[1] GTS intermediate
+        "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=", // cert[2] Google root CA
+    ]
+
+    // ASN.1 SPKI headers that wrap the raw key bytes returned by SecKeyCopyExternalRepresentation.
+    // These are standard for the respective key types and are used by TrustKit and similar libraries.
+    private static let spkiHeaderECP256: [UInt8] = [
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce,
+        0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+        0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+    ]
+    private static let spkiHeaderRSA2048: [UInt8] = [
+        0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86,
+        0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03,
+        0x82, 0x01, 0x0f, 0x00,
+    ]
+    private static let spkiHeaderRSA4096: [UInt8] = [
+        0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86,
+        0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03,
+        0x82, 0x02, 0x0f, 0x00,
+    ]
+
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        AppLogger.conversion.debug("PinningDelegate: challenge method=\(challenge.protectionSpace.authenticationMethod) host=\(challenge.protectionSpace.host)")
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let serverTrust = challenge.protectionSpace.serverTrust else {
+            // Non-TLS challenge — cancel; we only talk HTTPS
+            AppLogger.conversion.error("PinningDelegate: non-TLS challenge — cancelling")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        // 1. Standard OS trust evaluation (validates certificate chain, expiry, revocation)
+        var cfError: CFError?
+        guard SecTrustEvaluateWithError(serverTrust, &cfError) else {
+            AppLogger.conversion.error("PinningDelegate: OS trust evaluation failed — \(String(describing: cfError))")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        // 2. SPKI pin check — at least one cert in the chain must match a pinned hash
+        let certCount = SecTrustGetCertificateCount(serverTrust)
+        AppLogger.conversion.debug("PinningDelegate: OS trust OK, checking \(certCount) certs against \(PinningURLSessionDelegate.pinnedHashes.count) pins")
+        for index in 0..<certCount {
+            guard let cert = SecTrustGetCertificateAtIndex(serverTrust, index) else { continue }
+            if let hash = spkiHash(for: cert) {
+                let matched = PinningURLSessionDelegate.pinnedHashes.contains(hash)
+                AppLogger.conversion.debug("PinningDelegate: cert[\(index)] hash=\(hash) matched=\(matched)")
+                if matched {
+                    completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                    return
+                }
+            } else {
+                AppLogger.conversion.error("PinningDelegate: cert[\(index)] — could not compute SPKI hash")
+            }
+        }
+
+        // No pinned hash matched — reject
+        AppLogger.conversion.error("PinningDelegate: no pinned hash matched — cancelling connection to \(challenge.protectionSpace.host)")
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+
+    // MARK: - SPKI Hash
+
+    private func spkiHash(for certificate: SecCertificate) -> String? {
+        guard let publicKey = SecCertificateCopyKey(certificate),
+              let keyData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data? else {
+            return nil
+        }
+        let spkiData = addSPKIHeader(keyData: keyData, key: publicKey)
+        let digest = SHA256.hash(data: spkiData)
+        return Data(digest).base64EncodedString()
+    }
+
+    private func addSPKIHeader(keyData: Data, key: SecKey) -> Data {
+        guard let attrs = SecKeyCopyAttributes(key) as? [String: Any] else {
+            return keyData
+        }
+        let keyType = attrs[kSecAttrKeyType as String] as? String ?? ""
+        let keyBits = attrs[kSecAttrKeySizeInBits as String] as? Int ?? 0
+
+        let header: [UInt8]
+        if keyType == (kSecAttrKeyTypeECSECPrimeRandom as String) && keyBits == 256 {
+            header = PinningURLSessionDelegate.spkiHeaderECP256
+        } else if keyType == (kSecAttrKeyTypeRSA as String) && keyBits == 2048 {
+            header = PinningURLSessionDelegate.spkiHeaderRSA2048
+        } else if keyType == (kSecAttrKeyTypeRSA as String) && keyBits == 4096 {
+            header = PinningURLSessionDelegate.spkiHeaderRSA4096
+        } else {
+            // Unknown key type — hash raw key data as best-effort
+            return keyData
+        }
+        return Data(header) + keyData
     }
 }

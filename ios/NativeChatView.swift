@@ -1668,6 +1668,9 @@ struct NativeChatView: View {
         let globalHits = selection.allRankedHits
         let topK = 10
 
+        // PRIVACY: entire trace is gated to debug builds — it prints user questions
+        // and document snippets which must never appear in production/release logs.
+        #if DEBUG
         print("================ RETRIEVAL TRACE ================")
         print("Question: \"\(cleanLine(question))\"")
         print("")
@@ -1721,6 +1724,7 @@ struct NativeChatView: View {
         print("AdaptiveThreshold floor=\(String(format: "%.2f", evidenceAbsoluteFloor)) median+margin=\(String(format: "%.2f", evidenceMedianMargin)) gap=\(String(format: "%.2f", evidenceGapThreshold))")
         print("EvidenceStats best=\(String(format: "%.2f", best)) median=\(String(format: "%.2f", median)) gap=\(String(format: "%.2f", gap))")
         print("=================================================")
+        #endif
     }
 
     private func retrySelectionWithExpandedQueryIfNeeded(

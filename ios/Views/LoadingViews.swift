@@ -30,6 +30,7 @@ struct LoadingScreenView: View {
                         .compositingGroup()
                 }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             Task {
                 while !Task.isCancelled {

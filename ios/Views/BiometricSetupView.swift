@@ -30,18 +30,6 @@ struct BiometricSetupView: View {
 
                     // MARK: Options
                     VStack(spacing: 0) {
-                        if deviceSupportsFaceID {
-                            SecurityOptionRow(
-                                icon: "faceid",
-                                title: "Face ID",
-                                subtitle: faceIDEnabled ? "Enabled" : "Unlock with your face",
-                                isEnabled: faceIDEnabled,
-                                errorMessage: faceIDError.isEmpty ? nil : faceIDError,
-                                action: toggleFaceID
-                            )
-                            Divider().padding(.leading, 58)
-                        }
-
                         SecurityOptionRow(
                             icon: "lock.fill",
                             title: "Passcode",
@@ -50,29 +38,37 @@ struct BiometricSetupView: View {
                             errorMessage: nil,
                             action: { showPasscodeSheet = true }
                         )
+
+                        if deviceSupportsFaceID {
+                            Divider().padding(.leading, 58)
+                            SecurityOptionRow(
+                                icon: "faceid",
+                                title: "Face ID",
+                                subtitle: passcodeDone
+                                    ? (faceIDEnabled ? "Enabled" : "Unlock with your face")
+                                    : "Set a passcode first",
+                                isEnabled: faceIDEnabled,
+                                errorMessage: faceIDError.isEmpty ? nil : faceIDError,
+                                action: passcodeDone ? toggleFaceID : {}
+                            )
+                            .opacity(passcodeDone ? 1 : 0.4)
+                        }
                     }
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
 
                     // MARK: Actions
-                    VStack(spacing: 14) {
-                        Button {
-                            onComplete()
-                        } label: {
-                            Text("Continue")
-                                .fontWeight(.semibold)
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-
-                        Button("Skip for now") {
-                            onComplete()
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Button {
+                        onComplete()
+                    } label: {
+                        Text("Continue")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!passcodeDone)
                     .padding(.horizontal)
                 }
                 .padding(.top, 12)

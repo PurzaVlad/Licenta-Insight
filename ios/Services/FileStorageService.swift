@@ -379,8 +379,16 @@ class FileStorageService {
     }
 
     private func writeProtectedFile(_ data: Data, to url: URL, protection: FileProtectionType) throws {
-        try data.write(to: url, options: [.atomic])
-        try? (url as NSURL).setResourceValue(protection, forKey: .fileProtectionKey)
+        let writeOptions: Data.WritingOptions
+        switch protection {
+        case .complete:
+            writeOptions = [.atomic, .completeFileProtection]
+        case .completeUnlessOpen:
+            writeOptions = [.atomic, .completeFileProtectionUnlessOpen]
+        default:
+            writeOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        }
+        try data.write(to: url, options: writeOptions)
         try? (url as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
     }
 

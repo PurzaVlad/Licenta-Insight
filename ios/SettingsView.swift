@@ -23,7 +23,6 @@ struct SettingsView: View {
     @EnvironmentObject private var authService: AuthService
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
     @AppStorage("useFaceID") private var useFaceID = false
-    @AppStorage(AppConstants.UserDefaultsKeys.securityProfile) private var securityProfileRaw = SecurityProfile.standard.rawValue
     @State private var isFaceIDAvailable = false
     @State private var faceIDStatusText = ""
     @State private var showingFaceIDError = false
@@ -48,17 +47,6 @@ struct SettingsView: View {
                 .listRowBackground(Color.clear)
 
                 Section(header: Text("Unlock Method")) {
-                    Toggle(isOn: faceIDToggleBinding) {
-                        Text("Face ID")
-                    }
-                    .disabled(!isFaceIDAvailable)
-
-                    if !isFaceIDAvailable {
-                        Text(faceIDStatusText)
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    }
-
                     HStack {
                         Text("Passcode")
                         Spacer()
@@ -76,13 +64,27 @@ struct SettingsView: View {
                         Button("Remove Passcode", role: .destructive) {
                             if KeychainService.deletePasscode() {
                                 passcodeSet = false
+                                useFaceID = false
                             }
                         }
                     }
 
-                    Text("Passcode is used if Face ID fails.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
+                    if isFaceIDAvailable {
+                        Toggle(isOn: faceIDToggleBinding) {
+                            Text("Face ID")
+                        }
+                        .disabled(!passcodeSet)
+
+                        if !passcodeSet {
+                            Text("Set a passcode first to enable Face ID.")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+                    } else if !faceIDStatusText.isEmpty {
+                        Text(faceIDStatusText)
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section(header: Text("Account")) {
@@ -96,18 +98,8 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("Vault Security")) {
-                    Picker("Protection", selection: $securityProfileRaw) {
-                        ForEach(SecurityProfile.allCases) { profile in
-                            Text(profile.title).tag(profile.rawValue)
-                        }
-                    }
-
-                    Text("Standard: keychain after first unlock, metadata readable after first unlock. Strict: keychain and metadata only while unlocked.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-
-                    if let message = documentManager.vaultUnavailableMessage {
+                if let message = documentManager.vaultUnavailableMessage {
+                    Section(header: Text("Vault")) {
                         Text(message)
                             .font(.footnote)
                             .foregroundColor(.red)
@@ -123,9 +115,6 @@ struct SettingsView: View {
         .onAppear {
             refreshFaceIDAvailability()
             passcodeSet = KeychainService.passcodeExists()
-        }
-        .onChange(of: securityProfileRaw) { _ in
-            documentManager.applyCurrentSecurityProfile()
         }
         .alert("Face ID Error", isPresented: $showingFaceIDError) {
             Button("OK", role: .cancel) {}

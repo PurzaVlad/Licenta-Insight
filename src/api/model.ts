@@ -6,13 +6,14 @@ export const downloadModel = (
   onProgress: (progress: number) => void,
   hfToken?: string
 ): { promise: Promise<string>; cancel: () => void } => {
-  const destPath = `${RNFS.DocumentDirectoryPath}/${modelName}`;
+  const safeModelName = modelName.split('/').pop() || modelName;
+  const destPath = `${RNFS.DocumentDirectoryPath}/${safeModelName}`;
 
   let jobId: number | null = null;
   let cancelled = false;
 
   const promise = new Promise<string>((resolve, reject) => {
-    if (!modelName || !modelUrl) {
+    if (!safeModelName || !modelUrl) {
       reject(new Error('Invalid model name or URL'));
       return;
     }

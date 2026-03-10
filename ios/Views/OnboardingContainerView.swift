@@ -1,10 +1,5 @@
 import SwiftUI
 
-/// Drives the linear first-launch flow:
-///   WelcomeView → LoginView → BiometricSetupView
-///
-/// Shown as a fullScreenCover until the user completes all steps.
-/// After this, the existing LoadingScreenView handles the model-download wait.
 struct OnboardingContainerView: View {
     @EnvironmentObject private var authService: AuthService
     @EnvironmentObject private var lockManager: LockManager
@@ -21,6 +16,9 @@ struct OnboardingContainerView: View {
                     .environmentObject(authService)
             } else {
                 BiometricSetupView {
+                    if let uid = authService.currentUserID {
+                        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding_\(uid)")
+                    }
                     hasCompletedOnboarding = true
                 }
                 .environmentObject(lockManager)

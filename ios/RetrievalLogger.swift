@@ -195,7 +195,7 @@ class RetrievalLogger {
 
     private func ensureLogFileAttributes() {
         try? (logFileURL as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
-        try? (logFileURL as NSURL).setResourceValue(FileProtectionType.completeUntilFirstUserAuthentication, forKey: .fileProtectionKey)
+        try? (logFileURL as NSURL).setResourceValue(FileProtectionType.completeUnlessOpen, forKey: .fileProtectionKey)
     }
 
     private static func sha256Hex(_ text: String) -> String {

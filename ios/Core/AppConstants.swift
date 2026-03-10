@@ -21,7 +21,6 @@ enum AppConstants {
         static let pendingToolsDeepLink = "pendingToolsDeepLink"
         static let pendingConvertDeepLink = "pendingConvertDeepLink"
         static let passcodeHashMigration = "passcodeHashMigrationComplete"
-        static let currentUserID = "currentUserID"
     }
 
     enum AppGroup {
@@ -44,7 +43,7 @@ enum AppConstants {
     }
 
     enum Security {
-        static let convertedCacheRetentionDays = 14
+        static let convertedCacheRetentionDays = 3
         static let tempPreviewRetentionHours = 24
         static let convertedCacheMaxBytes = 200 * 1024 * 1024
         static let retrievalLogMaxBytes = 5 * 1024 * 1024
@@ -59,10 +58,7 @@ enum SecurityProfile: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    static var current: SecurityProfile {
-        let raw = UserDefaults.standard.string(forKey: AppConstants.UserDefaultsKeys.securityProfile)
-        return SecurityProfile(rawValue: raw ?? "") ?? .standard
-    }
+    static var current: SecurityProfile { .standard }
 
     var title: String {
         switch self {
@@ -92,9 +88,13 @@ enum SecurityProfile: String, CaseIterable, Identifiable {
     }
 
     var keychainAccessibility: CFString {
+        // Both profiles use WhenUnlocked: keychain items must only be
+        // readable while the device is actively unlocked. AfterFirstUnlock
+        // is only appropriate for background-accessible items (e.g. push tokens)
+        // — never for encryption keys or user credentials.
         switch self {
         case .standard:
-            return kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            return kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         case .strict:
             return kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         }

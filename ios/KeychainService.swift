@@ -5,8 +5,20 @@ import CommonCrypto
 
 enum KeychainService {
     private static let service = "com.insight.app"
-    private static let account = "appPasscode"
     private static let migrationKey = "passcodeHashMigrationComplete"
+
+    /// Set by LockManager.configure(userID:) when a user signs in.
+    /// Ensures each Firebase account stores its passcode under a separate Keychain entry.
+    static var currentUserID: String = ""
+
+    private static var account: String {
+        currentUserID.isEmpty ? "appPasscode" : "appPasscode_\(currentUserID)"
+    }
+
+    /// Migration key scoped to the current user so each account tracks its own hash migration.
+    private static var userMigrationKey: String {
+        currentUserID.isEmpty ? migrationKey : "\(migrationKey)_\(currentUserID)"
+    }
 
     // PBKDF2 configuration
     private static let saltSize = 32
@@ -37,8 +49,7 @@ enum KeychainService {
         let status = SecItemAdd(query as CFDictionary, nil)
 
         if status == errSecSuccess {
-            // Mark migration as complete
-            UserDefaults.standard.set(true, forKey: migrationKey)
+            UserDefaults.standard.set(true, forKey: userMigrationKey)
         }
 
         return status == errSecSuccess
@@ -46,7 +57,7 @@ enum KeychainService {
 
     static func verifyPasscode(_ passcode: String) -> Bool {
         // Check if migration is needed
-        if !UserDefaults.standard.bool(forKey: migrationKey) {
+        if !UserDefaults.standard.bool(forKey: userMigrationKey) {
             // Try to migrate old plaintext passcode
             if let oldPasscode = getOldPlaintextPasscode(), oldPasscode == passcode {
                 // Re-save with hashing
@@ -78,12 +89,12 @@ enum KeychainService {
             return false
         }
 
-        return computedHash == storedHash
+        return constantTimeEqual(computedHash, Data(storedHash))
     }
 
     static func deletePasscode() -> Bool {
         let status = SecItemDelete(baseQuery() as CFDictionary)
-        UserDefaults.standard.removeObject(forKey: migrationKey)
+        UserDefaults.standard.removeObject(forKey: userMigrationKey)
         return status == errSecSuccess || status == errSecItemNotFound
     }
 
@@ -139,6 +150,14 @@ enum KeychainService {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+    }
+
+    /// Constant-time byte comparison — prevents timing side-channel attacks on hash verification.
+    private static func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for (x, y) in zip(a, b) { diff |= x ^ y }
+        return diff == 0
     }
 }
 

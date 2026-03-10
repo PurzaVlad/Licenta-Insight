@@ -200,6 +200,25 @@ class FileProcessingService {
         return "Imported Word document. Text extraction is limited on this file."
     }
 
+    // ZIP extraction size limits (ZIP bomb protection)
+    private static let maxExtractedBytes: UInt64 = 300 * 1024 * 1024 // 300 MB
+
+    /// Sum of file sizes inside `directory`. Used to catch ZIP bombs post-extraction.
+    private func extractedDirectorySize(at directory: URL) -> UInt64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var total: UInt64 = 0
+        for case let fileURL as URL in enumerator {
+            if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total += UInt64(size)
+            }
+        }
+        return total
+    }
+
     private func extractTextFromDOCXArchive(url: URL) -> String {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("docx_extract_\(UUID().uuidString)", isDirectory: true)
@@ -220,6 +239,12 @@ class FileProcessingService {
             if let unzipError = unzipError {
                 AppLogger.fileProcessing.error("DOCX unzip failed: \(unzipError.localizedDescription)")
             }
+            cleanupTempDir(tempDir)
+            return ""
+        }
+
+        guard extractedDirectorySize(at: tempDir) <= FileProcessingService.maxExtractedBytes else {
+            AppLogger.fileProcessing.warning("DOCX rejected: extracted size exceeds \(FileProcessingService.maxExtractedBytes) bytes")
             cleanupTempDir(tempDir)
             return ""
         }
@@ -284,6 +309,12 @@ class FileProcessingService {
                                        error: &unzipError,
                                        delegate: nil)
         if !ok {
+            cleanupTempDir(tempDir)
+            return ""
+        }
+
+        guard extractedDirectorySize(at: tempDir) <= FileProcessingService.maxExtractedBytes else {
+            AppLogger.fileProcessing.warning("PPTX rejected: extracted size exceeds \(FileProcessingService.maxExtractedBytes) bytes")
             cleanupTempDir(tempDir)
             return ""
         }

@@ -25,17 +25,12 @@ private final class HostingContainerView<Content: View>: UIView {
 
     init(rootView: Content) {
         self.hostingController = UIHostingController(rootView: rootView)
-        super.init(frame: .zero)
+        super.init(frame: UIScreen.main.bounds)
 
         hostingController.view.backgroundColor = UIColor.systemGroupedBackground
-        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.frame = bounds
+        hostingController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         addSubview(hostingController.view)
-        NSLayoutConstraint.activate([
-            hostingController.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hostingController.view.trailingAnchor.constraint(equalTo: trailingAnchor),
-            hostingController.view.topAnchor.constraint(equalTo: topAnchor),
-            hostingController.view.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
     }
 
     override func didMoveToWindow() {

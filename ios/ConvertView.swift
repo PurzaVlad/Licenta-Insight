@@ -233,6 +233,8 @@ private struct ConvertFlowView: View {
     @State private var pendingConsentDocument: Document? = nil
     @State private var pendingConsentMode: PDFToOfficeMode = .ocrEditable
     @AppStorage("alwaysAllowServerConversionUpload") private var alwaysAllowServerConversionUpload = false
+    @State private var conversionErrorMessage: String? = nil
+    @State private var showConversionError = false
 
     private var documents: [Document] {
         documentManager.documents.filter { allowedSourceTypes.contains($0.type) }
@@ -364,15 +366,26 @@ private struct ConvertFlowView: View {
                 "\(ConversionPrivacyPolicy.authScopeDescription)"
             )
         }
+        .alert("Conversion Failed", isPresented: $showConversionError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(conversionErrorMessage ?? "Unknown error")
+        }
     }
 
     private func startConversion() {
-        guard let document = selectedDocument else { return }
+        AppLogger.conversion.debug("startConversion: selectedId=\(selectedId?.uuidString ?? "nil")")
+        guard let document = selectedDocument else {
+            AppLogger.conversion.error("startConversion: selectedDocument is nil — no document selected")
+            return
+        }
         let sourceFormat = conversionFormatFromDocumentType(document.type)
+        AppLogger.conversion.debug("startConversion: doc=\(document.title) sourceFormat=\(String(describing: sourceFormat)) targetFormat=\(String(describing: targetFormat))")
 
         if sourceFormat == .pdf,
            isOfficeTarget(targetFormat),
            isScannedPDFSource(document) {
+            AppLogger.conversion.debug("startConversion: scanned PDF detected — showing choice sheet")
             pendingScannedChoiceDocument = document
             showScannedPDFChoice = true
             return
@@ -383,8 +396,10 @@ private struct ConvertFlowView: View {
 
     private func requestConsentOrConvert(for document: Document, mode: PDFToOfficeMode) {
         let sourceFormat = conversionFormatFromDocumentType(document.type)
-        if requiresServerUpload(sourceFormat: sourceFormat, targetFormat: targetFormat, mode: mode),
-           !alwaysAllowServerConversionUpload {
+        let needsUpload = requiresServerUpload(sourceFormat: sourceFormat, targetFormat: targetFormat, mode: mode)
+        AppLogger.conversion.debug("requestConsentOrConvert: needsServerUpload=\(needsUpload) alwaysAllow=\(alwaysAllowServerConversionUpload)")
+        if needsUpload, !alwaysAllowServerConversionUpload {
+            AppLogger.conversion.debug("requestConsentOrConvert: showing consent alert")
             pendingConsentDocument = document
             pendingConsentMode = mode
             showServerUploadConsent = true
@@ -394,6 +409,7 @@ private struct ConvertFlowView: View {
     }
 
     private func performConversion(for document: Document, mode: PDFToOfficeMode) {
+        AppLogger.conversion.debug("performConversion: starting for doc=\(document.title) mode=\(String(describing: mode))")
         isConverting = true
         if !isGlobalLoadingActive {
             GlobalLoadingBridge.setOperationLoading(true)
@@ -412,6 +428,7 @@ private struct ConvertFlowView: View {
             DispatchQueue.main.async {
                 isConverting = false
                 if result.success {
+                    AppLogger.conversion.debug("performConversion: success")
                     saveConversionResult(
                         result: result,
                         documentManager: documentManager,
@@ -428,13 +445,13 @@ private struct ConvertFlowView: View {
                         }
                     }
                 } else {
+                    AppLogger.conversion.error("performConversion: failed — \(result.message)")
                     if isGlobalLoadingActive {
                         GlobalLoadingBridge.setOperationLoading(false)
                         isGlobalLoadingActive = false
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        dismiss()
-                    }
+                    conversionErrorMessage = result.message
+                    showConversionError = true
                 }
             }
         }
@@ -690,12 +707,12 @@ enum ConversionView {
         let message: String
     }
 
-    enum ConversionError: Error {
+    enum ConversionError: LocalizedError {
         case unsupportedConversion
         case conversionFailed
         case serverFailure(String)
 
-        var localizedDescription: String {
+        var errorDescription: String? {
             switch self {
             case .unsupportedConversion:
                 return "This conversion is not supported yet"
@@ -1041,20 +1058,32 @@ private enum ServerConversionMode: String {
     case visualImage = "image"
 }
 
+/// Shared pinned session for all server calls from ConvertView.
+/// Uses the same PinningURLSessionDelegate as ConversionService so cert
+/// pinning is enforced on every network path, not just the RN bridge path.
+private let _convertViewPinnedSession: URLSession = {
+    URLSession(configuration: .default, delegate: PinningURLSessionDelegate(), delegateQueue: nil)
+}()
+
 private func convertViaServer(
     document: Document,
     to targetFormat: ConversionView.DocumentFormat,
     mode: ServerConversionMode? = nil,
     documentManager: DocumentManager
 ) -> (data: Data?, error: String?, filename: String?) {
+    AppLogger.conversion.debug("convertViaServer: doc=\(document.id) target=\(String(describing: targetFormat)) mode=\(mode?.rawValue ?? "nil")")
     guard let inputData = documentManager.anyFileData(for: document.id) else {
+        AppLogger.conversion.error("convertViaServer: anyFileData returned nil for doc=\(document.id)")
         return (nil, "Missing input data.", nil)
     }
+    AppLogger.conversion.debug("convertViaServer: inputData size=\(inputData.count) bytes")
 
     let config: ConversionConfig
     do {
         config = try ConversionConfig.load()
+        AppLogger.conversion.debug("convertViaServer: baseURL=\(config.baseURL)")
     } catch {
+        AppLogger.conversion.error("convertViaServer: ConversionConfig.load() failed — \(error)")
         return (nil, error.localizedDescription, nil)
     }
 
@@ -1071,10 +1100,14 @@ private func convertViaServer(
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     let idToken = AuthService.shared.currentIDTokenSync()
     guard !idToken.isEmpty else {
+        AppLogger.conversion.error("convertViaServer: idToken is empty — user not signed in")
         return (nil, "Not signed in.", nil)
     }
+    AppLogger.conversion.debug("convertViaServer: got idToken (len=\(idToken.count)), sending request to \(String(describing: components?.url))")
     request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
-    request.setValue(document.title, forHTTPHeaderField: "X-Filename")
+    // Send a generic filename — the server needs an extension to name the output
+    // but sending the full document title would leak metadata in server logs.
+    request.setValue("document.\(fileExtension(for: document.type))", forHTTPHeaderField: "X-Filename")
     request.setValue(fileExtension(for: document.type), forHTTPHeaderField: "X-File-Ext")
     if let mode {
         request.setValue(mode.rawValue, forHTTPHeaderField: "X-Conversion-Mode")
@@ -1087,16 +1120,19 @@ private func convertViaServer(
 
     request.httpBody = inputData
 
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+    let task = _convertViewPinnedSession.dataTask(with: request) { data, response, error in
         defer { semaphore.signal() }
         if let error {
+            AppLogger.conversion.error("convertViaServer: network error — \(error)")
             errorMessage = error.localizedDescription
             return
         }
         guard let http = response as? HTTPURLResponse else {
+            AppLogger.conversion.error("convertViaServer: response is not HTTPURLResponse")
             errorMessage = "No response from server."
             return
         }
+        AppLogger.conversion.debug("convertViaServer: HTTP \(http.statusCode)")
         if http.statusCode == 200 {
             resultData = data
             if let headerValue = http.allHeaderFields.first(where: { key, _ in
@@ -1114,6 +1150,7 @@ private func convertViaServer(
     }
     task.resume()
     _ = semaphore.wait(timeout: .now() + 180)
+    AppLogger.conversion.debug("convertViaServer: semaphore released — resultData=\(resultData != nil) errorMessage=\(errorMessage ?? "nil")")
 
     if resultData == nil && errorMessage == nil {
         errorMessage = "No response from server (timeout or network issue)."

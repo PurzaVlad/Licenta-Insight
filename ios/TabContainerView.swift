@@ -185,6 +185,8 @@ struct TabContainerView: View {
             // Handle case where auth state is already restored before this view appears
             if authService.isSignedIn, let uid = authService.currentUserID {
                 documentManager.configureForUser(uid)
+                lockManager.configure(userID: uid)
+                hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding_\(uid)")
             }
             documentManager.importSharedInboxIfNeeded()
             let persistedModelReady = UserDefaults.standard.bool(forKey: "modelReady")
@@ -232,8 +234,12 @@ struct TabContainerView: View {
         .onChange(of: authService.isSignedIn) { isSignedIn in
             if isSignedIn, let uid = authService.currentUserID {
                 documentManager.configureForUser(uid)
+                lockManager.configure(userID: uid)
+                hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding_\(uid)")
             } else {
                 documentManager.clearForSignOut()
+                lockManager.configure(userID: "")
+                hasCompletedOnboarding = false
             }
         }
         .fullScreenCover(isPresented: Binding(

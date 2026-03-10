@@ -59,9 +59,12 @@ final class ShareViewController: UIViewController {
             return
         }
 
-        let providers = extensionItems
+        let allProviders = extensionItems
             .compactMap { $0.attachments }
             .flatMap { $0 }
+
+        // Cap the number of items processed per share session to prevent resource exhaustion.
+        let providers = Array(allProviders.prefix(20))
 
         guard !providers.isEmpty else {
             complete(withStatus: "Nothing to save.", delay: 0.35)
@@ -255,12 +258,20 @@ final class ShareViewController: UIViewController {
         return false
     }
 
+    private static let maxInboxBytes = 50 * 1024 * 1024 // 50 MB — matches AppConstants.Limits.maxFileSizeBytes
+
     private func copyFileToInbox(_ sourceURL: URL, preferredName: String, inboxURL: URL) -> Bool {
         let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if didStartAccessing {
                 sourceURL.stopAccessingSecurityScopedResource()
             }
+        }
+
+        // Reject oversized files before copying to prevent storage exhaustion.
+        if let fileSize = try? sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           fileSize > ShareViewController.maxInboxBytes {
+            return false
         }
 
         let destinationURL = uniqueDestinationURL(
@@ -270,11 +281,13 @@ final class ShareViewController: UIViewController {
 
         do {
             try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            try? (destinationURL as NSURL).setResourceValue(
+                URLFileProtection.completeUnlessOpen, forKey: .fileProtectionKey)
             return true
         } catch {
             guard let data = try? Data(contentsOf: sourceURL) else { return false }
             do {
-                try data.write(to: destinationURL, options: .atomic)
+                try data.write(to: destinationURL, options: [.atomic, .completeFileProtectionUnlessOpen])
                 return true
             } catch {
                 return false
@@ -300,9 +313,10 @@ final class ShareViewController: UIViewController {
             finalName = "\(safeBase).\(inferredExtension)"
         }
 
+        guard data.count <= ShareViewController.maxInboxBytes else { return false }
         let destinationURL = uniqueDestinationURL(for: finalName, inboxURL: inboxURL)
         do {
-            try data.write(to: destinationURL, options: .atomic)
+            try data.write(to: destinationURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             return true
         } catch {
             return false
@@ -347,7 +361,11 @@ final class ShareViewController: UIViewController {
         }
         let inbox = container.appendingPathComponent(sharedInboxFolderName, isDirectory: true)
         if createIfMissing && !FileManager.default.fileExists(atPath: inbox.path) {
-            try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(
+                at: inbox,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+            )
         }
         return inbox
     }

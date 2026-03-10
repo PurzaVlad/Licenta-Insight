@@ -54,7 +54,17 @@ final class AuthService: ObservableObject {
 
     func signOut() {
         GIDSignIn.sharedInstance.signOut()
-        try? Auth.auth().signOut()
+        do {
+            try Auth.auth().signOut()
+        } catch {
+            // Firebase signOut failed (e.g. Keychain unavailable during lockout).
+            // Manually clear published state so the lockout protection is not
+            // bypassed — the app treats the user as signed out regardless.
+            DispatchQueue.main.async {
+                self.isSignedIn = false
+                self.currentUserEmail = nil
+            }
+        }
     }
 
     func getIDToken() async throws -> String {
@@ -62,6 +72,18 @@ final class AuthService: ObservableObject {
             throw AuthServiceError.notSignedIn
         }
         return try await user.getIDToken(forcingRefresh: false)
+    }
+
+    /// Forces a token refresh from Firebase, then calls completion.
+    /// Use before retrying a request that failed with 401 (token may have expired).
+    func forceTokenRefresh(completion: @escaping () -> Void) {
+        guard let user = Auth.auth().currentUser else {
+            completion()
+            return
+        }
+        user.getIDTokenForcingRefresh(true) { _, _ in
+            completion()
+        }
     }
 
     /// Synchronous token fetch for use on background threads.

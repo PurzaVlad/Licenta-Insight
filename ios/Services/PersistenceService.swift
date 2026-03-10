@@ -3,6 +3,7 @@ import OSLog
 import CryptoKit
 import Security
 
+/// Legacy monolith — kept for migration decoding only. New code uses PersistedIndex + per-doc files.
 struct PersistedState: Codable {
     var documents: [Document]
     var folders: [DocumentFolder]
@@ -26,6 +27,14 @@ struct PersistedState: Codable {
     }
 }
 
+/// New fragmented index — stores document ID ordering + folders + layout preference.
+/// Each document's content lives in a separate encrypted `documents/<uuid>.json` file.
+struct PersistedIndex: Codable {
+    var documentIds: [String]   // UUID strings; preserves display order
+    var folders: [DocumentFolder]
+    var prefersGridLayout: Bool
+}
+
 class PersistenceService {
     static let shared = PersistenceService()
 
@@ -38,7 +47,10 @@ class PersistenceService {
     private let algorithmAESGCM: UInt8 = 1
     private let keychainService = "com.insight.app.persistence"
     private let keychainAccountPrefix = "documents_encryption_key_"
-    private let aadBaseContext = "\(AppConstants.FileNames.savedDocumentsJSON)|v1"
+    private let aadBaseContext = "\(AppConstants.FileNames.savedDocumentsJSON)|v1"   // legacy — used for old file migration
+    private let aadIndex = "index.json|v1"
+    private let aadDocument = "document.json|v1"
+    private let aadConversations = "conversations.json|v1"
 
     // Per-user namespace — set via configure(userID:) on sign-in
     private(set) var userID: String = "anonymous"
@@ -55,20 +67,14 @@ class PersistenceService {
 
     // MARK: - Document Persistence
 
-    /// Saves documents and folders to disk (preserves existing conversations)
+    /// Full save: writes each document to its own file + updates the index.
+    /// Called for bulk operations (migration, vault reset).
     func saveDocuments(_ documents: [Document], folders: [DocumentFolder], prefersGridLayout: Bool) throws {
         do {
-            let existingConversations = (try? loadConversations()) ?? []
-            let state = PersistedState(
-                documents: documents,
-                folders: folders,
-                prefersGridLayout: prefersGridLayout,
-                conversations: existingConversations
-            )
-            let encoded = try JSONEncoder().encode(state)
-            let protectedData = try encrypt(encoded)
-            let url = try getDocumentsFileURL()
-            try writeMetadataFile(protectedData, to: url)
+            for doc in documents {
+                try saveDocument(doc)
+            }
+            try saveIndex(documentIds: documents.map(\.id), folders: folders, prefersGridLayout: prefersGridLayout)
             AppLogger.persistence.info("Saved \(documents.count) documents + \(folders.count) folders")
         } catch let error as PersistenceError {
             throw error
@@ -77,24 +83,55 @@ class PersistenceService {
         }
     }
 
+    /// Saves a single document to its own encrypted `documents/<uuid>.json` file.
+    func saveDocument(_ doc: Document) throws {
+        do {
+            let encoded = try JSONEncoder().encode(doc)
+            let encrypted = try encrypt(encoded, context: aadDocument)
+            let url = try documentURL(id: doc.id)
+            try writeMetadataFile(encrypted, to: url)
+        } catch let error as PersistenceError {
+            throw error
+        } catch {
+            throw PersistenceError.saveFailedIO(error)
+        }
+    }
+
+    /// Saves the index file (document ID ordering + folders + layout preference).
+    func saveIndex(documentIds: [UUID], folders: [DocumentFolder], prefersGridLayout: Bool) throws {
+        do {
+            let index = PersistedIndex(
+                documentIds: documentIds.map { $0.uuidString },
+                folders: folders,
+                prefersGridLayout: prefersGridLayout
+            )
+            let encoded = try JSONEncoder().encode(index)
+            let encrypted = try encrypt(encoded, context: aadIndex)
+            let url = try indexURL()
+            try writeMetadataFile(encrypted, to: url)
+        } catch let error as PersistenceError {
+            throw error
+        } catch {
+            throw PersistenceError.saveFailedIO(error)
+        }
+    }
+
+    /// Deletes the per-document JSON file for a given document ID.
+    func deleteDocumentFile(id: UUID) {
+        if let url = try? documentURL(id: id) {
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
     // MARK: - Conversation Persistence
 
-    /// Saves conversations to disk (preserves existing documents and folders)
+    /// Saves conversations directly to `conversations.json`.
     func saveConversations(_ conversations: [PersistedConversation]) throws {
         do {
-            let url = try getDocumentsFileURL()
-            var state: PersistedState
-            if let data = try? Data(contentsOf: url), !data.isEmpty,
-               let decrypted = try? decryptIfNeeded(data),
-               let existing = try? JSONDecoder().decode(PersistedState.self, from: decrypted) {
-                state = existing
-            } else {
-                state = PersistedState(documents: [], folders: [], prefersGridLayout: false)
-            }
-            state.conversations = conversations
-            let encoded = try JSONEncoder().encode(state)
-            let protectedData = try encrypt(encoded)
-            try writeMetadataFile(protectedData, to: url)
+            let encoded = try JSONEncoder().encode(conversations)
+            let encrypted = try encrypt(encoded, context: aadConversations)
+            let url = try conversationsURL()
+            try writeMetadataFile(encrypted, to: url)
             AppLogger.persistence.debug("Saved \(conversations.count) conversations")
         } catch let error as PersistenceError {
             throw error
@@ -103,27 +140,70 @@ class PersistenceService {
         }
     }
 
-    /// Loads conversations from disk
+    /// Loads conversations. Tries `conversations.json` first; falls back to legacy monolithic file.
     func loadConversations() throws -> [PersistedConversation] {
-        let url = try getDocumentsFileURL()
-        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return [] }
+        // New format
+        if let url = try? conversationsURL(),
+           let data = try? Data(contentsOf: url), !data.isEmpty,
+           let decrypted = try? decryptIfNeeded(data, context: aadConversations),
+           let conversations = try? JSONDecoder().decode([PersistedConversation].self, from: decrypted) {
+            return conversations
+        }
+        // Legacy fallback — read from old monolith
+        let legacyURL = try getDocumentsFileURL()
+        guard let data = try? Data(contentsOf: legacyURL), !data.isEmpty else { return [] }
         let decrypted = try decryptIfNeeded(data)
         let state = try JSONDecoder().decode(PersistedState.self, from: decrypted)
         return state.conversations
     }
 
-    /// Loads documents and folders from disk, with migration support
+    /// Loads documents. Tries fragmented format first; falls back to legacy monolithic file (with auto-migration).
     func loadDocuments() throws -> (documents: [Document], folders: [DocumentFolder], prefersGridLayout: Bool) {
+        // Try new fragmented format
+        if let index = try? loadIndex() {
+            var documents: [Document] = []
+            for uuidStr in index.documentIds {
+                guard let id = UUID(uuidString: uuidStr) else { continue }
+                if let doc = try? loadDocumentFile(id: id) {
+                    documents.append(doc)
+                } else {
+                    AppLogger.persistence.warning("Missing document file for id \(uuidStr) — skipping")
+                }
+            }
+            AppLogger.persistence.info("Loaded \(documents.count) documents + \(index.folders.count) folders (fragmented)")
+            return (documents, index.folders, index.prefersGridLayout)
+        }
+
+        // Fall back to legacy single-file format (triggers migration)
+        return try loadDocumentsLegacy()
+    }
+
+    // MARK: - Fragmented Format Helpers
+
+    private func loadIndex() throws -> PersistedIndex {
+        let url = try indexURL()
+        let data = try Data(contentsOf: url)
+        let decrypted = try decryptIfNeeded(data, context: aadIndex)
+        return try JSONDecoder().decode(PersistedIndex.self, from: decrypted)
+    }
+
+    private func loadDocumentFile(id: UUID) throws -> Document {
+        let url = try documentURL(id: id)
+        let data = try Data(contentsOf: url)
+        let decrypted = try decryptIfNeeded(data, context: aadDocument)
+        return try JSONDecoder().decode(Document.self, from: decrypted)
+    }
+
+    /// Reads the old `SavedDocuments_v2.json` monolith and migrates to fragmented format.
+    private func loadDocumentsLegacy() throws -> (documents: [Document], folders: [DocumentFolder], prefersGridLayout: Bool) {
         let url = try getDocumentsFileURL()
 
-        // Try loading from file (current format)
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
             if (error as NSError).domain == NSCocoaErrorDomain,
                (error as NSError).code == NSFileReadNoSuchFileError {
-                // File doesn't exist yet — fall through to migration/empty state
                 data = Data()
             } else {
                 AppLogger.persistence.error("Failed to read documents file: \(error.localizedDescription)")
@@ -141,44 +221,55 @@ class PersistenceService {
                 throw PersistenceError.vaultUnavailable(error)
             }
 
-            // Try new PersistedState format
-            do {
-                let state = try JSONDecoder().decode(PersistedState.self, from: decodedData)
+            if let state = try? JSONDecoder().decode(PersistedState.self, from: decodedData) {
                 warnIfMetadataFileLarge(currentBytes: data.count)
-                AppLogger.persistence.info("Loaded \(state.documents.count) documents + \(state.folders.count) folders")
+                AppLogger.persistence.info("Migrating \(state.documents.count) documents from legacy single-file format")
+                try? migrateLegacyState(state)
                 return (state.documents, state.folders, state.prefersGridLayout)
-            } catch {
-                AppLogger.persistence.debug("Not PersistedState format, trying legacy: \(error.localizedDescription)")
             }
 
-            // Try legacy documents-only format
-            do {
-                let documents = try JSONDecoder().decode([Document].self, from: decodedData)
-                AppLogger.persistence.info("Migrated legacy documents-only file (\(documents.count) docs)")
+            if let documents = try? JSONDecoder().decode([Document].self, from: decodedData) {
+                AppLogger.persistence.info("Migrating legacy documents-only file (\(documents.count) docs)")
+                try? migrateLegacyState(PersistedState(documents: documents, folders: [], prefersGridLayout: false))
                 return (documents, [], false)
-            } catch {
-                AppLogger.persistence.error("Failed to decode documents file in any format: \(error.localizedDescription)")
-                throw PersistenceError.loadFailedDecoding(error)
             }
+
+            AppLogger.persistence.error("Failed to decode documents file in any format")
+            throw PersistenceError.loadFailedDecoding(NSError(domain: "PersistenceService", code: -20, userInfo: [NSLocalizedDescriptionKey: "Failed to decode documents file in any known format"]))
         }
 
-        // Migration: Check UserDefaults (very old format)
-        if let data = UserDefaults.standard.data(forKey: legacyUserDefaultsKey) {
+        // UserDefaults migration (very old format)
+        if let udData = UserDefaults.standard.data(forKey: legacyUserDefaultsKey) {
             do {
-                let documents = try JSONDecoder().decode([Document].self, from: data)
+                let documents = try JSONDecoder().decode([Document].self, from: udData)
                 AppLogger.persistence.info("Migrated \(documents.count) documents from UserDefaults")
-                // Clean up old storage after successful migration
                 UserDefaults.standard.removeObject(forKey: legacyUserDefaultsKey)
+                try? migrateLegacyState(PersistedState(documents: documents, folders: [], prefersGridLayout: false))
                 return (documents, [], false)
             } catch {
                 throw PersistenceError.migrationFailed(error)
             }
         }
 
-        // No saved data found - return empty state
         AppLogger.persistence.info("No saved documents found, starting fresh")
         return ([], [], false)
     }
+
+    /// Writes new-format files from a legacy `PersistedState` and deletes the old monolith.
+    private func migrateLegacyState(_ state: PersistedState) throws {
+        for doc in state.documents {
+            try saveDocument(doc)
+        }
+        try saveIndex(documentIds: state.documents.map(\.id), folders: state.folders, prefersGridLayout: state.prefersGridLayout)
+        if !state.conversations.isEmpty {
+            try saveConversations(state.conversations)
+        }
+        // Remove old monolith
+        let legacyURL = try getDocumentsFileURL()
+        try? fileManager.removeItem(at: legacyURL)
+        AppLogger.persistence.info("Migration to fragmented format complete — legacy file removed")
+    }
+
 
     // MARK: - Last Accessed Map
 
@@ -215,10 +306,39 @@ class PersistenceService {
 
     // MARK: - Directory Management
 
-    /// Returns the URL for the documents JSON file
+    /// Returns the URL for the legacy monolithic documents JSON file (kept for migration read path).
     func getDocumentsFileURL() throws -> URL {
         let appSupport = try getApplicationSupportDirectory()
         return appSupport.appendingPathComponent(documentsFileName)
+    }
+
+    /// Returns the URL for the fragmented index file.
+    func indexURL() throws -> URL {
+        return try getApplicationSupportDirectory().appendingPathComponent("index.json")
+    }
+
+    /// Returns (and creates) the directory that holds per-document JSON files.
+    func documentsDirectoryURL() throws -> URL {
+        let dir = try getApplicationSupportDirectory().appendingPathComponent("documents", isDirectory: true)
+        if !fileManager.fileExists(atPath: dir.path) {
+            try fileManager.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: SecurityProfile.current.metadataFileProtection]
+            )
+            try? (dir as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        }
+        return dir
+    }
+
+    /// Returns the URL for a single document's JSON file.
+    func documentURL(id: UUID) throws -> URL {
+        return try documentsDirectoryURL().appendingPathComponent("\(id.uuidString).json")
+    }
+
+    /// Returns the URL for the conversations JSON file.
+    func conversationsURL() throws -> URL {
+        return try getApplicationSupportDirectory().appendingPathComponent("conversations.json")
     }
 
     /// Returns the application support directory, creating it if needed
@@ -259,7 +379,11 @@ class PersistenceService {
 
         if createIfMissing && !fileManager.fileExists(atPath: inbox.path) {
             do {
-                try fileManager.createDirectory(at: inbox, withIntermediateDirectories: true)
+                try fileManager.createDirectory(
+                    at: inbox,
+                    withIntermediateDirectories: true,
+                    attributes: [.protectionKey: FileProtectionType.completeUnlessOpen]
+                )
             } catch {
                 AppLogger.persistence.error("Failed to create shared inbox directory: \(error.localizedDescription)")
             }
@@ -456,6 +580,63 @@ class PersistenceService {
         return Data("\(aadBaseContext)|\(bundle)".utf8)
     }
 
+    private func makeAAD(context: String) -> Data {
+        let bundle = Bundle.main.bundleIdentifier ?? "unknown.bundle"
+        return Data("\(context)|\(bundle)".utf8)
+    }
+
+    /// Context-aware encrypt used for new fragmented files.
+    private func encrypt(_ plaintext: Data, context: String) throws -> Data {
+        let profile = SecurityProfile.current
+        let currentKeyId = try loadOrCreateCurrentKeyId(accessibility: profile.keychainAccessibility)
+        let key = try loadOrCreateEncryptionKey(keyId: currentKeyId, accessibility: profile.keychainAccessibility)
+        let aad = makeAAD(context: context)
+        let sealed = try AES.GCM.seal(plaintext, using: key, authenticating: aad)
+        guard let combined = sealed.combined else {
+            throw PersistenceError.saveFailedEncoding(NSError(domain: "PersistenceService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to build encrypted payload"]))
+        }
+        var out = Data()
+        out.append(envelopeMagic)
+        out.append(envelopeVersion)
+        out.append(currentKeyId.uuidData)
+        out.append(algorithmAESGCM)
+        out.append(combined)
+        return out
+    }
+
+    /// Context-aware decrypt used for new fragmented files.
+    private func decryptIfNeeded(_ data: Data, context: String) throws -> Data {
+        if data.starts(with: envelopeMagic) {
+            guard data.count > envelopeMagic.count + 1 + 16 + 1 else {
+                throw PersistenceError.vaultUnavailable(NSError(domain: "PersistenceService", code: -10, userInfo: [NSLocalizedDescriptionKey: "Encrypted metadata envelope is truncated"]))
+            }
+            let versionOffset = envelopeMagic.count
+            let version = data[versionOffset]
+            guard version == envelopeVersion else {
+                throw PersistenceError.vaultUnavailable(NSError(domain: "PersistenceService", code: -11, userInfo: [NSLocalizedDescriptionKey: "Unsupported encrypted metadata version"]))
+            }
+            let keyIdStart = versionOffset + 1
+            let keyIdData = data.subdata(in: keyIdStart..<(keyIdStart + 16))
+            guard let keyId = UUID(data: keyIdData) else {
+                throw PersistenceError.vaultUnavailable(NSError(domain: "PersistenceService", code: -12, userInfo: [NSLocalizedDescriptionKey: "Invalid key identifier in metadata"]))
+            }
+            let algorithm = data[keyIdStart + 16]
+            guard algorithm == algorithmAESGCM else {
+                throw PersistenceError.vaultUnavailable(NSError(domain: "PersistenceService", code: -13, userInfo: [NSLocalizedDescriptionKey: "Unsupported encryption algorithm"]))
+            }
+            let combined = data.dropFirst(keyIdStart + 17)
+            let box = try AES.GCM.SealedBox(combined: combined)
+            let key = try loadEncryptionKey(keyId: keyId)
+            do {
+                return try AES.GCM.open(box, using: key, authenticating: makeAAD(context: context))
+            } catch {
+                throw PersistenceError.vaultUnavailable(error)
+            }
+        }
+        // Plaintext fallback (shouldn't happen for new files, but safe)
+        return data
+    }
+
     private func maybeRotateKeyForMajorVersionBump(decryptedState: Data) {
         let currentMajor = Self.currentMajorVersion()
         let last = UserDefaults.standard.integer(forKey: AppConstants.UserDefaultsKeys.lastKeyRotationMajorVersion)
@@ -496,15 +677,59 @@ class PersistenceService {
         let newId = UUID()
         _ = try loadOrCreateEncryptionKey(keyId: newId, accessibility: profile.keychainAccessibility)
         try storeCurrentKeyId(newId, accessibility: profile.keychainAccessibility)
-        let encrypted = try encrypt(decryptedState)
-        let url = try getDocumentsFileURL()
-        try writeMetadataFile(encrypted, to: url)
+        // Re-encrypt all fragmented files with the new key
+        try rotateAllFragmentedFiles()
+        // Also handle legacy file if it still exists (during migration window)
+        let legacyURL = try getDocumentsFileURL()
+        if fileManager.fileExists(atPath: legacyURL.path) {
+            let encrypted = try encrypt(decryptedState)
+            try writeMetadataFile(encrypted, to: legacyURL)
+        }
+    }
+
+    /// Re-encrypts all per-document files, index, and conversations with the current key.
+    func rotateAllFragmentedFiles() throws {
+        // Index
+        if let idxURL = try? indexURL(),
+           let data = try? Data(contentsOf: idxURL), !data.isEmpty,
+           let decrypted = try? decryptIfNeeded(data, context: aadIndex) {
+            let reencrypted = try encrypt(decrypted, context: aadIndex)
+            try writeMetadataFile(reencrypted, to: idxURL)
+        }
+        // Per-document files
+        if let docsDir = try? documentsDirectoryURL(),
+           let files = try? fileManager.contentsOfDirectory(at: docsDir, includingPropertiesForKeys: nil) {
+            for fileURL in files where fileURL.pathExtension == "json" {
+                guard let data = try? Data(contentsOf: fileURL), !data.isEmpty,
+                      let decrypted = try? decryptIfNeeded(data, context: aadDocument) else { continue }
+                let reencrypted = try encrypt(decrypted, context: aadDocument)
+                try writeMetadataFile(reencrypted, to: fileURL)
+            }
+        }
+        // Conversations
+        if let convsURL = try? conversationsURL(),
+           let data = try? Data(contentsOf: convsURL), !data.isEmpty,
+           let decrypted = try? decryptIfNeeded(data, context: aadConversations) {
+            let reencrypted = try encrypt(decrypted, context: aadConversations)
+            try writeMetadataFile(reencrypted, to: convsURL)
+        }
     }
 
     func resetLocalVault() throws {
-        let docsURL = try getDocumentsFileURL()
-        if fileManager.fileExists(atPath: docsURL.path) {
-            try fileManager.removeItem(at: docsURL)
+        // Remove fragmented format files
+        if let indexURL = try? indexURL() {
+            try? fileManager.removeItem(at: indexURL)
+        }
+        if let docsDir = try? documentsDirectoryURL() {
+            try? fileManager.removeItem(at: docsDir)
+        }
+        if let convsURL = try? conversationsURL() {
+            try? fileManager.removeItem(at: convsURL)
+        }
+        // Remove legacy monolith
+        let legacyURL = try getDocumentsFileURL()
+        if fileManager.fileExists(atPath: legacyURL.path) {
+            try fileManager.removeItem(at: legacyURL)
         }
         UserDefaults.standard.removeObject(forKey: legacyUserDefaultsKey)
         UserDefaults.standard.removeObject(forKey: AppConstants.UserDefaultsKeys.lastKeyRotationMajorVersion)
@@ -513,12 +738,17 @@ class PersistenceService {
 
     func applyCurrentSecurityProfile() {
         do {
+            // Apply to all fragmented files
+            try rotateAllFragmentedFiles()
+            // Also handle legacy file if still present
             let url = try getDocumentsFileURL()
-            guard fileManager.fileExists(atPath: url.path) else { return }
-            let payload = try Data(contentsOf: url)
-            guard !payload.isEmpty else { return }
-            let decrypted = try decryptIfNeeded(payload)
-            try rotateKeyAndReencrypt(decryptedState: decrypted)
+            if fileManager.fileExists(atPath: url.path) {
+                let payload = try Data(contentsOf: url)
+                if !payload.isEmpty {
+                    let decrypted = try decryptIfNeeded(payload)
+                    try rotateKeyAndReencrypt(decryptedState: decrypted)
+                }
+            }
         } catch {
             AppLogger.persistence.error("Failed to apply security profile: \(error.localizedDescription)")
         }
