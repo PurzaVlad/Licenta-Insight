@@ -13,7 +13,6 @@ struct WelcomeView: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                // TODO: Replace everything in this VStack with your welcome design
                 VStack(spacing: 16) {
                     Image("IconSvg")
                         .resizable()
@@ -31,7 +30,6 @@ struct WelcomeView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
                 }
-                // END TODO
 
                 Spacer()
 

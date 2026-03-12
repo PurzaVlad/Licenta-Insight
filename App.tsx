@@ -45,7 +45,7 @@ Rules:
 - Answer in 1-2 short sentences.
 - Use only information from EVIDENCE_CHUNKS.
 - For numbers, use only numbers that appear with the asked subject on the same line.
-- If not found, say: "Not specified in the documents."
+- If the passages don't contain the answer, say so briefly.
 - Never include system markers or metadata.`;
 
 const KEYWORD_SYSTEM_PROMPT = `Identify the main topic or domain in 1-3 words. Examples: Finance, Healthcare, Legal, Tax Return, Insurance, Research, Travel, Real Estate, Employment, Education. Output only the words.`;
@@ -578,7 +578,7 @@ useEffect(() => {
             const keywordResult = await context.completion(
               {
                 prompt: keywordPrompt,
-                n_predict: 60,
+                n_predict: 20,
                 temperature: DEFAULT_TEMPERATURE,
                 top_p: DEFAULT_TOP_P,
                 repeat_penalty: DEFAULT_REPEAT_PENALTY,
@@ -594,6 +594,10 @@ useEffect(() => {
             let kwText = kwLines[0] ?? '';
             kwText = kwText.replace(preambleRe, '').trim();
             if (!kwText && kwLines.length > 1) kwText = kwLines[1] ?? '';
+            // Truncate to first 1-3 words — keywords are never a sentence.
+            // Split on comma or period first, then take first 3 words.
+            kwText = (kwText.split(/[,.]/))[0].trim();
+            kwText = kwText.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
             text = kwText;
             generationHitTokenLimit = false;
           } else {

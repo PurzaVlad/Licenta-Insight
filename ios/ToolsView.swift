@@ -345,14 +345,16 @@ private struct ToolsPDFPickerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search PDFs")
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Clear") {
-                    selectionSet = []
-                    lastSelectionSet = []
-                    selectedIds.removeAll()
+            if #available(iOS 26.0, *) {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Clear") {
+                        selectionSet = []
+                        lastSelectionSet = []
+                        selectedIds.removeAll()
+                    }
+                    .foregroundColor(.primary)
+                    .disabled(selectedIds.isEmpty)
                 }
-                .foregroundColor(.primary)
-                .disabled(selectedIds.isEmpty)
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Done") {
@@ -1126,7 +1128,7 @@ struct SignPDFView: View {
                                     .resizable()
                                     .scaledToFit()
                                     .foregroundColor(.primary)
-                                    .frame(maxWidth: .infinity, minHeight: 120, maxHeight: 120)
+                                    .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 180)
                                     .padding(.horizontal, 8)
                             }
                             .buttonStyle(.plain)
@@ -2586,9 +2588,10 @@ struct CropPDFView: View {
     @State private var showingAlert = false
     @State private var alertMessage = ""
     @State private var workingPDF: PDFDocument?
-    @State private var pageThumbnails: [UIImage] = []
     @State private var currentPageIndex = 0
     @State private var cropValuesByPage: [Int: PageCropValues] = [:]
+    @State private var isCropMode = false
+    @State private var pdfRefreshTrigger = 0
 
     init(
         autoPresentPicker: Bool = false,
@@ -2602,84 +2605,65 @@ struct CropPDFView: View {
         _selectedDocument = State(initialValue: preselectedDocument)
     }
 
-    private var pageCount: Int {
-        workingPDF?.pageCount ?? 0
-    }
-
-    private var currentCrop: PageCropValues {
-        get { cropValuesByPage[currentPageIndex] ?? .zero }
-        set { cropValuesByPage[currentPageIndex] = newValue }
-    }
-
-    private var currentPageSummary: String {
-        guard let pdf = workingPDF,
-              currentPageIndex >= 0,
-              currentPageIndex < pdf.pageCount,
-              let page = pdf.page(at: currentPageIndex) else { return "" }
-        let bounds = page.bounds(for: .mediaBox)
-        let insets = currentCrop.absoluteInsets(in: bounds)
-        let cropped = bounds.inset(by: insets)
-        let width = Int(max(1, cropped.width).rounded())
-        let height = Int(max(1, cropped.height).rounded())
-        return "\(width) × \(height) pt"
-    }
+    private var pageCount: Int { workingPDF?.pageCount ?? 0 }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                if let document = selectedDocument {
-                    HStack {
-                        Text(document.title)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Spacer()
-                        if allowsPicker {
-                            Button("Change") { showingPicker = true }
-                                .buttonStyle(.borderedProminent)
-                                .tint(Color("Primary"))
-                        }
-                    }
+        ZStack(alignment: .bottom) {
+            if selectedDocument != nil, let pdf = workingPDF {
+                CropScrollPDFRepresentable(
+                    pdf: pdf,
+                    currentPageIndex: $currentPageIndex,
+                    isCropMode: isCropMode,
+                    cropValues: Binding(
+                        get: { cropValuesByPage[currentPageIndex] ?? .zero },
+                        set: { cropValuesByPage[currentPageIndex] = $0 }
+                    ),
+                    refreshTrigger: pdfRefreshTrigger
+                )
+                .ignoresSafeArea(edges: .horizontal)
 
-                    if pageCount > 0 {
-                        pagePicker
-                        pagePreview
-                        Text("Drag the handles to keep the area you want.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-
-                        Text("Current output size: \(currentPageSummary)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-
-                        Button("Apply This Crop To All Pages") {
-                            applyCurrentCropToAllPages()
-                        }
+                if !isCropMode { bottomBar }
+            } else {
+                if allowsPicker {
+                    Button("Choose PDF") { showingPicker = true }
                         .buttonStyle(.borderedProminent)
                         .tint(Color("Primary"))
-                    }
+                        .padding()
                 } else {
-                    if allowsPicker {
-                        Button("Choose PDF") { showingPicker = true }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color("Primary"))
-                    } else {
-                        Text("No PDF selected.")
-                            .foregroundColor(.secondary)
-                    }
+                    Text("No PDF selected.")
+                        .foregroundColor(.secondary)
+                        .padding()
                 }
             }
-            .padding()
         }
-        .navigationTitle("Crop PDF")
+        .navigationTitle(isCropMode ? "Page \(currentPageIndex + 1)" : "Crop PDF")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(isSaving ? "Cropping..." : "Crop") {
-                    saveCroppedPDF()
+            if isCropMode {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        applyVisualCropAndExit()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .fontWeight(.bold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color("Primary"))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color("Primary"))
-                .disabled(selectedDocument == nil || workingPDF == nil || isSaving)
+            } else {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(isSaving ? "Cropping..." : "Save") {
+                        saveCroppedPDF()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color("Primary"))
+                    .disabled(selectedDocument == nil || workingPDF == nil || isSaving)
+                }
+                if allowsPicker, selectedDocument != nil {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button("Change") { showingPicker = true }
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingPicker) {
@@ -2691,9 +2675,7 @@ struct CropPDFView: View {
         .onAppear {
             if autoPresentPicker, !didAutoPresent {
                 didAutoPresent = true
-                DispatchQueue.main.async {
-                    showingPicker = true
-                }
+                DispatchQueue.main.async { showingPicker = true }
             }
             if selectedDocument != nil && workingPDF == nil {
                 loadDocument(for: selectedDocument)
@@ -2710,74 +2692,57 @@ struct CropPDFView: View {
         .bindGlobalOperationLoading(isSaving)
     }
 
-    private var pagePicker: some View {
+    private var bottomBar: some View {
         HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Page \(currentPageIndex + 1) of \(pageCount)")
+                    .font(.subheadline.weight(.medium))
+                if let crop = cropValuesByPage[currentPageIndex],
+                   crop.topFraction > 0 || crop.bottomFraction > 0 ||
+                   crop.leftFraction > 0 || crop.rightFraction > 0 {
+                    Text("Crop applied")
+                        .font(.caption)
+                        .foregroundColor(Color("Primary"))
+                }
+            }
+            Spacer()
             Button {
-                currentPageIndex = max(0, currentPageIndex - 1)
+                enterCropMode()
             } label: {
-                Image(systemName: "chevron.left")
+                Image(systemName: "crop")
+                    .font(.title3)
             }
             .buttonStyle(.borderedProminent)
             .tint(Color("Primary"))
-            .buttonBorderShape(.circle)
-            .disabled(currentPageIndex == 0)
-
-            Text("Page \(currentPageIndex + 1) / \(pageCount)")
-                .font(.subheadline.weight(.medium))
-                .frame(maxWidth: .infinity)
-
-            Button {
-                currentPageIndex = min(max(0, pageCount - 1), currentPageIndex + 1)
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Color("Primary"))
-            .buttonBorderShape(.circle)
-            .disabled(currentPageIndex >= pageCount - 1)
         }
+        .padding(.horizontal)
+        .padding(.vertical, 12)
+        .background(.regularMaterial)
     }
 
-    private var pagePreview: some View {
-        Group {
-            if currentPageIndex < pageThumbnails.count, currentPageSize.width > 0, currentPageSize.height > 0 {
-                InteractiveCropPageView(
-                    image: pageThumbnails[currentPageIndex],
-                    pageSize: currentPageSize,
-                    crop: currentCropBinding()
-                )
-                .frame(height: 360)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(.separator), lineWidth: 1)
-                )
-            }
+    private func enterCropMode() {
+        guard workingPDF != nil else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { isCropMode = true }
+    }
+
+    private func applyVisualCropAndExit() {
+        // Update the workingPDF page bounds so the PDFView reflects the crop immediately.
+        // saveCroppedPDF() always reloads from the original source data, so this is purely visual.
+        if let pdf = workingPDF,
+           currentPageIndex < pdf.pageCount,
+           let page = pdf.page(at: currentPageIndex) {
+            let mediaBox = page.bounds(for: .mediaBox)
+            let cv = cropValuesByPage[currentPageIndex] ?? .zero
+            let insets = cv.absoluteInsets(in: mediaBox)
+            var cropRect = mediaBox.inset(by: insets)
+            if cropRect.width < 8 || cropRect.height < 8 { cropRect = mediaBox }
+            page.setBounds(cropRect, for: .cropBox)
+            pdfRefreshTrigger += 1
         }
-    }
-
-    private var currentPageSize: CGSize {
-        guard let pdf = workingPDF,
-              currentPageIndex >= 0,
-              currentPageIndex < pdf.pageCount,
-              let page = pdf.page(at: currentPageIndex) else { return .zero }
-        return page.bounds(for: .mediaBox).size
-    }
-
-    private func currentCropBinding() -> Binding<PageCropValues> {
-        let pageIndex = currentPageIndex
-        return Binding(
-            get: { cropValuesByPage[pageIndex] ?? .zero },
-            set: { values in
-                var values = values
-                values.clamp()
-                cropValuesByPage[pageIndex] = values
-            }
-        )
+        withAnimation(.easeInOut(duration: 0.2)) { isCropMode = false }
     }
 
     private func loadDocument(for document: Document?) {
-        pageThumbnails.removeAll()
         cropValuesByPage.removeAll()
         currentPageIndex = 0
         guard let document,
@@ -2787,20 +2752,8 @@ struct CropPDFView: View {
             return
         }
         workingPDF = pdf
-        var thumbs: [UIImage] = []
         for index in 0..<pdf.pageCount {
-            if let page = pdf.page(at: index) {
-                thumbs.append(page.thumbnail(of: CGSize(width: 220, height: 300), for: .mediaBox))
-            }
             cropValuesByPage[index] = .zero
-        }
-        pageThumbnails = thumbs
-    }
-
-    private func applyCurrentCropToAllPages() {
-        guard pageCount > 0 else { return }
-        for index in 0..<pageCount {
-            cropValuesByPage[index] = currentCrop
         }
     }
 
@@ -2827,9 +2780,7 @@ struct CropPDFView: View {
                 let cropValuesForPage = cropValues[index] ?? .zero
                 let insets = cropValuesForPage.absoluteInsets(in: mediaBox)
                 var cropRect = mediaBox.inset(by: insets)
-                if cropRect.width < 8 || cropRect.height < 8 {
-                    cropRect = mediaBox
-                }
+                if cropRect.width < 8 || cropRect.height < 8 { cropRect = mediaBox }
 
                 copiedPage.setBounds(cropRect, for: .cropBox)
                 croppedPDF.insert(copiedPage, at: croppedPDF.pageCount)
@@ -2870,6 +2821,282 @@ struct CropPDFView: View {
     }
 }
 
+// MARK: - Scrollable PDF + UIKit crop overlay
+
+private struct CropScrollPDFRepresentable: UIViewRepresentable {
+    let pdf: PDFDocument
+    @Binding var currentPageIndex: Int
+    let isCropMode: Bool
+    @Binding var cropValues: PageCropValues
+    let refreshTrigger: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = UIColor.systemBackground
+
+        let pdfView = PDFView()
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.autoScales = true
+        pdfView.backgroundColor = UIColor.systemBackground
+        pdfView.document = pdf
+        pdfView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(pdfView)
+        NSLayoutConstraint.activate([
+            pdfView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pdfView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pdfView.topAnchor.constraint(equalTo: container.topAnchor),
+            pdfView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        context.coordinator.pdfView = pdfView
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.pageChanged(_:)),
+            name: .PDFViewPageChanged,
+            object: pdfView
+        )
+        DispatchQueue.main.async {
+            let fit = pdfView.scaleFactorForSizeToFit
+            if fit > 0 {
+                pdfView.scaleFactor = fit
+                pdfView.minScaleFactor = fit * 0.5
+                pdfView.maxScaleFactor = fit * 6.0
+            }
+        }
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard let pdfView = context.coordinator.pdfView else { return }
+
+        if pdfView.document !== pdf {
+            pdfView.document = pdf
+            DispatchQueue.main.async {
+                let fit = pdfView.scaleFactorForSizeToFit
+                if fit > 0 {
+                    pdfView.scaleFactor = fit
+                    pdfView.minScaleFactor = fit * 0.5
+                    pdfView.maxScaleFactor = fit * 6.0
+                }
+            }
+        }
+
+        if context.coordinator.lastRefreshTrigger != refreshTrigger {
+            context.coordinator.lastRefreshTrigger = refreshTrigger
+            pdfView.layoutDocumentView()
+        }
+
+        if isCropMode {
+            // Add overlay if not present
+            let overlay: CropOverlayView
+            if let existing = context.coordinator.cropOverlay {
+                overlay = existing
+            } else {
+                overlay = CropOverlayView()
+                overlay.translatesAutoresizingMaskIntoConstraints = false
+                uiView.addSubview(overlay)
+                NSLayoutConstraint.activate([
+                    overlay.leadingAnchor.constraint(equalTo: uiView.leadingAnchor),
+                    overlay.trailingAnchor.constraint(equalTo: uiView.trailingAnchor),
+                    overlay.topAnchor.constraint(equalTo: uiView.topAnchor),
+                    overlay.bottomAnchor.constraint(equalTo: uiView.bottomAnchor)
+                ])
+                context.coordinator.cropOverlay = overlay
+            }
+            // Sync current page frame and crop values into overlay
+            if let page = pdfView.currentPage {
+                overlay.pageFrame = pdfView.convert(page.bounds(for: .cropBox), from: page)
+            }
+            overlay.cropValues = cropValues
+            overlay.onCropChanged = { newValues in
+                context.coordinator.parent.cropValues = newValues
+            }
+            overlay.setNeedsDisplay()
+        } else {
+            context.coordinator.cropOverlay?.removeFromSuperview()
+            context.coordinator.cropOverlay = nil
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: CropScrollPDFRepresentable
+        weak var pdfView: PDFView?
+        var cropOverlay: CropOverlayView?
+        var lastRefreshTrigger = 0
+        init(_ parent: CropScrollPDFRepresentable) { self.parent = parent }
+
+        @objc func pageChanged(_ notification: Notification) {
+            guard let pdfView = notification.object as? PDFView,
+                  let currentPage = pdfView.currentPage,
+                  let doc = pdfView.document else { return }
+            let index = doc.index(for: currentPage)
+            DispatchQueue.main.async {
+                self.parent.currentPageIndex = index
+                if let overlay = self.cropOverlay {
+                    overlay.pageFrame = pdfView.convert(currentPage.bounds(for: .cropBox), from: currentPage)
+                    overlay.setNeedsDisplay()
+                }
+            }
+        }
+    }
+}
+
+// MARK: - UIKit crop overlay — passes through touches outside the crop zone
+
+private final class CropOverlayView: UIView {
+    var pageFrame: CGRect = .zero
+    var cropValues: PageCropValues = .zero
+    var onCropChanged: ((PageCropValues) -> Void)?
+
+    private let hitSize: CGFloat = 44
+    private let handleLen: CGFloat = 22
+    private let minKeep: Double = 0.08
+
+    private var dragAction: DragAction = .none
+    private var dragStartCrop: PageCropValues = .zero
+
+    private enum DragAction { case none, topLeft, topRight, bottomLeft, bottomRight, interior }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.minimumNumberOfTouches = 1
+        pan.maximumNumberOfTouches = 1
+        addGestureRecognizer(pan)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    // Only capture touches on corners or inside crop zone — everything else falls through to PDFView
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let keep = keepRect
+        let h = hitSize / 2
+        let corners = [
+            CGRect(x: keep.minX - h, y: keep.minY - h, width: hitSize, height: hitSize),
+            CGRect(x: keep.maxX - h, y: keep.minY - h, width: hitSize, height: hitSize),
+            CGRect(x: keep.minX - h, y: keep.maxY - h, width: hitSize, height: hitSize),
+            CGRect(x: keep.maxX - h, y: keep.maxY - h, width: hitSize, height: hitSize)
+        ]
+        for r in corners { if r.contains(point) { return self } }
+        if keep.contains(point) { return self }
+        return nil  // fall through to PDFView → pinch zoom / scroll work naturally
+    }
+
+    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            dragStartCrop = cropValues
+            dragAction = actionFor(point: g.location(in: self))
+        case .changed:
+            guard dragAction != .none, pageFrame.width > 0, pageFrame.height > 0 else { return }
+            let t = g.translation(in: self)
+            let dx = t.x / pageFrame.width
+            let dy = t.y / pageFrame.height
+            var cv = dragStartCrop
+            switch dragAction {
+            case .topLeft:
+                cv.leftFraction = (dragStartCrop.leftFraction + dx).clamped(to: 0...(1 - dragStartCrop.rightFraction - minKeep))
+                cv.topFraction  = (dragStartCrop.topFraction  + dy).clamped(to: 0...(1 - dragStartCrop.bottomFraction - minKeep))
+            case .topRight:
+                cv.rightFraction = (dragStartCrop.rightFraction - dx).clamped(to: 0...(1 - dragStartCrop.leftFraction   - minKeep))
+                cv.topFraction   = (dragStartCrop.topFraction   + dy).clamped(to: 0...(1 - dragStartCrop.bottomFraction - minKeep))
+            case .bottomLeft:
+                cv.leftFraction   = (dragStartCrop.leftFraction   + dx).clamped(to: 0...(1 - dragStartCrop.rightFraction - minKeep))
+                cv.bottomFraction = (dragStartCrop.bottomFraction - dy).clamped(to: 0...(1 - dragStartCrop.topFraction   - minKeep))
+            case .bottomRight:
+                cv.rightFraction  = (dragStartCrop.rightFraction  - dx).clamped(to: 0...(1 - dragStartCrop.leftFraction  - minKeep))
+                cv.bottomFraction = (dragStartCrop.bottomFraction - dy).clamped(to: 0...(1 - dragStartCrop.topFraction   - minKeep))
+            case .interior:
+                let nl = (dragStartCrop.leftFraction   + dx).clamped(to: 0...1)
+                let nr = (dragStartCrop.rightFraction  - dx).clamped(to: 0...1)
+                let nt = (dragStartCrop.topFraction    + dy).clamped(to: 0...1)
+                let nb = (dragStartCrop.bottomFraction - dy).clamped(to: 0...1)
+                guard nl + nr <= 1 - minKeep, nt + nb <= 1 - minKeep else { return }
+                cv.leftFraction = nl; cv.rightFraction = nr
+                cv.topFraction  = nt; cv.bottomFraction = nb
+            case .none: return
+            }
+            cv.clamp()
+            cropValues = cv
+            onCropChanged?(cv)
+            setNeedsDisplay()
+        case .ended, .cancelled:
+            dragAction = .none
+        default: break
+        }
+    }
+
+    private func actionFor(point: CGPoint) -> DragAction {
+        let keep = keepRect; let h = hitSize / 2
+        if CGRect(x: keep.minX - h, y: keep.minY - h, width: hitSize, height: hitSize).contains(point) { return .topLeft }
+        if CGRect(x: keep.maxX - h, y: keep.minY - h, width: hitSize, height: hitSize).contains(point) { return .topRight }
+        if CGRect(x: keep.minX - h, y: keep.maxY - h, width: hitSize, height: hitSize).contains(point) { return .bottomLeft }
+        if CGRect(x: keep.maxX - h, y: keep.maxY - h, width: hitSize, height: hitSize).contains(point) { return .bottomRight }
+        if keep.contains(point) { return .interior }
+        return .none
+    }
+
+    private var keepRect: CGRect {
+        CGRect(
+            x: pageFrame.minX + pageFrame.width  * cropValues.leftFraction,
+            y: pageFrame.minY + pageFrame.height * cropValues.topFraction,
+            width:  max(1, pageFrame.width  * (1 - cropValues.leftFraction - cropValues.rightFraction)),
+            height: max(1, pageFrame.height * (1 - cropValues.topFraction  - cropValues.bottomFraction))
+        )
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext(), pageFrame.width > 0 else { return }
+        let keep = keepRect
+
+        // Dim outside keepRect
+        ctx.saveGState()
+        ctx.setFillColor(UIColor.black.withAlphaComponent(0.50).cgColor)
+        ctx.addRect(rect); ctx.addRect(keep)
+        ctx.fillPath(using: .evenOdd)
+        ctx.restoreGState()
+
+        // Grid 3×3
+        ctx.saveGState()
+        ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.25).cgColor)
+        ctx.setLineWidth(0.5)
+        let tw = keep.width / 3; let th = keep.height / 3
+        for i in 1...2 {
+            ctx.move(to: CGPoint(x: keep.minX + tw * CGFloat(i), y: keep.minY))
+            ctx.addLine(to: CGPoint(x: keep.minX + tw * CGFloat(i), y: keep.maxY))
+            ctx.move(to: CGPoint(x: keep.minX, y: keep.minY + th * CGFloat(i)))
+            ctx.addLine(to: CGPoint(x: keep.maxX, y: keep.minY + th * CGFloat(i)))
+        }
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        // Border
+        ctx.saveGState()
+        ctx.setStrokeColor(UIColor.white.cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.stroke(keep)
+        ctx.restoreGState()
+
+        // Corner L-handles
+        ctx.saveGState()
+        ctx.setStrokeColor(UIColor.white.cgColor)
+        ctx.setLineWidth(3); ctx.setLineCap(.round)
+        for (cx, cy, hd, vd): (CGFloat, CGFloat, CGFloat, CGFloat) in [
+            (keep.minX, keep.minY,  1,  1), (keep.maxX, keep.minY, -1,  1),
+            (keep.minX, keep.maxY,  1, -1), (keep.maxX, keep.maxY, -1, -1)
+        ] {
+            ctx.move(to: CGPoint(x: cx, y: cy)); ctx.addLine(to: CGPoint(x: cx + hd * handleLen, y: cy))
+            ctx.move(to: CGPoint(x: cx, y: cy)); ctx.addLine(to: CGPoint(x: cx, y: cy + vd * handleLen))
+        }
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+}
+
 private struct PageCropValues {
     var topFraction: Double = 0
     var bottomFraction: Double = 0
@@ -2903,105 +3130,6 @@ private struct PageCropValues {
             bottom: bounds.height * bottomFraction,
             right: bounds.width * rightFraction
         )
-    }
-}
-
-private struct InteractiveCropPageView: View {
-    let image: UIImage
-    let pageSize: CGSize
-    @Binding var crop: PageCropValues
-    private let minKeepFraction: Double = 0.1
-    private let handleSize: CGFloat = 26
-
-    var body: some View {
-        GeometryReader { proxy in
-            let contentRect = aspectFitRect(in: proxy.size, contentSize: pageSize)
-            let keepRect = keepRect(in: contentRect)
-
-            ZStack {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-
-                Path { path in
-                    path.addRect(CGRect(origin: .zero, size: proxy.size))
-                    path.addRect(keepRect)
-                }
-                .fill(Color.black.opacity(0.32), style: FillStyle(eoFill: true))
-
-                Path { path in
-                    path.addRect(keepRect)
-                }
-                .stroke(Color("Primary"), lineWidth: 2)
-
-                handle(at: CGPoint(x: keepRect.minX, y: keepRect.midY))
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                        let x = value.location.x.clamped(to: contentRect.minX...keepRect.maxX - contentRect.width * minKeepFraction)
-                        crop.leftFraction = ((x - contentRect.minX) / contentRect.width).clamped(to: 0...(1 - crop.rightFraction - minKeepFraction))
-                        crop.clamp()
-                    })
-
-                handle(at: CGPoint(x: keepRect.maxX, y: keepRect.midY))
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                        let x = value.location.x.clamped(to: keepRect.minX + contentRect.width * minKeepFraction...contentRect.maxX)
-                        crop.rightFraction = ((contentRect.maxX - x) / contentRect.width).clamped(to: 0...(1 - crop.leftFraction - minKeepFraction))
-                        crop.clamp()
-                    })
-
-                handle(at: CGPoint(x: keepRect.midX, y: keepRect.minY))
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                        let y = value.location.y.clamped(to: contentRect.minY...keepRect.maxY - contentRect.height * minKeepFraction)
-                        crop.topFraction = ((y - contentRect.minY) / contentRect.height).clamped(to: 0...(1 - crop.bottomFraction - minKeepFraction))
-                        crop.clamp()
-                    })
-
-                handle(at: CGPoint(x: keepRect.midX, y: keepRect.maxY))
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                        let y = value.location.y.clamped(to: keepRect.minY + contentRect.height * minKeepFraction...contentRect.maxY)
-                        crop.bottomFraction = ((contentRect.maxY - y) / contentRect.height).clamped(to: 0...(1 - crop.topFraction - minKeepFraction))
-                        crop.clamp()
-                    })
-            }
-        }
-    }
-
-    private func keepRect(in contentRect: CGRect) -> CGRect {
-        let left = contentRect.width * crop.leftFraction
-        let right = contentRect.width * crop.rightFraction
-        let top = contentRect.height * crop.topFraction
-        let bottom = contentRect.height * crop.bottomFraction
-        return CGRect(
-            x: contentRect.minX + left,
-            y: contentRect.minY + top,
-            width: max(1, contentRect.width - left - right),
-            height: max(1, contentRect.height - top - bottom)
-        )
-    }
-
-    private func handle(at point: CGPoint) -> some View {
-        Circle()
-            .fill(Color(.systemBackground))
-            .frame(width: handleSize, height: handleSize)
-            .overlay(
-                Circle()
-                    .stroke(Color("Primary"), lineWidth: 2)
-            )
-            .position(point)
-            .shadow(radius: 1)
-    }
-
-    private func aspectFitRect(in container: CGSize, contentSize: CGSize) -> CGRect {
-        guard container.width > 0, container.height > 0, contentSize.width > 0, contentSize.height > 0 else {
-            return CGRect(origin: .zero, size: container)
-        }
-        let scale = min(container.width / contentSize.width, container.height / contentSize.height)
-        let drawSize = CGSize(width: contentSize.width * scale, height: contentSize.height * scale)
-        let origin = CGPoint(
-            x: (container.width - drawSize.width) / 2,
-            y: (container.height - drawSize.height) / 2
-        )
-        return CGRect(origin: origin, size: drawSize)
     }
 }
 

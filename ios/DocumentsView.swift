@@ -618,13 +618,14 @@ struct DocumentsView: View {
         }
 
         ToolbarItemGroup(placement: .bottomBar) {
+            Spacer()
             Button {
                 shareSelectedDocuments()
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .disabled(!hasSelection)
-
+            Spacer()
             Button {
                 quickZipName = ""
                 showingQuickZipNamePrompt = true
@@ -632,14 +633,14 @@ struct DocumentsView: View {
                 Label("Compress", systemImage: zipSymbolName())
             }
             .disabled(!hasSelection)
-
+            Spacer()
             Button {
                 showingBulkMoveSheet = true
             } label: {
                 Label("Move", systemImage: "folder")
             }
             .disabled(!hasSelection)
-
+            Spacer()
             Button {
                 showingBulkDeleteDialog = true
             } label: {
@@ -647,6 +648,7 @@ struct DocumentsView: View {
             }
             .tint(.red)
             .disabled(!hasSelection)
+            Spacer()
         }
     }
 
@@ -3028,13 +3030,14 @@ struct FolderDocumentsView: View {
         }
 
         ToolbarItemGroup(placement: .bottomBar) {
+            Spacer()
             Button {
                 shareSelectedDocuments()
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
             .disabled(!hasSelection)
-
+            Spacer()
             Button {
                 quickZipName = ""
                 showingQuickZipNamePrompt = true
@@ -3042,14 +3045,14 @@ struct FolderDocumentsView: View {
                 Label("Compress", systemImage: zipSymbolName())
             }
             .disabled(!hasSelection)
-
+            Spacer()
             Button {
                 showingBulkMoveSheet = true
             } label: {
                 Label("Move", systemImage: "folder")
             }
             .disabled(!hasSelection)
-
+            Spacer()
             Button {
                 showingBulkDeleteDialog = true
             } label: {
@@ -3057,6 +3060,7 @@ struct FolderDocumentsView: View {
             }
             .tint(.red)
             .disabled(!hasSelection)
+            Spacer()
         }
     }
 

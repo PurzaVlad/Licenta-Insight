@@ -103,6 +103,7 @@ struct TabContainerView: View {
     @AppStorage("pendingToolsDeepLink") private var pendingToolsDeepLink = ""
     @AppStorage("pendingConvertDeepLink") private var pendingConvertDeepLink = ""
     @State private var isInitialStartupLoadingVisible = true
+    private let modelWasReadyAtLaunch = UserDefaults.standard.bool(forKey: "modelReady")
     @State private var hasPassedStartupGate = false
     @State private var startupLoadingReadyPollToken: Int = 0
     @State private var operationLoadingCount = 0
@@ -175,7 +176,7 @@ struct TabContainerView: View {
             }
 
             if isInitialStartupLoadingVisible {
-                LoadingScreenView()
+                LoadingScreenView(isModelInstalling: !modelWasReadyAtLaunch)
                     .transition(.opacity)
                     .ignoresSafeArea()
                     .zIndex(10)
@@ -477,23 +478,24 @@ struct TabContainerView: View {
     }
 
     private func finishInitialStartupLoadingIfNeeded() {
+        guard !hasPassedStartupGate else { return }
         hasPassedStartupGate = true
         startupLoadingReadyPollToken += 1
-        if isInitialStartupLoadingVisible {
-            withAnimation(.easeOut(duration: 0.2)) {
-                isInitialStartupLoadingVisible = false
-            }
-            DispatchQueue.main.async {
-                // Don't trigger lock while the onboarding flow is still active —
-                // the user may have just authenticated Face ID to enable it.
-                guard self.hasCompletedOnboarding else { return }
-                self.lockManager.lockIfNeeded(force: true)
-            }
-            return
+
+        withAnimation(.easeOut(duration: 0.2)) {
+            isInitialStartupLoadingVisible = false
         }
 
-        guard hasCompletedOnboarding else { return }
-        lockManager.lockIfNeeded(force: true)
+        // Wait for the loading screen animation to finish before triggering the
+        // lock prompt — prevents Face ID from appearing while the logo is still visible,
+        // and ensures only one lock attempt fires regardless of how many observers
+        // call this function simultaneously.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            // Don't trigger lock while the onboarding flow is still active —
+            // the user may have just authenticated Face ID to enable it.
+            guard self.hasCompletedOnboarding else { return }
+            self.lockManager.lockIfNeeded(force: true)
+        }
     }
 
     private func startStartupLoadingReadyPoll() {

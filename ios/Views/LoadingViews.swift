@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct LoadingScreenView: View {
+    var isModelInstalling: Bool = false
     @Environment(\.colorScheme) private var colorScheme
     @State private var circleOffset: CGFloat = 16.3
 
@@ -9,26 +10,35 @@ struct LoadingScreenView: View {
             (colorScheme == .dark ? Color.black : Color.white)
                 .ignoresSafeArea()
 
-            Image("LogoComplet")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 100, height: 100)
-                .accessibilityLabel("LogoComplet")
-                .overlay {
-                    Rectangle()
-                        .fill(.background)
-                        .frame(width: 220, height: 220)
-                        .mask {
-                            Rectangle()
-                                .overlay {
-                                    Circle()
-                                        .frame(width: 64.4, height: 64.4)
-                                        .offset(y: circleOffset)
-                                        .blendMode(.destinationOut)
-                                }
-                        }
-                        .compositingGroup()
+            VStack(spacing: 24) {
+                Image("LogoComplet")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 100, height: 100)
+                    .accessibilityLabel("LogoComplet")
+                    .overlay {
+                        Rectangle()
+                            .fill(.background)
+                            .frame(width: 220, height: 220)
+                            .mask {
+                                Rectangle()
+                                    .overlay {
+                                        Circle()
+                                            .frame(width: 64.4, height: 64.4)
+                                            .offset(y: circleOffset)
+                                            .blendMode(.destinationOut)
+                                    }
+                            }
+                            .compositingGroup()
+                    }
+
+                if isModelInstalling {
+                    Text("We are setting everything up for you...")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {

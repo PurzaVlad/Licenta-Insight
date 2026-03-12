@@ -29,7 +29,7 @@ enum AppConstants {
     }
 
     enum Limits {
-        static let maxOCRChars = 50_000
+        static let maxOCRChars = 150_000
         static let maxFileSizeBytes = 50_000_000 // 50MB
         static let maxSummaryRetries = 3
         static let maxOCRImageDimension: CGFloat = 2560

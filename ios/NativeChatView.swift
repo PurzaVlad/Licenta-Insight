@@ -107,9 +107,9 @@ struct NativeChatView: View {
     // Preprompt (computed so it can be scope-aware)
     private var chatPreprompt: String {
         if isScopeActive, scopedDocuments.count == 1, let doc = scopedDocuments.first {
-            return "You are helping the user understand \"\(doc.title)\". Read the passages and answer the question. Quote or paraphrase what the passages say — give a real answer even if partial. Only say \"Not found in this document\" if the passages say absolutely nothing about the topic."
+            return "You are helping the user understand \"\(doc.title)\". Read the passages and answer the question. Quote or paraphrase what the passages say — give a real answer even if partial."
         }
-        return "Read the passages and answer the question. State what the passages say about it — even a partial answer is better than nothing. Only say \"Not specified in the documents\" if none of the passages mention the topic."
+        return "Read the passages and answer the question. State what the passages say about it — even a partial answer is better than nothing."
     }
     private let historyLimit = 4
     private let selectionMaxDocs = 2
@@ -256,15 +256,28 @@ struct NativeChatView: View {
 
     @ViewBuilder
     private var scopeButton: some View {
-        Button { showingScopePicker = true } label: {
-            Image(systemName: "scope")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(isScopeActive ? Color("Primary") : Color.primary)
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-                .ifAvailableiOS26GlassCircle(isActive: isScopeActive)
+        if isScopeActive {
+            Button { showingScopePicker = true } label: {
+                Image(systemName: "scope")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .background(Color.accentColor, in: Circle())
+                    .ifAvailableiOS26GlassCircle(isActive: false)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button { showingScopePicker = true } label: {
+                Image(systemName: "scope")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Color.primary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+                    .ifAvailableiOS26GlassCircle(isActive: false)
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 
     private var inputBar: some View {
@@ -1742,7 +1755,7 @@ struct NativeChatView: View {
             return currentSelection
         }
 
-        return selectDocumentsByChunkRanking(
+        let retried = selectDocumentsByChunkRanking(
             question: question,
             allDocs: allDocs,
             preferredDocumentId: preferredDocumentId,
@@ -1750,6 +1763,12 @@ struct NativeChatView: View {
             retrievalQuery: expanded,
             queryAnalysis: queryAnalysis
         )
+        // If the retry still found no selected hits but the initial run had ranked hits,
+        // keep the initial selection so its allRankedHits are not discarded.
+        if retried.selectedHits.isEmpty && !currentSelection.allRankedHits.isEmpty {
+            return currentSelection
+        }
+        return retried
     }
 
     private struct RankedSnippet {
@@ -2045,9 +2064,6 @@ struct NativeChatView: View {
     ) -> String {
         let evidence = buildEvidenceFromSelectedHits(selectedHits, maxChars: activeContextCharBudget)
 
-        // Flat structure optimized for small models:
-        // System message is extracted by buildNoHistoryMessages via SYSTEM: prefix.
-        // User message starts at EVIDENCE: — keep it simple and direct.
         return """
         SYSTEM:
         \(chatPreprompt)
@@ -2318,11 +2334,17 @@ struct NativeChatView: View {
         let hasThreadHistory = messages.contains { $0.role == "assistant" } && messages.contains { $0.role == "user" }
 
         // The rewritten query is the standalone search query from the LLM analysis.
+        // For new_topic intent, always use the raw question — the rewrite can contaminate
+        // retrieval with prior-turn terms and pull the same chunks for different subjects.
         // Fall back to heuristic thread-anchor approach only when LLM analysis fails.
         let effectiveQuestion: String
-        if let rewritten = queryAnalysis?.rewrittenQuery, !rewritten.isEmpty {
+        let isNewTopic = queryAnalysis?.intent == "new_topic"
+        if !isNewTopic, let rewritten = queryAnalysis?.rewrittenQuery, !rewritten.isEmpty {
             effectiveQuestion = rewritten
             print("[QueryRewrite] Using LLM rewrite: \(rewritten)")
+        } else if isNewTopic {
+            effectiveQuestion = question
+            print("[QueryRewrite] New topic — using raw question")
         } else {
             // Heuristic fallback: thread anchor for short follow-ups
             let anchorFollowUp = isAnaphoraFollowUp(question) ||
@@ -2351,9 +2373,12 @@ struct NativeChatView: View {
             ? scopedDocsRaw
             : documentManager.conversationEligibleDocuments()
 
-        // Use analysis to determine bias (prioritize LLM analysis over heuristics)
+        // Use analysis to determine bias (prioritize LLM analysis over heuristics).
+        // New topics must never inherit the previous document's bias.
         let applyLastDocumentBias: Bool
-        if let analysis = queryAnalysis {
+        if isNewTopic {
+            applyLastDocumentBias = false
+        } else if let analysis = queryAnalysis {
             applyLastDocumentBias = analysis.needsPreviousDocBias
         } else {
             let questionAnchors = anchorTokens(from: question)
@@ -2402,7 +2427,27 @@ struct NativeChatView: View {
             primaryDocId: selection.primaryDocument?.id
         )
 
-        if selection.selectedHits.isEmpty {
+        // Determine hits to use: prefer selectedHits, fall back to top allRankedHits,
+        // only bail out with hardcoded message when there are truly zero chunks.
+        let hitsToUse: [ChunkHit]
+        var docsToUse: [Document]
+        var topScoresToUse: [UUID: Double]
+        if !selection.selectedHits.isEmpty {
+            hitsToUse = selection.selectedHits
+            docsToUse = selection.documents
+            topScoresToUse = selection.topScoreByDocumentId
+        } else if !selection.allRankedHits.isEmpty {
+            hitsToUse = Array(selection.allRankedHits.prefix(4))
+            var seenIds = Set<UUID>()
+            docsToUse = hitsToUse.compactMap { hit -> Document? in
+                guard !seenIds.contains(hit.document.id) else { return nil }
+                seenIds.insert(hit.document.id)
+                return hit.document
+            }
+            topScoresToUse = Dictionary(
+                uniqueKeysWithValues: hitsToUse.map { ($0.document.id, max($0.finalScore, 0.0001)) }
+            )
+        } else {
             return ChatLLMResult(reply: "Not specified in the documents.", primaryDocument: nil, rewrittenQuery: queryAnalysis?.rewrittenQuery)
         }
 
@@ -2410,25 +2455,26 @@ struct NativeChatView: View {
         // (LLM writes short intro, then we append raw chunk text in quotes)
         let useDirectQuotes = isChallengeDispute || queryAnalysis?.intent == "followup_clarification"
 
+        // Always show the user's original question to the model — effectiveQuestion is for retrieval only.
         let finalReply: String
         if useDirectQuotes {
             let introPrompt = buildExploratoryPrompt(
-                question: effectiveQuestion,
+                question: question,
                 originalQuestion: sessionState.lastOriginalQuestion,
                 lastResponse: sessionState.lastAssistantResponse,
-                selectedHits: selection.selectedHits
+                selectedHits: hitsToUse
             )
             let introReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(introPrompt))
             finalReply = buildDirectQuoteResponse(
                 introReply: introReply,
-                selectedHits: selection.selectedHits
+                selectedHits: hitsToUse
             )
         } else {
             let prompt = buildAnswerPrompt(
-                question: effectiveQuestion,
-                selectedDocs: selection.documents,
-                topScoreByDocumentId: selection.topScoreByDocumentId,
-                selectedHits: selection.selectedHits
+                question: question,
+                selectedDocs: docsToUse,
+                topScoreByDocumentId: topScoresToUse,
+                selectedHits: hitsToUse
             )
             finalReply = try await callLLM(edgeAI: edgeAI, prompt: wrapChatPrompt(prompt))
         }

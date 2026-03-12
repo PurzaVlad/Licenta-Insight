@@ -394,7 +394,15 @@ class AIService {
         }
 
         guard !result.isEmpty else { return "" }
-        return result.prefix(1).uppercased() + result.dropFirst()
+
+        // Truncate to first meaningful token — keywords are a single concept, never a sentence.
+        // Take text up to the first comma, period, or sentence-continuing word.
+        let firstSegment = result.components(separatedBy: CharacterSet(charactersIn: ".,;")).first?.trimmingCharacters(in: .whitespaces) ?? result
+        let words = firstSegment.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        let keyword = words.prefix(2).joined(separator: " ")
+
+        guard !keyword.isEmpty else { return "" }
+        return keyword.prefix(1).uppercased() + keyword.dropFirst()
     }
 
     private func stripKeywordPreamble(_ line: String) -> String {
